@@ -1,0 +1,12 @@
+services:
+  api:
+    build:
+      context: ./backend   # Build the image from the backend folder
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"        # Map container port 8000 to your machine's port 8000
+    volumes:
+      - ./backend:/app     # Sync local files with the container (hot reload)
+    env_file:
+      - .env               # Load environment variables from .env file
+    restart: unless-stopped  # Restart automatically if it crashes
