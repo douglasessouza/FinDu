@@ -1,56 +1,82 @@
-# FinDu — Multi-Currency Personal Finance
+# FinDu — Personal Finance, Powered by AI
 
-> Take control of your money, wherever it lives.
+> Your money. Every account. Every currency. Every insight.
 
 ---
 
 ## The Problem
 
-Most people live in one country, earn in one currency, and spend in one place. Personal finance apps were built for them.
+Managing personal finances is harder than it should be.
 
-But life is more complex than that.
+You have a bank account, a credit card, maybe some investments, a car loan, and a dozen recurring expenses. Every month you try to figure out where the money went — and every month the picture is blurry. Most apps give you charts. But charts don't tell you why you spent more in March, or whether you can actually afford that trip in July, or whether your spending habits are quietly working against your goals.
 
-Some of us earn a salary in Brazil and another in Canada. We have a business in one country and investments in another. We hold stocks in USD, pay rent in CAD, and still have financial obligations in BRL. Every month, we're mentally converting, estimating, and guessing whether we're actually doing okay — because no single tool shows the full picture.
+And if your financial life spans more than one country or currency? Forget it. No tool handles that well.
 
-FinDu was built to solve exactly that.
+FinDu was built to change that.
 
 ---
 
 ## What is FinDu?
 
-FinDu is a personal, open-source financial control app designed for people whose financial life spans multiple countries and currencies.
+FinDu is a personal finance app that gives you a complete, intelligent view of your financial life — regardless of how many accounts, countries, or currencies are involved.
 
-It consolidates all your accounts — bank accounts, credit cards, investment portfolios, business revenue — into a single dashboard, converting everything in real time to whichever currency you want to see.
+It connects your bank accounts, credit cards, and investments, automatically categorizes your transactions, and uses AI to help you understand your money: your habits, your patterns, your risks, and your opportunities.
 
-No more spreadsheets. No more mental math. No more blind spots.
+Whether you live in one country or five, earn in one currency or three, FinDu adapts to your reality.
 
 ---
 
 ## Who is it for?
 
-FinDu is for anyone whose money doesn't live in just one place:
+**Anyone who wants to actually understand their finances** — not just track them.
 
-- Expats and immigrants managing finances in two countries
-- Professionals with salaries in multiple currencies
-- Business owners with revenue in one country and expenses in another
-- Investors holding assets in USD, BRL, CAD, EUR, or any combination
-- Digital nomads who move between countries and currencies
+- People who want to stop guessing and start knowing
+- Anyone juggling multiple accounts, cards, or currencies
+- Expats and immigrants managing finances across countries
+- Professionals with income in multiple currencies (BRL, CAD, USD, EUR...)
+- Investors tracking portfolios alongside day-to-day spending
+- Business owners who need to separate personal and company finances
+- Anyone tired of spreadsheets and apps that only show half the picture
 
 ---
 
 ## Core Features
 
-**Multi-currency by design** — Configure whichever currencies make sense for your life. BRL, CAD, USD, EUR, GBP, and more. FinDu converts everything in real time and lets you see your total net worth in any currency.
+### 💰 Complete Financial Overview
+All your accounts in one place — bank accounts, credit cards, investments, business accounts. See your real net worth in any currency, updated in real time.
 
-**All your accounts in one place** — Bank accounts, credit cards, investment accounts, business accounts. Brazil, Canada, or anywhere else.
+### 🌍 True Multi-Currency Support
+Configure whichever currencies make sense for your life. BRL, CAD, USD, EUR, GBP — set your base currency and see everything converted automatically with real-time exchange rates.
 
-**AI-powered** — Powered by Claude (Anthropic), FinDu automatically categorizes your transactions, detects anomalies, and lets you ask questions in plain language: *"How much did I spend on restaurants last month?"* or *"What's my savings rate in CAD this year?"*
+### 🤖 AI-Powered Intelligence
+Powered by Claude (Anthropic), FinDu goes beyond categorization:
+- **Automatic transaction categorization** — groceries, travel, kids, car, subscriptions
+- **Spending behavior analysis** — understand your patterns and lifestyle habits
+- **Monthly and annual forecasting** — AI predicts your future spending based on past behavior
+- **Personalized tips** — actionable advice to improve your financial health
+- **Natural language chat** — ask anything: *"How much did I spend on restaurants in Q1?"* or *"Can I afford a $3,000 vacation in August?"*
+- **Anomaly alerts** — get notified when something looks off
 
-**Smart statement import** — Upload PDFs, CSVs, OFX files, or even photos of paper statements. FinDu reads and extracts the data automatically.
+### 📊 Smart Reporting
+- Monthly and annual summaries
+- Spending breakdown by category (food, travel, kids, car, health, etc.)
+- Income vs. expenses trends
+- Savings rate tracking
+- Investment performance overview
+- Exportable reports (PDF and Excel)
 
-**Open Finance integration** — Automatic sync with Brazilian banks via Pluggy. Canadian Open Banking support planned for 2026.
+### 💳 Credit Card Management
+Full visibility into your credit cards — spending by card, by category, upcoming bills, and how credit card spending fits into your overall monthly budget.
 
-**Clean dashboard** — See your total financial position at a glance. Filter by country, currency, account, or category.
+### 📈 Investment Tracking
+Track your investment portfolio alongside your day-to-day finances. Stocks, funds, and assets in any currency — see the full picture.
+
+### 📥 Smart Statement Import
+Upload PDFs, CSVs, OFX files, or even photos of paper statements. FinDu reads and extracts the data automatically using AI.
+
+### 🏦 Open Finance Integration
+- Automatic sync with Brazilian banks via Pluggy (Open Finance BR)
+- Canadian Open Banking support planned for 2026
 
 ---
 
@@ -90,9 +116,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The API will be running at `http://localhost:8000`
-
-API documentation (auto-generated): `http://localhost:8000/docs`
+API running at: `http://localhost:8000`
+Auto-generated API docs: `http://localhost:8000/docs`
 
 ---
 
@@ -107,9 +132,9 @@ API documentation (auto-generated): `http://localhost:8000/docs`
 
 ---
 
-## Why not just use [Lunch Money / YNAB / PocketSmith]?
+## Why not just use [YNAB / Lunch Money / PocketSmith / Mint]?
 
-We tried. None of them handle the multi-country, multi-currency, multi-entity reality well. They're built for one person, one country, one currency. FinDu is built for the rest of us.
+They're good apps — for a simple financial life. But they weren't built for people with multiple currencies, multiple countries, or the need for real AI-driven insight (not just charts). FinDu is.
 
 ---
 
