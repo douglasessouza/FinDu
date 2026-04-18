@@ -28,7 +28,6 @@ def get_db():
     finally:
         db.close()
 
-# --- Schemas ---
 class AccountCreate(BaseModel):
     name: str
     bank: str
@@ -42,15 +41,41 @@ class AccountCreate(BaseModel):
 class TransactionCreate(BaseModel):
     account_id: int
     description: str
-    amount: float          # Positive = income, negative = expense
+    amount: float
     currency: CurrencyEnum
     date: datetime
     category: Optional[str] = None
 
-# --- Routes ---
 @app.get("/health")
 def health_check():
     return {"status": "ok", "app": "FinDu"}
 
 @app.post("/accounts")
-def create_account(account: AccountCreate, db: Se
+def create_account(account: AccountCreate, db: Session = Depends(get_db)):
+    db_account = Account(**account.model_dump())
+    db.add(db_account)
+    db.commit()
+    db.refresh(db_account)
+    return db_account
+
+@app.get("/accounts")
+def list_accounts(db: Session = Depends(get_db)):
+    return db.query(Account).all()
+
+@app.post("/transactions")
+def create_transaction(transaction: TransactionCreate, db: Session = Depends(get_db)):
+    account = db.query(Account).filter(Account.id == transaction.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    db_transaction = Transaction(**transaction.model_dump())
+    db.add(db_transaction)
+    db.commit()
+    db.refresh(db_transaction)
+    return db_transaction
+
+@app.get("/transactions")
+def list_transactions(account_id: Optional[int] = None, db: Session = Depends(get_db)):
+    query = db.query(Transaction)
+    if account_id:
+        query = query.filter(Transaction.account_id == account_id)
+    return query.all()
