@@ -8,6 +8,8 @@ import os
 from dotenv import load_dotenv
 from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum
 from datetime import datetime
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 load_dotenv()
 
@@ -20,6 +22,12 @@ app = FastAPI(
     description="Personal multi-currency financial control app",
     version="0.1.0",
 )
+
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
+
+@app.get("/")
+def root():
+    return FileResponse("app/static/index.html")
 
 def get_db():
     db = SessionLocal()
