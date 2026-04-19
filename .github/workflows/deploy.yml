@@ -33,4 +33,4 @@ jobs:
             --region us-east1 \
             --platform managed \
             --allow-unauthenticated \
-            --set-env-vars DATABASE_URL=${{ secrets.DATABASE_URL }}
+            --set-env-vars DATABASE_URL=${{ secrets.DATABASE_URL }},API_URL=https://findu-uwii3tfcqa-ue.a.run.app
