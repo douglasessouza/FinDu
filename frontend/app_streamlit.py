@@ -12,9 +12,9 @@ def get_accounts():
     except:
         return []
 
-def get_transactions():
+def get_recurring_expenses():
     try:
-        r = requests.get(f"{API_URL}/transactions", timeout=5)
+        r = requests.get(f"{API_URL}/recurring-expenses", timeout=5)
         return r.json()
     except:
         return []
@@ -23,7 +23,7 @@ st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
 
-page = st.sidebar.selectbox("Menu", ["Dashboard", "Accounts", "Credit Cards", "Transactions"])
+page = st.sidebar.selectbox("Menu", ["Dashboard", "Accounts", "Credit Cards", "Recurring Expenses", "Transactions"])
 
 @st.cache_data(ttl=3600)
 def get_fx_rates():
@@ -159,6 +159,31 @@ elif page == "Credit Cards":
                 st.rerun()
             else:
                 st.error("Error creating card")
+
+# --- Recurring Expenses ---
+elif page == "Recurring Expenses":
+    st.header("🔄 Recurring Expenses")
+    expenses = get_recurring_expenses()
+    if expenses:
+        for exp in expenses:
+            st.write(f"**{exp['name']}** — {exp['currency']} {exp['amount']:.2f} | Due: day {exp['due_day']} | {exp['category'] or 'No category'}")
+        st.divider()
+    with st.form("new_recurring"):
+        name = st.text_input("Name", placeholder="e.g. Rent, Netflix, Gym")
+        amount = st.number_input("Amount", value=0.0)
+        currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
+        due_day = st.number_input("Due day", min_value=1, max_value=31, value=1)
+        category = st.text_input("Category", placeholder="e.g. housing, subscriptions")
+        submitted = st.form_submit_button("Add Recurring Expense")
+        if submitted:
+            payload = {"name": name, "amount": amount, "currency": currency,
+                      "due_day": int(due_day), "category": category}
+            r = requests.post(f"{API_URL}/recurring-expenses", json=payload)
+            if r.status_code == 200:
+                st.success(f"'{name}' added!")
+                st.rerun()
+            else:
+                st.error("Error adding expense")
 
 # --- Transactions ---
 elif page == "Transactions":

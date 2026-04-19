@@ -87,3 +87,24 @@ def list_transactions(account_id: Optional[int] = None, db: Session = Depends(ge
     if account_id:
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
+
+class RecurringExpenseCreate(BaseModel):
+    name: str
+    amount: float
+    currency: CurrencyEnum
+    due_day: int
+    category: Optional[str] = None
+
+@app.post("/recurring-expenses")
+def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
+    from app.models import RecurringExpense
+    db_expense = RecurringExpense(**expense.model_dump())
+    db.add(db_expense)
+    db.commit()
+    db.refresh(db_expense)
+    return db_expense
+
+@app.get("/recurring-expenses")
+def list_recurring_expenses(db: Session = Depends(get_db)):
+    from app.models import RecurringExpense
+    return db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()

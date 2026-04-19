@@ -12,9 +12,9 @@ class CurrencyEnum(enum.Enum):
     EUR = "EUR"   # Euro
 
 class AccountTypeEnum(enum.Enum):
-    CHECKING = "CHECKING"       # Conta corrente
-    SAVINGS = "SAVINGS"         # Poupança
-    CREDIT_CARD = "CREDIT_CARD" # Cartão de crédito
+    CHECKING = "CHECKING"       # Checking account
+    SAVINGS = "SAVINGS"         # Savings account
+    CREDIT_CARD = "CREDIT_CARD" # Credit card
 
 class Account(Base):
     __tablename__ = "accounts"
@@ -25,12 +25,9 @@ class Account(Base):
     account_type = Column(Enum(AccountTypeEnum), nullable=False)  # Checking, Savings or Credit Card
     currency = Column(Enum(CurrencyEnum), nullable=False)         # BRL, CAD, USD or EUR
     balance = Column(Float, default=0.0)         # Current balance (negative for credit card debt)
-
-    # Credit card only fields
-    credit_limit = Column(Float, nullable=True)         # Credit limit
-    closing_day = Column(Integer, nullable=True)        # Statement closing day (1-31)
-    due_day = Column(Integer, nullable=True)            # Payment due day (1-31)
-
+    credit_limit = Column(Float, nullable=True)         # Credit limit (credit card only)
+    closing_day = Column(Integer, nullable=True)        # Statement closing day (credit card only)
+    due_day = Column(Integer, nullable=True)            # Payment due day (credit card only)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Transaction(Base):
@@ -43,4 +40,16 @@ class Transaction(Base):
     currency = Column(Enum(CurrencyEnum), nullable=False)
     date = Column(DateTime, nullable=False)
     category = Column(String, nullable=True)     # e.g. "food", "transport", "salary"
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+class RecurringExpense(Base):
+    __tablename__ = "recurring_expenses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)        # e.g. "Rent", "Netflix"
+    amount = Column(Float, nullable=False)        # Fixed monthly amount
+    currency = Column(Enum(CurrencyEnum), nullable=False)
+    due_day = Column(Integer, nullable=False)    # Day of month it's due (1-31)
+    category = Column(String, nullable=True)     # e.g. "housing", "subscriptions"
+    is_active = Column(Boolean, default=True)    # Can be deactivated without deleting
     created_at = Column(DateTime, default=datetime.utcnow)
