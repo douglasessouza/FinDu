@@ -8,3 +8,5 @@ alembic==1.18.4
 psycopg2-binary==2.9.11
 anthropic==0.94.0
 httpx==0.28.1
+streamlit==1.44.1
+requests==2.32.3
