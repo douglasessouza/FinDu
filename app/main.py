@@ -36,6 +36,31 @@ def get_db():
     finally:
         db.close()
 
+CATEGORIES = [
+    "Housing",
+    "Food",
+    "Transport",
+    "Health",
+    "Education",
+    "Subscriptions",
+    "Entertainment",
+    "Leisure",
+    "Travel",
+    "Clothing",
+    "Phone",
+    "Car",
+    "Insurance",
+    "Investments",
+    "Salary",
+    "Other Income",
+    "Transfer",
+    "Other"
+]
+
+@app.get("/categories")
+def list_categories():
+    return CATEGORIES
+
 class AccountCreate(BaseModel):
     name: str
     bank: str
@@ -52,6 +77,13 @@ class TransactionCreate(BaseModel):
     amount: float
     currency: CurrencyEnum
     date: datetime
+    category: Optional[str] = None
+
+class RecurringExpenseCreate(BaseModel):
+    name: str
+    amount: float
+    currency: CurrencyEnum
+    due_day: int
     category: Optional[str] = None
 
 @app.get("/health")
@@ -87,13 +119,6 @@ def list_transactions(account_id: Optional[int] = None, db: Session = Depends(ge
     if account_id:
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
-
-class RecurringExpenseCreate(BaseModel):
-    name: str
-    amount: float
-    currency: CurrencyEnum
-    due_day: int
-    category: Optional[str] = None
 
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
