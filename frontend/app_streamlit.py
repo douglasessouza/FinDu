@@ -18,6 +18,7 @@ def get_fx_rates():
         r = requests.get("https://api.exchangerate-api.com/v4/latest/BRL")
         data = r.json()
         brl_to_cad = data["rates"]["CAD"]
+        cad_to_brl = 1 / brl_to_cad
         r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD")
         data2 = r2.json()
         usd_to_cad = data2["rates"]["CAD"]
@@ -34,7 +35,7 @@ if page == "Dashboard":
     col1, col2 = st.columns(2)
     with col1:
         if fx["BRL_CAD"]:
-            st.metric("🇧🇷 1 BRL →", f"CAD$ {fx['BRL_CAD']:.4f}")
+            st.metric("🇨🇦 1 CAD →", f"R$ {1/fx['BRL_CAD']:.2f}")
         else:
             st.warning("FX unavailable")
     with col2:
