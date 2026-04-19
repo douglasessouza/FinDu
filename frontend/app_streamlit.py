@@ -3,7 +3,21 @@ import requests
 from datetime import datetime
 import os
 
-API_URL = os.getenv("API_URL", "http://localhost:8000")
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+
+def get_accounts():
+    try:
+        r = requests.get(f"{API_URL}/accounts", timeout=5)
+        return r.json()
+    except:
+        return []
+
+def get_transactions():
+    try:
+        r = requests.get(f"{API_URL}/transactions", timeout=5)
+        return r.json()
+    except:
+        return []
 
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
@@ -11,14 +25,12 @@ st.caption("Personal multi-currency financial control")
 
 page = st.sidebar.selectbox("Menu", ["Dashboard", "Accounts", "Credit Cards", "Transactions"])
 
-# --- Fetch live FX rates ---
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600)
 def get_fx_rates():
     try:
         r = requests.get("https://api.exchangerate-api.com/v4/latest/BRL")
         data = r.json()
         brl_to_cad = data["rates"]["CAD"]
-        cad_to_brl = 1 / brl_to_cad
         r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD")
         data2 = r2.json()
         usd_to_cad = data2["rates"]["CAD"]
@@ -30,7 +42,6 @@ def get_fx_rates():
 if page == "Dashboard":
     st.header("Dashboard")
 
-    # Live FX rates
     fx = get_fx_rates()
     col1, col2 = st.columns(2)
     with col1:
@@ -40,13 +51,13 @@ if page == "Dashboard":
             st.warning("FX unavailable")
     with col2:
         if fx["USD_CAD"]:
-            st.metric("🇺🇸 1 USD →", f"CAD$ {fx['USD_CAD']:.4f}")
+            st.metric("🇺🇸 1 USD →", f"CAD$ {fx['USD_CAD']:.2f}")
         else:
             st.warning("FX unavailable")
 
     st.divider()
 
-    accounts = requests.get(f"{API_URL}/accounts").json()
+    accounts = get_accounts()
     if not accounts:
         st.info("No accounts yet. Go to Accounts to add one!")
     else:
@@ -55,10 +66,11 @@ if page == "Dashboard":
         cad_accounts = [a for a in accounts if a["currency"] == "CAD" and a["account_type"] != "CREDIT_CARD"]
         cad_cards = [a for a in accounts if a["currency"] == "CAD" and a["account_type"] == "CREDIT_CARD"]
 
-        # Brazil section
+        total_brl = 0
+        total_cad = 0
+
         if brl_accounts or brl_cards:
             st.subheader("🇧🇷 Brazil (BRL)")
-            total_brl = 0
             for acc in brl_accounts:
                 card_debt = sum(c["balance"] for c in brl_cards)
                 net = acc["balance"] - card_debt
@@ -74,10 +86,8 @@ if page == "Dashboard":
 
         st.divider()
 
-        # Canada section
         if cad_accounts or cad_cards:
             st.subheader("🇨🇦 Canada (CAD)")
-            total_cad = 0
             for acc in cad_accounts:
                 card_debt = sum(c["balance"] for c in cad_cards)
                 net = acc["balance"] - card_debt
@@ -91,7 +101,6 @@ if page == "Dashboard":
 
         st.divider()
 
-        # General total in CAD
         st.subheader("💰 Total in CAD")
         total_in_cad = total_cad
         if fx["BRL_CAD"]:
@@ -101,7 +110,7 @@ if page == "Dashboard":
 # --- Accounts ---
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
-    accounts = [a for a in requests.get(f"{API_URL}/accounts").json() if a["account_type"] != "CREDIT_CARD"]
+    accounts = [a for a in get_accounts() if a["account_type"] != "CREDIT_CARD"]
     if accounts:
         for acc in accounts:
             st.write(f"**{acc['name']}** — {acc['bank']} | {acc['currency']} {acc['balance']:.2f}")
@@ -127,7 +136,7 @@ elif page == "Accounts":
 # --- Credit Cards ---
 elif page == "Credit Cards":
     st.header("💳 Credit Cards")
-    cards = [a for a in requests.get(f"{API_URL}/accounts").json() if a["account_type"] == "CREDIT_CARD"]
+    cards = [a for a in get_accounts() if a["account_type"] == "CREDIT_CARD"]
     if cards:
         for card in cards:
             st.write(f"**{card['name']}** — {card['bank']} | {card['currency']} | Limit: {card['credit_limit']} | Due: day {card['due_day']}")
@@ -154,7 +163,7 @@ elif page == "Credit Cards":
 # --- Transactions ---
 elif page == "Transactions":
     st.header("Transactions")
-    accounts = requests.get(f"{API_URL}/accounts").json()
+    accounts = get_accounts()
     if not accounts:
         st.warning("Create an account first!")
     else:
