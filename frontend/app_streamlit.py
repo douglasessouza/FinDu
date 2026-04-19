@@ -5,6 +5,13 @@ import os
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
+CATEGORIES = [
+    "Housing", "Food", "Transport", "Health", "Education",
+    "Subscriptions", "Entertainment", "Leisure", "Travel",
+    "Clothing", "Phone", "Car", "Insurance", "Investments",
+    "Salary", "Other Income", "Transfer", "Other"
+]
+
 def get_accounts():
     try:
         r = requests.get(f"{API_URL}/accounts", timeout=5)
@@ -23,7 +30,7 @@ st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
 
-page = st.sidebar.selectbox("Menu", ["Dashboard", "Accounts", "Credit Cards", "Recurring Expenses", "Transactions"])
+page = st.sidebar.selectbox("Menu", ["Dashboard", "Accounts", "Credit Cards", "Recurring Expenses", "Spending by Category", "Transactions"])
 
 @st.cache_data(ttl=3600)
 def get_fx_rates():
@@ -38,10 +45,8 @@ def get_fx_rates():
     except:
         return {"BRL_CAD": None, "USD_CAD": None}
 
-# --- Dashboard ---
 if page == "Dashboard":
     st.header("Dashboard")
-
     fx = get_fx_rates()
     col1, col2 = st.columns(2)
     with col1:
@@ -54,9 +59,7 @@ if page == "Dashboard":
             st.metric("🇺🇸 1 USD →", f"CAD$ {fx['USD_CAD']:.2f}")
         else:
             st.warning("FX unavailable")
-
     st.divider()
-
     accounts = get_accounts()
     if not accounts:
         st.info("No accounts yet. Go to Accounts to add one!")
@@ -65,10 +68,8 @@ if page == "Dashboard":
         brl_cards = [a for a in accounts if a["currency"] == "BRL" and a["account_type"] == "CREDIT_CARD"]
         cad_accounts = [a for a in accounts if a["currency"] == "CAD" and a["account_type"] != "CREDIT_CARD"]
         cad_cards = [a for a in accounts if a["currency"] == "CAD" and a["account_type"] == "CREDIT_CARD"]
-
         total_brl = 0
         total_cad = 0
-
         if brl_accounts or brl_cards:
             st.subheader("🇧🇷 Brazil (BRL)")
             for acc in brl_accounts:
@@ -83,9 +84,7 @@ if page == "Dashboard":
             st.info(f"**Total Brazil: R$ {total_brl:.2f}**")
             if fx["BRL_CAD"]:
                 st.caption(f"≈ CAD$ {total_brl * fx['BRL_CAD']:.2f}")
-
         st.divider()
-
         if cad_accounts or cad_cards:
             st.subheader("🇨🇦 Canada (CAD)")
             for acc in cad_accounts:
@@ -98,16 +97,13 @@ if page == "Dashboard":
                          delta=f"Due day: {card['due_day']}" if card['due_day'] else None, delta_color="inverse")
                 total_cad -= card["balance"]
             st.info(f"**Total Canada: CAD$ {total_cad:.2f}**")
-
         st.divider()
-
         st.subheader("💰 Total in CAD")
         total_in_cad = total_cad
         if fx["BRL_CAD"]:
             total_in_cad += total_brl * fx["BRL_CAD"]
         st.metric("Net Worth", f"CAD$ {total_in_cad:.2f}")
 
-# --- Accounts ---
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
     accounts = [a for a in get_accounts() if a["account_type"] != "CREDIT_CARD"]
@@ -133,7 +129,6 @@ elif page == "Accounts":
             else:
                 st.error("Error creating account")
 
-# --- Credit Cards ---
 elif page == "Credit Cards":
     st.header("💳 Credit Cards")
     cards = [a for a in get_accounts() if a["account_type"] == "CREDIT_CARD"]
@@ -160,7 +155,6 @@ elif page == "Credit Cards":
             else:
                 st.error("Error creating card")
 
-# --- Recurring Expenses ---
 elif page == "Recurring Expenses":
     st.header("🔄 Recurring Expenses")
     expenses = get_recurring_expenses()
@@ -173,7 +167,7 @@ elif page == "Recurring Expenses":
         amount = st.number_input("Amount", value=0.0)
         currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
         due_day = st.number_input("Due day", min_value=1, max_value=31, value=1)
-        category = st.text_input("Category", placeholder="e.g. housing, subscriptions")
+        category = st.selectbox("Category", CATEGORIES)
         submitted = st.form_submit_button("Add Recurring Expense")
         if submitted:
             payload = {"name": name, "amount": amount, "currency": currency,
@@ -185,7 +179,37 @@ elif page == "Recurring Expenses":
             else:
                 st.error("Error adding expense")
 
-# --- Transactions ---
+elif page == "Spending by Category":
+    import plotly.express as px
+    import pandas as pd
+    st.header("📊 Spending by Category")
+    currency_filter = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
+    try:
+        r = requests.get(f"{API_URL}/spending-by-category", params={"currency": currency_filter}, timeout=5)
+        data = r.json()
+        if not data:
+            st.info("No transactions yet.")
+        else:
+            expenses = {k: v for k, v in data.items() if v < 0}
+            income = {k: v for k, v in data.items() if v > 0}
+            if expenses:
+                st.subheader("💸 Expenses")
+                df = pd.DataFrame(list(expenses.items()), columns=["Category", "Amount"])
+                df["Amount"] = df["Amount"].abs()
+                df = df.sort_values("Amount", ascending=False)
+                for _, row in df.iterrows():
+                    st.metric(row["Category"], f"{currency_filter} {row['Amount']:.2f}")
+                fig = px.bar(df, x="Category", y="Amount", title="Expenses by Category", color="Category")
+                st.plotly_chart(fig, use_container_width=True)
+            if income:
+                st.subheader("💰 Income")
+                df2 = pd.DataFrame(list(income.items()), columns=["Category", "Amount"])
+                df2 = df2.sort_values("Amount", ascending=False)
+                for _, row in df2.iterrows():
+                    st.metric(row["Category"], f"{currency_filter} {row['Amount']:.2f}")
+    except:
+        st.error("Could not load spending data.")
+
 elif page == "Transactions":
     st.header("Transactions")
     accounts = get_accounts()
@@ -198,7 +222,7 @@ elif page == "Transactions":
             amount = st.number_input("Amount (negative = expense)", value=0.0)
             currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
             date = st.date_input("Date")
-            category = st.text_input("Category", placeholder="e.g. food, transport")
+            category = st.selectbox("Category", CATEGORIES)
             submitted = st.form_submit_button("Add Transaction")
             if submitted:
                 account_id = int(account.split(" - ")[0])

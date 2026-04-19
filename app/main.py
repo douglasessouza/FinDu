@@ -133,3 +133,16 @@ def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depe
 def list_recurring_expenses(db: Session = Depends(get_db)):
     from app.models import RecurringExpense
     return db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()
+
+@app.get("/spending-by-category")
+def spending_by_category(currency: Optional[str] = None, db: Session = Depends(get_db)):
+    transactions = db.query(Transaction).all()
+    result = {}
+    for t in transactions:
+        if currency and t.currency.value != currency:
+            continue
+        cat = t.category or "Other"
+        if cat not in result:
+            result[cat] = 0
+        result[cat] += t.amount
+    return result
