@@ -344,10 +344,14 @@ elif page == "Import Statement":
         with col2:
             from_date = st.date_input("Import transactions from", value=date.today().replace(day=1))
         st.divider()
-        uploaded = st.file_uploader("📁 Upload CSV file (RBC or Amex)", type=["csv"])
+        uploaded = st.file_uploader("📁 Upload CSV or XLS file (RBC, Amex)", type=["csv","xls","xlsx"])
         if uploaded:
             try:
-                raw = pd.read_csv(uploaded)
+                filename = uploaded.name.lower()
+                if filename.endswith(".xls") or filename.endswith(".xlsx"):
+                    raw = pd.read_excel(uploaded)
+                else:
+                    raw = pd.read_csv(uploaded)
                 cols = [c.strip().lower() for c in raw.columns]
                 if "transaction date" in cols and "cad$" in cols:
                     raw.columns = [c.strip() for c in raw.columns]
