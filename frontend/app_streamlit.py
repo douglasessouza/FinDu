@@ -4,227 +4,176 @@ import os
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
-CATEGORIES = [
-    "Housing", "Food", "Transport", "Health", "Education",
-    "Subscriptions", "Entertainment", "Leisure", "Travel",
-    "Clothing", "Phone", "Car", "Insurance", "Investments",
-    "Salary", "Other Income", "Transfer", "Other"
-]
+CATEGORIES = ["Housing","Food","Transport","Health","Education","Subscriptions","Entertainment","Leisure","Travel","Clothing","Phone","Car","Insurance","Investments","Salary","Other Income","Transfer","Other"]
 
 def get_accounts():
     try:
         r = requests.get(f"{API_URL}/accounts", timeout=15)
-        if r.status_code in [200, 201]:
-            return r.json()
-        return []
-    except Exception as e:
+        return r.json() if r.status_code == 200 else []
+    except:
         return []
 
-def get_recurring_expenses():
+def get_recurring():
     try:
         r = requests.get(f"{API_URL}/recurring-expenses", timeout=15)
-        if r.status_code in [200, 201]:
-            return r.json()
-        return []
-    except Exception as e:
+        return r.json() if r.status_code == 200 else []
+    except:
         return []
 
 def post_data(endpoint, payload):
     try:
-        r = requests.post(f"{API_URL}/{endpoint}", json=payload, timeout=15)
-        return r
+        return requests.post(f"{API_URL}/{endpoint}", json=payload, timeout=15)
     except Exception as e:
+        st.error(f"Erro de conexao: {e}")
         return None
 
-def fmt(amount, currency):
-    if currency in ["BRL", "EUR"]:
-        return f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"{amount:,.2f}"
+def fmt(v, c):
+    if c in ["BRL","EUR"]:
+        return f"{v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+    return f"{v:,.2f}"
 
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
-
-page = st.sidebar.selectbox("Menu", ["Debug", "Dashboard", "Accounts", "Credit Cards", "Recurring Expenses", "Spending by Category", "Transactions"])
+page = st.sidebar.selectbox("Menu", ["Debug","Dashboard","Accounts","Credit Cards","Recurring Expenses","Transactions"])
 
 @st.cache_data(ttl=3600)
-def get_fx_rates():
+def get_fx():
     try:
-        r = requests.get("https://api.exchangerate-api.com/v4/latest/BRL", timeout=10)
-        data = r.json()
-        brl_to_cad = data["rates"]["CAD"]
+        r1 = requests.get("https://api.exchangerate-api.com/v4/latest/BRL", timeout=10)
         r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
-        data2 = r2.json()
-        usd_to_cad = data2["rates"]["CAD"]
-        return {"BRL_CAD": brl_to_cad, "USD_CAD": usd_to_cad}
+        return {"BRL_CAD": r1.json()["rates"]["CAD"], "USD_CAD": r2.json()["rates"]["CAD"]}
     except:
         return {"BRL_CAD": None, "USD_CAD": None}
 
 if page == "Debug":
-    st.headerbug")
+    st.header("Debug")
     st.write(f"API_URL: {API_URL}")
     try:
         r = requests.get(f"{API_URL}/accounts", timeout=15)
-        st.write(f"GET /accounts status: {r.status_code}")
+        st.write(f"GET status: {r.status_code}")
         st.write(f"Response: {r.text[:300]}")
     except Exception as e:
-        st.error(f"GET ERRO: {e}")
+        st.error(f"GET falhou: {e}")
     try:
-        payload = {"name": "Debug", "bank": "Debug", "account_type": "CHECKING", "currency": "BRL", "balance": 1.0, "credit_limit": None, "closing_day": None, "due_day": None}
-        r2 = requests.post(f"{API_URL}/accounts", json=payload, timeout=15)
-        st.write(f"POST /accounts status: {r2.status_code}")
+        p = {"name":"Debug","bank":"Debug","account_type":"CHECKING","currency":"BRL","balance":1.0,"credit_limit":None,"closing_day":None,"due_day":None}
+        r2 = requests.post(f"{API_URL}/accounts", json=p, timeout=15)
+        st.write(f"POST status: {r2.status_code}")
         st.write(f"Response: {r2.text[:300]}")
     except Exception as e:
-        st.error(f"POST ERRO: {e}")
+        st.error(f"POST falhou: {e}")
 
 elif page == "Dashboard":
     st.header("Dashboard")
-    fx = get_fx_rates()
-    col1, col2 = st.columns(2)
-    with col1:
+    fx = get_fx()
+    c1, c2 = st.columns(2)
+    with c1:
         if fx["BRL_CAD"]:
-            st.metric("🇨🇦 1 CAD", f"R$ {fmt(1/fx['BRL_CAD'], 'BRL')}")
-    with col2:
+            st.metric("🇨🇦 1 CAD", f"R$ {fmt(1/fx['BRL_CAD'],'BRL')}")
+    with c2:
         if fx["USD_CAD"]:
-            st.metric("🇺🇸 1 USD", f"CAD$ {fmt(fx['USD_CAD'], 'CAD')}")
+            st.metric("🇺🇸 1 USD", f"CAD$ {fmt(fx['USD_CAD'],'CAD')}")
     st.divider()
     accounts = get_accounts()
     if not accounts:
         st.info("No accounts yet.")
     else:
-        brl_accounts = [a for a in accounts if a["currency"] == "BRL" and a["account_type"] != "CREDIT_CARD"]
-        brl_cards = [a for a in accounts if a["currency"] == "BRL" and a["account_type"] == "CREDIT_CARD"]
-        cad_accounts = [a for a in accounts if a["currency"] == "CAD" and a["account_type"] != "CREDIT_CARD"]
-        cad_cards = [a for a in accounts if a["currency"] == "CAD" and a["account_type"] == "CREDIT_CARD"]
+        brl_acc = [a for a in accounts if a["currency"]=="BRL" and a["account_type"]!="CREDIT_CARD"]
+        brl_cards = [a for a in accounts if a["currency"]=="BRL" and a["account_type"]=="CREDIT_CARD"]
+        cad_acc = [a for a in accounts if a["currency"]=="CAD" and a["account_type"]!="CREDIT_CARD"]
+        cad_cards = [a for a in accounts if a["currency"]=="CAD" and a["account_type"]=="CREDIT_CARD"]
         total_brl = 0
         total_cad = 0
-        if brl_accounts or brl_cards:
+        if brl_acc or brl_cards:
             st.subheader("🇧🇷 Brazil (BRL)")
-            for acc in brl_accounts:
-                card_debt = sum(c["balance"] for c in brl_cards)
-                net = acc["balance"] - card_debt
-                st.metric(label=f"🏦 {acc['name']}", value=f"R$ {fmt(acc['balance'], 'BRL')}", delta=f"Net: R$ {fmt(net, 'BRL')}")
-                total_brl += acc["balance"]
-            for card in brl_cards:
-                st.metric(label=f"💳 {card['name']}", value=f"R$ {fmt(card['balance'], 'BRL')}", delta_color="inverse")
-                total_brl -= card["balance"]
-            st.info(f"Total Brazil: R$ {fmt(total_brl, 'BRL')}")
+            for a in brl_acc:
+                debt = sum(c["balance"] for c in brl_cards)
+                st.metric(f"🏦 {a['name']}", f"R$ {fmt(a['balance'],'BRL')}", f"Net: R$ {fmt(a['balance']-debt,'BRL')}")
+                total_brl += a["balance"]
+            for c in brl_cards:
+                st.metric(f"💳 {c['name']}", f"R$ {fmt(c['balance'],'BRL')}", delta_color="inverse")
+                total_brl -= c["balance"]
+            st.info(f"Total Brazil: R$ {fmt(total_brl,'BRL')}")
             if fx["BRL_CAD"]:
-                st.caption(f"≈ CAD$ {fmt(total_brl * fx['BRL_CAD'], 'CAD')}")
+                st.caption(f"≈ CAD$ {fmt(total_brl*fx['BRL_CAD'],'CAD')}")
         st.divider()
-        if cad_accounts or cad_cards:
+        if cad_acc or cad_cards:
             st.subheader("🇨🇦 Canada (CAD)")
-            for acc in cad_accounts:
-                card_debt = sum(c["balance"] for c in cad_cards)
-                net = acc["balance"] - card_debt
-                st.metric(label=f"🏦 {acc['name']}", value=f"CAD$ {fmt(acc['balance'], 'CAD')}", delta=f"Net: CAD$ {fmt(net, 'CAD')}")
-                total_cad += acc["balance"]
-            for card in cad_cards:
-                st.metric(label=f"💳 {card['name']}", value=f"CAD$ {fmt(card['balance'], 'CAD')}", delta_color="inverse")
-                total_cad -= card["balance"]
-            st.info(f"Total Canada: CAD$ {fmt(total_cad, 'CAD')}")
+            for a in cad_acc:
+                debt = sum(c["balance"] for c in cad_cards)
+                st.metric(f"🏦 {a['name']}", f"CAD$ {fmt(a['balance'],'CAD')}", f"Net: CAD$ {fmt(a['balance']-debt,'CAD')}")
+                total_cad += a["balance"]
+            for c in cad_cards:
+                st.metric(f"💳 {c['name']}", f"CAD$ {fmt(c['balance'],'CAD')}", delta_color="inverse")
+                total_cad -= c["balance"]
+            st.info(f"Total Canada: CAD$ {fmt(total_cad,'CAD')}")
         st.divider()
-        total_in_cad = total_cad
-        if fx["BRL_CAD"]:
-            total_in_cad += total_brl * fx["BRL_CAD"]
-        st.metric("Net Worth (CAD)", f"CAD$ {fmt(total_in_cad, 'CAD')}")
+        total_final = total_cad + (total_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
+        st.metric("Net Worth (CAD)", f"CAD$ {fmt(total_final,'CAD')}")
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
-    accounts = [a for a in get_accounts() if a["account_type"] != "CREDIT_CARD"]
+    accounts = [a for a in get_accounts() if a["account_type"]!="CREDIT_CARD"]
+    for a in accounts:
+        st.write(f"**{a['name']}** — {a['bank']} | {a['currency']} {fmt(a['balance'],a['currency'])}")
     if accounts:
-        for acc in accounts:
-            st.write(f"{acc['name']} — {acc[\} {fmt(acc['balance'], acc['currency'])}")
         st.divider()
     with st.form("new_account"):
         name = st.text_input("Account name")
         bank = st.text_input("Bank")
-        account_type = st.selectbox("Type", ["CHECKING", "SAVINGS"])
-        currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
+        atype = st.selectbox("Type", ["CHECKING","SAVINGS"])
+        currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
         balance = st.number_input("Initial balance", value=0.0)
-        submitted = st.form_submit_button("Add Account")
-        if submitted:
-            payload = {"name": name, "bank": bank, "account_type": account_type, "currency": currency, "balance": balance, "credit_limit": None, "closing_day": None, "due_day": None}
-            r = post_data("accounts", payload)
-            if r is not None and r.status_code in [200, 201]:
-                st.success(f"Account created!")
+        if st.form_submit_button("Add Account"):
+            r = post_data("accounts", {"name":name,"bank":bank,"account_type":atype,"currency":currency,"balance":balance,"credit_limit":None,"closing_day":None,"due_day":None})
+            if r is not None and r.status_code in [200,201]:
+                st.success("Account created!")
                 st.rerun()
             else:
-                status = r.status_code if r is not None else "None"
-                text = r.text if r is not None else "No response from API"
-                st.error(f"Error {status}: {text}")
+                st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
 elif page == "Credit Cards":
     st.header("💳 Credit Cards")
-    cards = [a for a in get_accounts() if a["account_type"] == "CREDIT_CARD"]
-    if car:
-        for card in cards:
-            st.write(f"{card['name']} — {card['bank']} | {card['currency']} | Limit: {fmt(card['credit_limit'], card['currency'])} | Due: day {card['due_day']}")
+    cards = [a for a in get_accounts() if a["account_type"]=="CREDIT_CARD"]
+    for c in cards:
+        st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])} | Due: day {c['due_day']}")
+    if cards:
         st.divider()
     with st.form("new_card"):
         name = st.text_input("Card name")
         bank = st.text_input("Bank")
-        currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
-        credit_limit = st.number_input("Credit limit", value=0.0)
-        closing_day = st.number_input("Closing day", min_value=1, max_value=31, value=1)
-        due_day = st.number_input("Due day", min_value=1, max_value=31, value=10)
-        submitted = st.form_submit_button("Add Credit Card")
-        if submitted:
-            payload = {"name": name, "bank": bank, "account_type": "CREDIT_CARD", "currency": currency, "balance": 0.0, "credit_limit": credit_limit, "closing_day": int(closing_day), "due_day": int(due_day)}
-            r = post_data("accounts", payload)
-            if r is not None and r.stas_code in [200, 201]:
-                st.success(f"Card created!")
+        currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
+        limit = st.number_input("Credit limit", value=0.0)
+        closing = st.number_input("Closing day", min_value=1, max_value=31, value=1)
+        due = st.number_input("Due day", min_value=1, max_value=31, value=10)
+        if st.form_submit_button("Add Credit Card"):
+            r = post_data("accounts", {"name":name,"bank":bank,"account_type":"CREDIT_CARD","currency":currency,"balance":0.0,"credit_limit":limit,"closing_day":int(closing),"due_day":int(due)})
+            if r is not None and r.status_code in [200,201]:
+                st.success("Card created!")
                 st.rerun()
             else:
-                status = r.status_code if r is not None else "None"
-                text = r.text if r is not None else "No response from API"
-                st.error(f"Error {status}: {text}")
+                st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
 elif page == "Recurring Expenses":
     st.header("🔄 Recurring Expenses")
-    expenses = get_recurring_expenses()
+    expenses = get_recurring()
+    for e in expenses:
+        st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}")
     if expenses:
-        for exp in expenses:
-            st.write(f"{exp['name']} — {exp['currency']} {fmt(exp['amount'], exp['currency'])} | Due: day {exp['due_day']} | {exp['category'] or 'No category'}")
         st.divider()
     with st.form("new_recurring"):
         name = st.text_input("Name")
         amount = st.number_input("Amount", value=0.0)
-        currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
-        due_day = st.number_input("Due day", min_value=1, max_value=31, value=1)
+        currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
+        due = st.number_input("Due day", min_value=1, max_value=31, value=1)
         category = st.selectbox("Category", CATEGORIES)
-        submittest.form_submit_button("Add")
-        if submitted:
-            payload = {"name": name, "amount": amount, "currency": currency, "due_day": int(due_day), "category": category}
-            r = post_data("recurring-expenses", payload)
-            if r is not None and r.status_code in [200, 201]:
+        if st.form_submit_button("Add"):
+            r = post_data("recurring-expenses", {"name":name,"amount":amount,"currency":currency,"due_day":int(due),"category":category})
+            if r is not None and r.status_code in [200,201]:
                 st.success("Added!")
                 st.rerun()
             else:
-                status = r.status_code if r is not None else "None"
-                text = r.text if r is not None else "No response from API"
-                st.error(f"Error {status}: {text}")
-
-elif page == "Spending by Category":
-    import plotly.express as px
-    import pandas as pd
-    st.header("📊 Spending by Category")
-    currency_filter = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
-    try:
-        r = requests.get(f"{API_URL}/spending-by-category", params={"currency": currency_filter}, timeout=15)
-        data = r.json()
-        if not data:
-            st.info("No transactions yet.")
-        else:
-            expses = {k: v for k, v in data.items() if v < 0}
-            if expenses:
-                df = pd.DataFrame(list(expenses.items()), columns=["Category", "Amount"])
-                df["Amount"] = df["Amount"].abs()
-                df = df.sort_values("Amount", ascending=False)
-                fig = px.bar(df, x="Category", y="Amount", title="Expenses by Category", color="Category")
-                st.plotly_chart(fig, use_container_width=True)
-    except Exception as e:
-        st.error(f"Error: {e}")
+                st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
 elif page == "Transactions":
     st.header("Transactions")
@@ -236,17 +185,13 @@ elif page == "Transactions":
             account = st.selectbox("Account", [f"{a['id']} - {a['name']}" for a in accounts])
             description = st.text_input("Description")
             amount = st.number_input("Amount (negative = expense)", value=0.0)
-            currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
+            currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
             date = st.date_input("Date")
             category = st.selectbox("Category", CATEGORIES)
-            submitted = st.form_submit_button("Add Transaction")
-            if submitted:
+            if st.form_submit_button("Add Transaction"):
                 account_id = int(account.split(" - ")[0])
-                payload = {"account_id": account_id, "description": description, "amount": amount, "currency": currency, "date": str(date) + "T00:00:00", "category": category}
-                r = post_data("transactions", payload)
-                if r is not None and r.status_code in [200, 201]:
+                r = post_data("transactions", {"account_id":account_id,"description":description,"amount":amount,"currency":currency,"date":str(date)+"T00:00:00","category":category})
+                if r is not None and r.status_code in [200,201]:
                     st.success("Transaction added!")
                 else:
-                    status = r.status_code if r is not None else "None"
-                    text = r.text if r is not None else "No response from API"
-                    st.error(f"Error {status}: {text}")
+                    st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
