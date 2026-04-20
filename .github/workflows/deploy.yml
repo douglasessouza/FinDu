@@ -34,4 +34,4 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
-            --set-env-vars "API_URL=https://findu-uwii3tfcqa-ue.a.run.app"
+            --set-env-vars "API_URL=http://localhost:8000"
