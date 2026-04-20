@@ -93,9 +93,12 @@ elif page == "Dashboard":
         total_cad = 0
         if brl_acc or brl_cards:
             st.subheader("🇧🇷 Brazil (BRL)")
+            recurring = get_recurring()
+            brl_exp = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
+            brl_debt = sum(c["balance"] for c in brl_cards)
             for a in brl_acc:
-                debt = sum(c["balance"] for c in brl_cards)
-                st.metric(f"🏦 {a['name']}", f"R$ {fmt(a['balance'],'BRL')}", f"Net: R$ {fmt(a['balance']-debt,'BRL')}")
+                futuro = a["balance"] - brl_exp - brl_debt
+                st.metric(f"🏦 {a['name']}", f"R$ {fmt(a['balance'],'BRL')}", f"Futuro: R$ {fmt(futuro,'BRL')}")
                 total_brl += a["balance"]
             for c in brl_cards:
                 st.metric(f"💳 {c['name']}", f"R$ {fmt(c['balance'],'BRL')}", delta_color="inverse")
@@ -106,9 +109,11 @@ elif page == "Dashboard":
         st.divider()
         if cad_acc or cad_cards:
             st.subheader("🇨🇦 Canada (CAD)")
+            cad_exp = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
+            cad_debt = sum(c["balance"] for c in cad_cards)
             for a in cad_acc:
-                debt = sum(c["balance"] for c in cad_cards)
-                st.metric(f"🏦 {a['name']}", f"CAD$ {fmt(a['balance'],'CAD')}", f"Net: CAD$ {fmt(a['balance']-debt,'CAD')}")
+                futuro = a["balance"] - cad_exp - cad_debt
+                st.metric(f"🏦 {a['name']}", f"CAD$ {fmt(a['balance'],'CAD')}", f"Futuro: CAD$ {fmt(futuro,'CAD')}")
                 total_cad += a["balance"]
             for c in cad_cards:
                 st.metric(f"💳 {c['name']}", f"CAD$ {fmt(c['balance'],'CAD')}", delta_color="inverse")
@@ -172,25 +177,55 @@ elif page == "Credit Cards":
                 st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
 elif page == "Recurring Expenses":
-    st.header("🔄 Recurring Expenses")
+    st.header("🔄 Recurring Expenses & Income")
+
     expenses = get_recurring()
-    for e in expenses:
-        st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}")
-    if expenses:
+    income_list = [e for e in expenses if e.get("type") == "INCOME"]
+    expense_list = [e for e in expenses if e.get("type") != "INCOME"]
+
+    if income_list:
+        st.subheader("💰 Income")
+        for e in income_list:
+            st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Receive: day {e['due_day']} | {e['category'] or 'No category'}")
         st.divider()
-    with st.form("new_recurring"):
-        name = st.text_input("Name")
-        amount = st.number_input("Amount", value=0.0)
-        currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
-        due = st.number_input("Due day", min_value=1, max_value=31, value=1)
-        category = st.selectbox("Category", CATEGORIES)
-        if st.form_submit_button("Add"):
-            r = post_data("recurring-expenses", {"name":name,"amount":amount,"currency":currency,"due_day":int(due),"category":category})
-            if r is not None and r.status_code in [200,201]:
-                st.success("Added!")
-                st.rerun()
-            else:
-                st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
+
+    if expense_list:
+        st.subheader("💸 Expenses")
+        for e in expense_list:
+            st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}")
+        st.divider()
+
+    tab1, tab2 = st.tabs(["➕ Add Expense", "➕ Add Income"])
+
+    with tab1:
+        with st.form("new_expense"):
+            name = st.text_input("Name", placeholder="e.g. Rent, Netflix")
+            amount = st.number_input("Amount", value=0.0, min_value=0.0)
+            currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
+            due = st.number_input("Due day", min_value=1, max_value=31, value=1)
+            category = st.selectbox("Category", CATEGORIES)
+            if st.form_submit_button("Add Expense"):
+                r = post_data("recurring-expenses", {"name":name,"amount":amount,"currency":currency,"due_day":int(due),"category":category,"type":"EXPENSE"})
+                if r is not None and r.status_code in [200,201]:
+                    st.success("Expense added!")
+                    st.rerun()
+                else:
+                    st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
+
+    with tab2:
+        with st.form("new_income"):
+            name = st.text_input("Name", placeholder="e.g. Salary, Freelance")
+            amount = st.number_input("Amount", value=0.0, min_value=0.0)
+            currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
+            due = st.number_input("Receive day", min_value=1, max_value=31, value=1)
+            category = st.selectbox("Category", ["Salary","Other Income","Transfer","Other"])
+            if st.form_submit_button("Add Income"):
+                r = post_data("recurring-expenses", {"name":name,"amount":amount,"currency":currency,"due_day":int(due),"category":category,"type":"INCOME"})
+                if r is not None and r.status_code in [200,201]:
+                    st.success("Income added!")
+                    st.rerun()
+                else:
+                    st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
 elif page == "Transactions":
     st.header("Transactions")
