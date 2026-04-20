@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -37,24 +37,10 @@ def get_db():
         db.close()
 
 CATEGORIES = [
-    "Housing",
-    "Food",
-    "Transport",
-    "Health",
-    "Education",
-    "Subscriptions",
-    "Entertainment",
-    "Leisure",
-    "Travel",
-    "Clothing",
-    "Phone",
-    "Car",
-    "Insurance",
-    "Investments",
-    "Salary",
-    "Other Income",
-    "Transfer",
-    "Other"
+    "Housing", "Food", "Transport", "Health", "Education",
+    "Subscriptions", "Entertainment", "Leisure", "Travel",
+    "Clothing", "Phone", "Car", "Insurance", "Investments",
+    "Salary", "Other Income", "Transfer", "Other"
 ]
 
 @app.get("/categories")
@@ -85,6 +71,7 @@ class RecurringExpenseCreate(BaseModel):
     currency: CurrencyEnum
     due_day: int
     category: Optional[str] = None
+    type: RecurringTypeEnum = RecurringTypeEnum.EXPENSE
 
 @app.get("/health")
 def health_check():
@@ -131,7 +118,6 @@ def list_transactions(account_id: Optional[int] = None, db: Session = Depends(ge
 
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
-    from app.models import RecurringExpense
     db_expense = RecurringExpense(**expense.model_dump())
     db.add(db_expense)
     db.commit()
@@ -140,7 +126,6 @@ def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depe
 
 @app.get("/recurring-expenses")
 def list_recurring_expenses(db: Session = Depends(get_db)):
-    from app.models import RecurringExpense
     return db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()
 
 @app.get("/spending-by-category")

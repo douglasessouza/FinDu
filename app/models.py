@@ -16,6 +16,10 @@ class AccountTypeEnum(enum.Enum):
     SAVINGS = "SAVINGS"         # Savings account
     CREDIT_CARD = "CREDIT_CARD" # Credit card
 
+class RecurringTypeEnum(enum.Enum):
+    EXPENSE = "EXPENSE"
+    INCOME = "INCOME"
+
 class Account(Base):
     __tablename__ = "accounts"
 
@@ -50,6 +54,7 @@ class RecurringExpense(Base):
     amount = Column(Float, nullable=False)        # Fixed monthly amount
     currency = Column(Enum(CurrencyEnum), nullable=False)
     due_day = Column(Integer, nullable=False)    # Day of month it's due (1-31)
+    type = Column(Enum(RecurringTypeEnum), nullable=False, default=RecurringTypeEnum.EXPENSE)
     category = Column(String, nullable=True)     # e.g. "housing", "subscriptions"
     is_active = Column(Boolean, default=True)    # Can be deactivated without deleting
     created_at = Column(DateTime, default=datetime.utcnow)
