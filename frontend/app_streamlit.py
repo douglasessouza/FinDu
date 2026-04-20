@@ -26,6 +26,11 @@ def get_recurring_expenses():
     except:
         return []
 
+def fmt(amount, currency):
+    if currency in ["BRL", "EUR"]:
+        return f"{amount:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{amount:,.2f}"
+
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
@@ -51,12 +56,12 @@ if page == "Dashboard":
     col1, col2 = st.columns(2)
     with col1:
         if fx["BRL_CAD"]:
-            st.metric("🇨🇦 1 CAD →", f"R$ {1/fx['BRL_CAD']:.2f}")
+            st.metric("🇨🇦 1 CAD →", f"R$ {fmt(1/fx['BRL_CAD'], 'BRL')}")
         else:
             st.warning("FX unavailable")
     with col2:
         if fx["USD_CAD"]:
-            st.metric("🇺🇸 1 USD →", f"CAD$ {fx['USD_CAD']:.2f}")
+            st.metric("🇺🇸 1 USD →", f"CAD$ {fmt(fx['USD_CAD'], 'CAD')}")
         else:
             st.warning("FX unavailable")
     st.divider()
@@ -75,41 +80,41 @@ if page == "Dashboard":
             for acc in brl_accounts:
                 card_debt = sum(c["balance"] for c in brl_cards)
                 net = acc["balance"] - card_debt
-                st.metric(label=f"🏦 {acc['name']}", value=f"R$ {acc['balance']:.2f}", delta=f"Net: R$ {net:.2f}")
+                st.metric(label=f"🏦 {acc['name']}", value=f"R$ {fmt(acc['balance'], 'BRL')}", delta=f"Net: R$ {fmt(net, 'BRL')}")
                 total_brl += acc["balance"]
             for card in brl_cards:
-                st.metric(label=f"💳 {card['name']}", value=f"R$ {card['balance']:.2f}",
+                st.metric(label=f"💳 {card['name']}", value=f"R$ {fmt(card['balance'], 'BRL')}",
                          delta=f"Due day: {card['due_day']}" if card['due_day'] else None, delta_color="inverse")
                 total_brl -= card["balance"]
-            st.info(f"**Total Brazil: R$ {total_brl:.2f}**")
+            st.info(f"**Total Brazil: R$ {fmt(total_brl, 'BRL')}**")
             if fx["BRL_CAD"]:
-                st.caption(f"≈ CAD$ {total_brl * fx['BRL_CAD']:.2f}")
+                st.caption(f"≈ CAD$ {fmt(total_brl * fx['BRL_CAD'], 'CAD')}")
         st.divider()
         if cad_accounts or cad_cards:
             st.subheader("🇨🇦 Canada (CAD)")
             for acc in cad_accounts:
                 card_debt = sum(c["balance"] for c in cad_cards)
                 net = acc["balance"] - card_debt
-                st.metric(label=f"🏦 {acc['name']}", value=f"CAD$ {acc['balance']:.2f}", delta=f"Net: CAD$ {net:.2f}")
+                st.metric(label=f"🏦 {acc['name']}", value=f"CAD$ {fmt(acc['balance'], 'CAD')}", delta=f"Net: CAD$ {fmt(net, 'CAD')}")
                 total_cad += acc["balance"]
             for card in cad_cards:
-                st.metric(label=f"💳 {card['name']}", value=f"CAD$ {card['balance']:.2f}",
+                st.metric(label=f"💳 {card['name']}", value=f"CAD$ {fmt(card['balance'], 'CAD')}",
                          delta=f"Due day: {card['due_day']}" if card['due_day'] else None, delta_color="inverse")
                 total_cad -= card["balance"]
-            st.info(f"**Total Canada: CAD$ {total_cad:.2f}**")
+            st.info(f"**Total Canada: CAD$ {fmt(total_cad, 'CAD')}**")
         st.divider()
         st.subheader("💰 Total in CAD")
         total_in_cad = total_cad
         if fx["BRL_CAD"]:
             total_in_cad += total_brl * fx["BRL_CAD"]
-        st.metric("Net Worth", f"CAD$ {total_in_cad:.2f}")
+        st.metric("Net Worth", f"CAD$ {fmt(total_in_cad, 'CAD')}")
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
     accounts = [a for a in get_accounts() if a["account_type"] != "CREDIT_CARD"]
     if accounts:
         for acc in accounts:
-            st.write(f"**{acc['name']}** — {acc['bank']} | {acc['currency']} {acc['balance']:.2f}")
+            st.write(f"**{acc['name']}** — {acc['bank']} | {acc['currency']} {fmt(acc['balance'], acc['currency'])}")
         st.divider()
     with st.form("new_account"):
         name = st.text_input("Account name", placeholder="e.g. Nubank Personal")
@@ -134,7 +139,7 @@ elif page == "Credit Cards":
     cards = [a for a in get_accounts() if a["account_type"] == "CREDIT_CARD"]
     if cards:
         for card in cards:
-            st.write(f"**{card['name']}** — {card['bank']} | {card['currency']} | Limit: {card['credit_limit']} | Due: day {card['due_day']}")
+            st.write(f"**{card['name']}** — {card['bank']} | {card['currency']} | Limit: {fmt(card['credit_limit'], card['currency'])} | Due: day {card['due_day']}")
         st.divider()
     with st.form("new_card"):
         name = st.text_input("Card name", placeholder="e.g. Nubank Black")
@@ -160,7 +165,7 @@ elif page == "Recurring Expenses":
     expenses = get_recurring_expenses()
     if expenses:
         for exp in expenses:
-            st.write(f"**{exp['name']}** — {exp['currency']} {exp['amount']:.2f} | Due: day {exp['due_day']} | {exp['category'] or 'No category'}")
+            st.write(f"**{exp['name']}** — {exp['currency']} {fmt(exp['amount'], exp['currency'])} | Due: day {exp['due_day']} | {exp['category'] or 'No category'}")
         st.divider()
     with st.form("new_recurring"):
         name = st.text_input("Name", placeholder="e.g. Rent, Netflix, Gym")
@@ -198,7 +203,7 @@ elif page == "Spending by Category":
                 df["Amount"] = df["Amount"].abs()
                 df = df.sort_values("Amount", ascending=False)
                 for _, row in df.iterrows():
-                    st.metric(row["Category"], f"{currency_filter} {row['Amount']:.2f}")
+                    st.metric(row["Category"], f"{currency_filter} {fmt(row['Amount'], currency_filter)}")
                 fig = px.bar(df, x="Category", y="Amount", title="Expenses by Category", color="Category")
                 st.plotly_chart(fig, use_container_width=True)
             if income:
@@ -206,7 +211,7 @@ elif page == "Spending by Category":
                 df2 = pd.DataFrame(list(income.items()), columns=["Category", "Amount"])
                 df2 = df2.sort_values("Amount", ascending=False)
                 for _, row in df2.iterrows():
-                    st.metric(row["Category"], f"{currency_filter} {row['Amount']:.2f}")
+                    st.metric(row["Category"], f"{currency_filter} {fmt(row['Amount'], currency_filter)}")
     except:
         st.error("Could not load spending data.")
 
