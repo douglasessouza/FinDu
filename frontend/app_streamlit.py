@@ -42,7 +42,7 @@ def fmt(v, c):
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
-page = st.sidebar.selectbox("Menu", ["Debug","Dashboard","Accounts","Credit Cards","Recurring Expenses","Transactions"])
+page = st.sidebar.selectbox("Menu", ["Debug","Dashboard","Monthly View","Accounts","Credit Cards","Recurring Expenses","Transactions"])
 
 @st.cache_data(ttl=3600)
 def get_fx():
@@ -129,6 +129,62 @@ elif page == "Dashboard":
         st.subheader("💰 Net Worth (CAD)")
         st.caption(f"Soma de todos os saldos convertidos para CAD — 🇧🇷 R$ {fmt(total_brl,'BRL')} ≈ CAD$ {fmt(total_brl * fx['BRL_CAD'] if fx['BRL_CAD'] else 0,'CAD')} + 🇨🇦 CAD$ {fmt(total_cad,'CAD')}")
         st.metric("Total atual", f"CAD$ {fmt(total_bruto,'CAD')}", f"Futuro (após despesas do mês): CAD$ {fmt(total_futuro,'CAD')}")
+
+elif page == "Monthly View":
+    from datetime import date
+    import calendar
+    st.header("📅 Monthly View")
+    today = date.today()
+    if "mv_year" not in st.session_state:
+        st.session_state.mv_year = today.year
+    if "mv_month" not in st.session_state:
+        st.session_state.mv_month = today.month
+    col_prev, col_title, col_next = st.columns([1, 3, 1])
+    with col_prev:
+        if st.button("←"):
+            if st.session_state.mv_month == 1:
+                st.session_state.mv_month = 12
+                st.session_state.mv_year -= 1
+            else:
+                st.session_state.mv_month -= 1
+            st.rerun()
+    with col_title:
+        month_name = calendar.month_name[st.session_state.mv_month]
+        st.subheader(f"{month_name} {st.session_state.mv_year}")
+    with col_next:
+        if st.button("→"):
+            if st.session_state.mv_month == 12:
+                st.session_state.mv_month = 1
+                st.session_state.mv_year += 1
+            else:
+                st.session_state.mv_month += 1
+            st.rerun()
+    st.divider()
+    recurring = get_recurring()
+    fx = get_fx()
+    for currency, flag, symbol in [("CAD", "🇨🇦", "CAD$"), ("BRL", "🇧🇷", "R$")]:
+        st.subheader(f"{flag} {currency}")
+        income = [e for e in recurring if e["currency"]==currency and e.get("type")=="INCOME"]
+        expenses = [e for e in recurring if e["currency"]==currency and e.get("type")!="INCOME"]
+        total_income = sum(e["amount"] for e in income)
+        total_expense = sum(e["amount"] for e in expenses)
+        balance = total_income - total_expense
+        if income:
+            st.write("**Income**")
+            for e in income:
+                st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
+        if expenses:
+            st.write("**Expenses**")
+            for e in expenses:
+                st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Income", f"{symbol} {fmt(total_income,currency)}")
+        with col2:
+            st.metric("Expenses", f"{symbol} {fmt(total_expense,currency)}")
+        with col3:
+            st.metric("Balance", f"{symbol} {fmt(balance,currency)}", delta=f"{symbol} {fmt(balance,currency)}" if balance >= 0 else None)
+        st.divider()
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
