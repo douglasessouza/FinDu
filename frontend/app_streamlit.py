@@ -239,10 +239,11 @@ elif page == "Credit Cards":
         bank = st.text_input("Bank")
         currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
         limit = st.number_input("Credit limit", value=0.0)
+        current_balance = st.number_input("Current balance (amount you already owe)", value=0.0, min_value=0.0, help="Enter the current outstanding balance on this card. Leave 0 if starting fresh.")
         closing = st.number_input("Closing day", min_value=1, max_value=31, value=1)
         due = st.number_input("Due day", min_value=1, max_value=31, value=10)
         if st.form_submit_button("Add Credit Card"):
-            r = post_data("accounts", {"name":name,"bank":bank,"account_type":"CREDIT_CARD","currency":currency,"balance":0.0,"credit_limit":limit,"closing_day":int(closing),"due_day":int(due)})
+            r = post_data("accounts", {"name":name,"bank":bank,"account_type":"CREDIT_CARD","currency":currency,"balance":current_balance,"credit_limit":limit,"closing_day":int(closing),"due_day":int(due)})
             if r is not None and r.status_code in [200,201]:
                 st.success("Card created!")
                 st.rerun()
