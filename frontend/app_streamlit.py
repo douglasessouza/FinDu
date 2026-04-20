@@ -360,16 +360,24 @@ elif page == "Import Statement":
                     df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
                     df["date_parsed"] = pd.to_datetime(df["date"])
                     bank_detected = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
-                elif "transaction amount" in cols and "description" in cols:
+                elif "transaction amount" in cols and ("item #" in cols or "item#" in cols or "card #" in cols):
                     raw.columns = [c.strip() for c in raw.columns]
                     df = raw.rename(columns={"Transaction Date":"date","Transaction Amount":"amount","Description":"description"})
                     df = df[["date","description","amount"]].dropna(subset=["amount"])
                     df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
                     df["date_parsed"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
                     df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
-                    bank_detected = "Amex"
+                    bank_detected = "Amex/BMO"
+                elif "transaction amount" in cols:
+                    raw.columns = [c.strip() for c in raw.columns]
+                    df = raw.rename(columns={"Transaction Date":"date","Transaction Amount":"amount","Description":"description"})
+                    df = df[["date","description","amount"]].dropna(subset=["amount"])
+                    df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
+                    df["date_parsed"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
+                    df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
+                    bank_detected = "Unknown (Amex/BMO format)"
                 else:
-                    st.error("Unrecognized format. Supported: RBC CSV, Amex CSV.")
+                    st.error(f"Unrecognized format. Columns found: {list(raw.columns)}")
                     df = None
                     bank_detected = None
 
