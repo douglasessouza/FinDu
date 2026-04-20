@@ -82,6 +82,7 @@ elif page == "Dashboard":
             st.metric("🇺🇸 1 USD", f"CAD$ {fmt(fx['USD_CAD'],'CAD')}")
     st.divider()
     accounts = get_accounts()
+    recurring = get_recurring()
     if not accounts:
         st.info("No accounts yet.")
     else:
@@ -93,7 +94,6 @@ elif page == "Dashboard":
         total_cad = 0
         if brl_acc or brl_cards:
             st.subheader("🇧🇷 Brazil (BRL)")
-            recurring = get_recurring()
             brl_exp = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
             brl_debt = sum(c["balance"] for c in brl_cards)
             for a in brl_acc:
@@ -120,7 +120,7 @@ elif page == "Dashboard":
                 total_cad -= c["balance"]
             st.info(f"Total Canada: CAD$ {fmt(total_cad,'CAD')}")
         st.divider()
-        recurring = get_recurring()
+        total_exp_cad = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
         total_exp_cad = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
         total_exp_brl = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
         total_exp_brl_in_cad = total_exp_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0
