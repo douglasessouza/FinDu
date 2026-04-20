@@ -102,6 +102,15 @@ def create_account(account: AccountCreate, db: Session = Depends(get_db)):
 def list_accounts(db: Session = Depends(get_db)):
     return db.query(Account).all()
 
+@app.delete("/accounts/{account_id}")
+def delete_account(account_id: int, db: Session = Depends(get_db)):
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    db.delete(account)
+    db.commit()
+    return {"message": f"Account {account_id} deleted"}
+
 @app.post("/transactions")
 def create_transaction(transaction: TransactionCreate, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == transaction.account_id).first()

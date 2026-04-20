@@ -27,6 +27,13 @@ def post_data(endpoint, payload):
         st.error(f"Erro de conexao: {e}")
         return None
 
+def delete_data(endpoint, id):
+    try:
+        return requests.delete(f"{API_URL}/{endpoint}/{id}", timeout=15)
+    except Exception as e:
+        st.error(f"Erro: {e}")
+        return None
+
 def fmt(v, c):
     if c in ["BRL","EUR"]:
         return f"{v:,.2f}".replace(",","X").replace(".",",").replace("X",".")
@@ -115,7 +122,17 @@ elif page == "Accounts":
     st.header("🏦 Bank Accounts")
     accounts = [a for a in get_accounts() if a["account_type"]!="CREDIT_CARD"]
     for a in accounts:
-        st.write(f"**{a['name']}** — {a['bank']} | {a['currency']} {fmt(a['balance'],a['currency'])}")
+        col1, col2 = st.columns([5, 1])
+        with col1:
+            st.write(f"**{a['name']}** — {a['bank']} | {a['currency']} {fmt(a['balance'],a['currency'])}")
+        with col2:
+            if st.button("🗑️", key=f"del_{a['id']}"):
+                r = delete_data("accounts", a["id"])
+                if r is not None and r.status_code in [200,204]:
+                    st.success("Account deleted!")
+                    st.rerun()
+                else:
+                    st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
     if accounts:
         st.divider()
     with st.form("new_account"):
