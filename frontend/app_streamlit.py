@@ -18,7 +18,6 @@ def get_accounts():
             return r.json()
         return []
     except Exception as e:
-        st.error(f"GET /accounts falhou: {e}")
         return []
 
 def get_recurring_expenses():
@@ -35,7 +34,6 @@ def post_data(endpoint, payload):
         r = requests.post(f"{API_URL}/{endpoint}", json=payload, timeout=15)
         return r
     except Exception as e:
-        st.error(f"POST /{endpoint} falhou: {e}")
         return None
 
 def fmt(amount, currency):
@@ -58,41 +56,37 @@ def get_fx_rates():
         r2 = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=10)
         data2 = r2.json()
         usd_to_cad = data2["rates"]["CAD"]
-        return {"BRL_CAD": brl_to_cad, "USD_CADsd_to_cad}
+        return {"BRL_CAD": brl_to_cad, "USD_CAD": usd_to_cad}
     except:
         return {"BRL_CAD": None, "USD_CAD": None}
 
 if page == "Debug":
-    st.header("🔧 Debug")
-    st.write(f"**API_URL:** `{API_URL}`")
-    st.divider()
-    st.subheader("GET /accounts")
+    st.headerbug")
+    st.write(f"API_URL: {API_URL}")
     try:
         r = requests.get(f"{API_URL}/accounts", timeout=15)
-        st.write(f"Status: `{r.status_code}`")
-        st.write(f"Response: `{r.text[:300]}`")
+        st.write(f"GET /accounts status: {r.status_code}")
+        st.write(f"Response: {r.text[:300]}")
     except Exception as e:
-        st.error(f"ERRO: {e}")
-    st.divider()
-    st.subheader("POST /accounts")
+        st.error(f"GET ERRO: {e}")
     try:
-        payload = {"name": "Debug Test", "bank": "Debug", "account_type": "CHECKING", "currency": "BRL", "balance": 1.0, "credit_limit": None, "closing_day": None, "due_day": None}
+        payload = {"name": "Debug", "bank": "Debug", "account_type": "CHECKING", "currency": "BRL", "balance": 1.0, "credit_limit": None, "closing_day": None, "due_day": None}
         r2 = requests.post(f"{API_URL}/accounts", json=payload, timeout=15)
-        st.write(f"Status: `{r2.status_code}`")
-        st.write(f"Response: `{r2.text[:300]}`")
+        st.write(f"POST /accounts status: {r2.status_code}")
+        st.write(f"Response: {r2.text[:300]}")
     except Exception as e:
-        st.error(f"ERRO: {e}")
+        st.error(f"POST ERRO: {e}")
 
 elif page == "Dashboard":
     st.header("Dashboard")
     fx = get_fx_rates()
     col1, col2 = st.columns(2)
-   ith col1:
+    with col1:
         if fx["BRL_CAD"]:
-            st.metric("🇨🇦 1 CAD →", f"R$ {fmt(1/fx['BRL_CAD'], 'BRL')}")
+            st.metric("🇨🇦 1 CAD", f"R$ {fmt(1/fx['BRL_CAD'], 'BRL')}")
     with col2:
         if fx["USD_CAD"]:
-            st.metric("🇺🇸 1 USD →", f"CAD$ {fmt(fx['USD_CAD'], 'CAD')}")
+            st.metric("🇺🇸 1 USD", f"CAD$ {fmt(fx['USD_CAD'], 'CAD')}")
     st.divider()
     accounts = get_accounts()
     if not accounts:
@@ -114,7 +108,7 @@ elif page == "Dashboard":
             for card in brl_cards:
                 st.metric(label=f"💳 {card['name']}", value=f"R$ {fmt(card['balance'], 'BRL')}", delta_color="inverse")
                 total_brl -= card["balance"]
-            st.info(f"**Total Brazil: R$ {fmt(total_brl, 'BRL')}**")
+            st.info(f"Total Brazil: R$ {fmt(total_brl, 'BRL')}")
             if fx["BRL_CAD"]:
                 st.caption(f"≈ CAD$ {fmt(total_brl * fx['BRL_CAD'], 'CAD')}")
         st.divider()
@@ -124,51 +118,48 @@ elif page == "Dashboard":
                 card_debt = sum(c["balance"] for c in cad_cards)
                 net = acc["balance"] - card_debt
                 st.metric(label=f"🏦 {acc['name']}", value=f"CAD$ {fmt(acc['balance'], 'CAD')}", delta=f"Net: CAD$ {fmt(net, 'CAD')}")
-         ance"]
+                total_cad += acc["balance"]
             for card in cad_cards:
                 st.metric(label=f"💳 {card['name']}", value=f"CAD$ {fmt(card['balance'], 'CAD')}", delta_color="inverse")
                 total_cad -= card["balance"]
-            st.info(f"**Total Canada: CAD$ {fmt(total_cad, 'CAD')}**")
+            st.info(f"Total Canada: CAD$ {fmt(total_cad, 'CAD')}")
         st.divider()
-        st.subheader("💰 Total in CAD")
         total_in_cad = total_cad
         if fx["BRL_CAD"]:
             total_in_cad += total_brl * fx["BRL_CAD"]
-        st.metric("Net Worth", f"CAD$ {fmt(total_in_cad, 'CAD')}")
+        st.metric("Net Worth (CAD)", f"CAD$ {fmt(total_in_cad, 'CAD')}")
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
     accounts = [a for a in get_accounts() if a["account_type"] != "CREDIT_CARD"]
     if accounts:
         for acc in accounts:
-            st.write(f"**{acc['name']}** — {acc['bank']} | {acc['currency']} {fmt(acc['balance'], acc['currency'])}")
+            st.write(f"{acc['name']} — {acc[\} {fmt(acc['balance'], acc['currency'])}")
         st.divider()
     with st.form("new_account"):
         name = st.text_input("Account name")
         bank = st.text_input("Bank")
-        account_type = st.selectbox("Type", ["CHECKIVINGS"])
+        account_type = st.selectbox("Type", ["CHECKING", "SAVINGS"])
         currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
         balance = st.number_input("Initial balance", value=0.0)
         submitted = st.form_submit_button("Add Account")
         if submitted:
-            payload = {"name": name, "bank": bank, "account_type": account_type,
-                      "currency": currency, "balance": balance,
-                      "credit_limit": None, "closing_day": None, "due_day": None}
+            payload = {"name": name, "bank": bank, "account_type": account_type, "currency": currency, "balance": balance, "credit_limit": None, "closing_day": None, "due_day": None}
             r = post_data("accounts", payload)
             if r is not None and r.status_code in [200, 201]:
-                st.success(f"Account '{name}' created!")
+                st.success(f"Account created!")
                 st.rerun()
             else:
                 status = r.status_code if r is not None else "None"
-                text = r.text if r is not None else "No response"
+                text = r.text if r is not None else "No response from API"
                 st.error(f"Error {status}: {text}")
 
 elif page == "Credit Cards":
     st.header("💳 Credit Cards")
     cards = [a for a in get_accounts() if a["account_type"] == "CREDIT_CARD"]
-    if cards:
+    if car:
         for card in cards:
-            st.write(f"**{card['name']}** — {card['bank']} | {card['currency']} | Limit: {fmt(card['credit_limit'], card['currency'])} | Due: day {card['due_day']}")
+            st.write(f"{card['name']} — {card['bank']} | {card['currency']} | Limit: {fmt(card['credit_limit'], card['currency'])} | Due: day {card['due_day']}")
         st.divider()
     with st.form("new_card"):
         name = st.text_input("Card name")
@@ -179,16 +170,14 @@ elif page == "Credit Cards":
         due_day = st.number_input("Due day", min_value=1, max_value=31, value=10)
         submitted = st.form_submit_button("Add Credit Card")
         if submitted:
-            payload = {"name": name, "bank": bank, "account_type": "CREDIT_CARD",
-                      "currency": currency, "balance": 0.0,
-                      "credit_limit": credit_limit, "closing_day": int(closing_day), "due_day": int(due_day)}
+            payload = {"name": name, "bank": bank, "account_type": "CREDIT_CARD", "currency": currency, "balance": 0.0, "credit_limit": credit_limit, "closing_day": int(closing_day), "due_day": int(due_day)}
             r = post_data("accounts", payload)
-            if r is not None and r.status_code in [200, 201]:
-                st.success(f"Card '{name}' created!")
+            if r is not None and r.stas_code in [200, 201]:
+                st.success(f"Card created!")
                 st.rerun()
             else:
                 status = r.status_code if r is not None else "None"
-                text = r.text if r is not None else "No response"
+                text = r.text if r is not None else "No response from API"
                 st.error(f"Error {status}: {text}")
 
 elif page == "Recurring Expenses":
@@ -196,25 +185,24 @@ elif page == "Recurring Expenses":
     expenses = get_recurring_expenses()
     if expenses:
         for exp in expenses:
-            st.write(f"**{exp['name']}** — {exp['currency']} {fmt(exp['amount'], exp['currency'])} | Due: day {exp['due_day']} | {exp['category'] or 'No category'}")
+            st.write(f"{exp['name']} — {exp['currency']} {fmt(exp['amount'], exp['currency'])} | Due: day {exp['due_day']} | {exp['category'] or 'No category'}")
         st.divider()
     with st.form("new_recurring"):
         name = st.text_input("Name")
         amount = st.number_input("Amount", value=0.0)
         currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
         due_day = st.number_input("Due day", min_value=1, max_value=31, value=1)
-        category = st.selectbox("Category", CAT
-        submitted = st.form_submit_button("Add Recurring Expense")
+        category = st.selectbox("Category", CATEGORIES)
+        submittest.form_submit_button("Add")
         if submitted:
-            payload = {"name": name, "amount": amount, "currency": currency,
-                      "due_day": int(due_day), "category": category}
+            payload = {"name": name, "amount": amount, "currency": currency, "due_day": int(due_day), "category": category}
             r = post_data("recurring-expenses", payload)
             if r is not None and r.status_code in [200, 201]:
-                st.success(f"'{name}' added!")
+                st.success("Added!")
                 st.rerun()
             else:
                 status = r.status_code if r is not None else "None"
-                text = r.text if r is not None else "No response"
+                text = r.text if r is not None else "No response from API"
                 st.error(f"Error {status}: {text}")
 
 elif page == "Spending by Category":
@@ -226,28 +214,21 @@ elif page == "Spending by Category":
         r = requests.get(f"{API_URL}/spending-by-category", params={"currency": currency_filter}, timeout=15)
         data = r.json()
         if not data:
-           t.info("No transactions yet.")
+            st.info("No transactions yet.")
         else:
-            expenses = {k: v for k, v in data.items() if v < 0}
-            income = {k: v for k, v in data.items() if v > 0}
+            expses = {k: v for k, v in data.items() if v < 0}
             if expenses:
-                st.subheader("💸 Expenses")
                 df = pd.DataFrame(list(expenses.items()), columns=["Category", "Amount"])
                 df["Amount"] = df["Amount"].abs()
                 df = df.sort_values("Amount", ascending=False)
                 fig = px.bar(df, x="Category", y="Amount", title="Expenses by Category", color="Category")
                 st.plotly_chart(fig, use_container_width=True)
-            if income:
-                st.subheader("💰 Income")
-                df2 = pd.DataFrame(list(income.items()), columns=["Category", "Amount"])
-                df2 = df2.sort_values("Amount", ascending=False)
-                st.dataframe(df2)
     except Exception as e:
-        st.error(f"Could not load spending data: {e}")
+        st.error(f"Error: {e}")
 
 elif page == "Transactions":
     st.header("Transactions")
-    accoun get_accounts()
+    accounts = get_accounts()
     if not accounts:
         st.warning("Create an account first!")
     else:
@@ -261,13 +242,11 @@ elif page == "Transactions":
             submitted = st.form_submit_button("Add Transaction")
             if submitted:
                 account_id = int(account.split(" - ")[0])
-                payload = {"account_id": account_id, "description": description,
-                          "amount": amount, "currency": currency,
-                          "date": str(date) + "T00:00:00", "category": category}
+                payload = {"account_id": account_id, "description": description, "amount": amount, "currency": currency, "date": str(date) + "T00:00:00", "category": category}
                 r = post_data("transactions", payload)
                 if r is not None and r.status_code in [200, 201]:
                     st.success("Transaction added!")
                 else:
                     status = r.status_code if r is not None else "None"
-                    text = r.text if r is not None else "No response"
+                    text = r.text if r is not None else "No response from API"
                     st.error(f"Error {status}: {text}")
