@@ -333,16 +333,22 @@ elif page == "Import Statement":
     import json
     st.header("📂 Import Bank Statement")
     st.caption("Upload your RBC CSV and let AI categorize your transactions.")
-    uploaded = st.file_uploader("Upload RBC CSV", type=["csv"])
+
+    uploaded = st.file_uploader("📁 Select your RBC CSV file", type=["csv"])
+
     if uploaded:
         df = pd.read_csv(uploaded)
         df = df.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
         df = df[["date","description","amount"]].dropna(subset=["amount"])
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
         df = df.dropna(subset=["amount"])
-        st.info(f"Found **{len(df)}** transactions from **{df['date'].min()}** to **{df['date'].max()}**")
-        if st.button("🤖 Analyze with AI"):
-            with st.spinner("AI is reading your statement..."):
+
+        st.success(f"✅ File loaded: **{len(df)} transactions** from **{df['date'].min()}** to **{df['date'].max()}**")
+        st.dataframe(df, use_container_width=True)
+        st.divider()
+
+        if st.button("🤖 Analyze with AI", type="primary"):
+            with st.spinner("AI is reading and categorizing your transactions... this may take 15-30 seconds."):
                 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
                 recurring = get_recurring()
                 recurring_names = [e["name"] for e in recurring]
@@ -380,27 +386,37 @@ Return ONLY the JSON array, no markdown, no explanation."""
                     ai_text = resp.json()["content"][0]["text"]
                     analyzed = json.loads(ai_text)
                     st.session_state["analyzed"] = analyzed
-                    st.success(f"AI analyzed {len(analyzed)} transactions!")
+                    st.rerun()
                 except Exception as e:
                     st.error(f"AI error: {e}")
+                    st.write(resp.json() if 'resp' in dir() else "No response")
+
     if "analyzed" in st.session_state:
-        st.subheader("📋 Review & Confirm")
-        st.caption("Edit any field before importing.")
+        analyzed = st.session_state["analyzed"]
+        st.subheader(f"📋 Review & Confirm ({len(analyzed)} transactions)")
+        st.caption("Edit any field before importing. Uncheck 'Recurring?' if incorrect.")
         edited = st.data_editor(
-            st.session_state["analyzed"],
+            analyzed,
             column_config={
-                "date": st.column_config.TextColumn("Date"),
-                "description": st.column_config.TextColumn("Description"),
-                "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
-                "category": st.column_config.SelectboxColumn("Category", options=CATEGORIES),
-                "is_recurring": st.column_config.CheckboxColumn("Recurring?"),
-                "recurring_match": st.column_config.TextColumn("Recurring Match"),
+                "date": st.column_config.TextColumn("Date", width="small"),
+                "description": st.column_config.TextColumn("Description", width="large"),
+                "amount": st.column_config.NumberColumn("Amount", format="%.2f", width="small"),
+                "category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="medium"),
+                "is_recurring": st.column_config.CheckboxColumn("Recurring?", width="small"),
+                "recurring_match": st.column_config.TextColumn("Recurring Match", width="medium"),
             },
             use_container_width=True,
-            num_rows="fixed"
+            num_rows="fixed",
+            height=400
         )
         st.divider()
-        if st.button("✅ Import Transactions", type="primary"):
+        col1, col2 = st.columns([1,1])
+        with col1:
+            st.metric("Total Expenses", f"CAD$ {fmt(abs(sum(t['amount'] for t in analyzed if t['amount'] < 0)),'CAD')}")
+        with col2:
+            st.metric("Total Income", f"CAD$ {fmt(sum(t['amount'] for t in analyzed if t['amount'] > 0),'CAD')}")
+        st.divider()
+        if st.button("✅ Import All Transactions", type="primary"):
             accounts = get_accounts()
             cad_accounts = [a for a in accounts if a["currency"]=="CAD" and a["account_type"]!="CREDIT_CARD"]
             if not cad_accounts:
@@ -409,26 +425,30 @@ Return ONLY the JSON array, no markdown, no explanation."""
                 account_id = cad_accounts[0]["id"]
                 success = 0
                 errors = 0
-                for t in edited:
-                    try:
-                        from datetime import datetime
-                        date_obj = datetime.strptime(t["date"], "%m/%d/%Y")
-                        r = post_data("transactions", {
-                            "account_id": account_id,
-                            "description": t["description"],
-                            "amount": float(t["amount"]),
-                            "currency": "CAD",
-                            "date": date_obj.strftime("%Y-%m-%dT%H:%M:%S"),
-                            "category": t["category"]
-                        })
-                        if r and r.status_code in [200, 201]:
-                            success += 1
-                        else:
+                with st.spinner("Importing..."):
+                    for t in edited:
+                        try:
+                            from datetime import datetime
+                            date_obj = datetime.strptime(t["date"], "%m/%d/%Y")
+                            r = post_data("transactions", {
+                                "account_id": account_id,
+                                "description": t["description"],
+                                "amount": float(t["amount"]),
+                                "currency": "CAD",
+                                "date": date_obj.strftime("%Y-%m-%dT%H:%M:%S"),
+                                "category": t["category"]
+                            })
+                            if r and r.status_code in [200, 201]:
+                                success += 1
+                            else:
+                                errors += 1
+                        except Exception as e:
                             errors += 1
-                    except Exception as e:
-                        errors += 1
                 st.success(f"✅ Imported {success} transactions!")
                 if errors:
                     st.warning(f"⚠️ {errors} transactions failed.")
                 del st.session_state["analyzed"]
                 st.rerun()
+        if st.button("🗑️ Clear and start over"):
+            del st.session_state["analyzed"]
+            st.rerun()
