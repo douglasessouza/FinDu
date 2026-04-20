@@ -349,10 +349,19 @@ elif page == "Import Statement":
             try:
                 filename = uploaded.name.lower()
                 if filename.endswith(".xls") or filename.endswith(".xlsx"):
-                    raw = pd.read_excel(uploaded)
+                    try:
+                        raw = pd.read_excel(uploaded, engine="xlrd" if filename.endswith(".xls") else "openpyxl")
+                    except Exception as e:
+                        st.error(f"Could not read XLS file. Please open in Excel → Save As → CSV, then upload the CSV instead.")
+                        raw = None
                 else:
-                    raw = pd.read_csv(uploaded)
-                cols = [c.strip().lower() for c in raw.columns]
+                    raw = pd.read_csv(uploaded, skiprows=0)
+                    # Handle Amex CSV which has extra header rows
+                    if raw.columns[0].startswith("Following"):
+                        raw = pd.read_csv(uploaded, skiprows=2)
+
+                if raw is not None:
+                    cols = [c.strip().lower() for c in raw.columns]
                 if "transaction date" in cols and "cad$" in cols:
                     raw.columns = [c.strip() for c in raw.columns]
                     df = raw.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
@@ -396,7 +405,9 @@ elif page == "Import Statement":
                                 recurring = get_recurring()
                                 recurring_names = [e["name"] for e in recurring]
                                 account_type_hint = "credit card" if is_credit else "chequing/debit"
+                                credit_instruction = "IMPORTANT: This is a credit card statement. Payments like 'Payment - Thank You' should be categorized as 'Transfer' with is_recurring=false. Focus on categorizing the actual purchases/charges." if is_credit else ""
                                 prompt = f"""You are a financial assistant analyzing a Canadian bank statement ({selected_acc['bank']} {account_type_hint}, {bank_detected}).
+{credit_instruction}
 
 Transactions:
 {df.to_csv(index=False)}
@@ -423,6 +434,7 @@ Return ONLY the JSON array, no markdown."""
                                     analyzed = json.loads(ai_text)
                                     st.session_state["analyzed"] = analyzed
                                     st.session_state["import_account_id"] = account_id
+                                    st.session_state["import_is_credit"] = is_credit
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"AI error: {e}")
@@ -449,11 +461,18 @@ Return ONLY the JSON array, no markdown."""
                 num_rows="fixed",
                 height=400
             )
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Expenses", f"CAD$ {fmt(abs(sum(t['amount'] for t in analyzed if t['amount']<0)),'CAD')}")
-            with col2:
-                st.metric("Total Income", f"CAD$ {fmt(sum(t['amount'] for t in analyzed if t['amount']>0),'CAD')}")
+            is_credit_import = st.session_state.get("import_is_credit", False)
+            total_expenses = abs(sum(t['amount'] for t in analyzed if t['amount']<0))
+            total_income = sum(t['amount'] for t in analyzed if t['amount']>0)
+            if is_credit_import:
+                st.info("💳 Credit card import — payments/credits are shown as Transfer and won't affect your balance.")
+                st.metric("Total charges this period", f"CAD$ {fmt(total_expenses,'CAD')}")
+            else:
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Total Expenses", f"CAD$ {fmt(total_expenses,'CAD')}")
+                with col2:
+                    st.metric("Total Income", f"CAD$ {fmt(total_income,'CAD')}")
             st.divider()
             col1, col2 = st.columns(2)
             with col1:
