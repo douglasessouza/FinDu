@@ -179,13 +179,15 @@ elif page == "Monthly View":
             st.write("**Expenses**")
             for e in expenses:
                 st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Income", f"{symbol} {fmt(total_income,currency)}")
+            st.metric("In Bank", f"{symbol} {fmt(account_balance,currency)}")
         with col2:
-            st.metric("Expenses", f"{symbol} {fmt(total_expense,currency)}")
+            st.metric("Income", f"{symbol} {fmt(total_income,currency)}")
         with col3:
-            st.metric("Balance", f"{symbol} {fmt(balance,currency)}", delta=f"{symbol} {fmt(balance,currency)}" if balance >= 0 else None)
+            st.metric("Expenses", f"{symbol} {fmt(total_expense,currency)}")
+        with col4:
+            st.metric("Balance", f"{symbol} {fmt(balance,currency)}")
         st.divider()
 
 elif page == "Accounts":
