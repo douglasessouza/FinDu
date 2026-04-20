@@ -16,7 +16,7 @@ def get_accounts():
     for _ in range(3):  # retry 3 times
         try:
             r = requests.get(f"{API_URL}/accounts", timeout=5)
-            if r.status_code == 200:
+            if r.status_code in [200, 201]:
                 return r.json()
         except:
             pass
@@ -26,7 +26,7 @@ def get_recurring_expenses():
     for _ in range(3):
         try:
             r = requests.get(f"{API_URL}/recurring-expenses", timeout=5)
-            if r.status_code == 200:
+            if r.status_code in [200, 201]:
                 return r.json()
         except:
             pass
@@ -143,7 +143,7 @@ elif page == "Accounts":
                       "currency": currency, "balance": balance,
                       "credit_limit": None, "closing_day": None, "due_day": None}
             r = post_data("accounts", payload)
-            if r.status_code == 200:
+            if r.status_code in [200, 201]:
                 st.success(f"Account '{name}' created!")
                 st.rerun()
             else:
@@ -169,7 +169,7 @@ elif page == "Credit Cards":
                       "currency": currency, "balance": 0.0,
                       "credit_limit": credit_limit, "closing_day": int(closing_day), "due_day": int(due_day)}
             r = post_data("accounts", payload)
-            if r.status_code == 200:
+            if r.status_code in [200, 201]:
                 st.success(f"Card '{name}' created!")
                 st.rerun()
             else:
@@ -193,7 +193,7 @@ elif page == "Recurring Expenses":
             payload = {"name": name, "amount": amount, "currency": currency,
                       "due_day": int(due_day), "category": category}
             r = requests.post(f"{API_URL}/recurring-expenses", json=payload)
-            if r.status_code == 200:
+            if r.status_code in [200, 201]:
                 st.success(f"'{name}' added!")
                 st.rerun()
             else:
@@ -250,7 +250,7 @@ elif page == "Transactions":
                           "amount": amount, "currency": currency,
                           "date": str(date) + "T00:00:00", "category": category}
                 r = post_data("transactions", payload)
-                if r.status_code == 200:
+                if r.status_code in [200, 201]:
                     st.success("Transaction added!")
                 else:
                     st.error("Error adding transaction")
