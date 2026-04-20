@@ -42,7 +42,7 @@ def fmt(v, c):
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
-page = st.sidebar.selectbox("Menu", ["Debug","Dashboard","Monthly View","Accounts","Credit Cards","Recurring Expenses","Transactions"])
+page = st.sidebar.selectbox("Menu", ["Dashboard","Monthly View","Accounts","Credit Cards","Recurring Expenses","Transactions","Import Statement","Debug"])
 
 @st.cache_data(ttl=3600)
 def get_fx():
@@ -327,3 +327,108 @@ elif page == "Transactions":
                     st.success("Transaction added!")
                 else:
                     st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
+
+elif page == "Import Statement":
+    import pandas as pd
+    import json
+    st.header("📂 Import Bank Statement")
+    st.caption("Upload your RBC CSV and let AI categorize your transactions.")
+    uploaded = st.file_uploader("Upload RBC CSV", type=["csv"])
+    if uploaded:
+        df = pd.read_csv(uploaded)
+        df = df.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
+        df = df[["date","description","amount"]].dropna(subset=["amount"])
+        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+        df = df.dropna(subset=["amount"])
+        st.info(f"Found **{len(df)}** transactions from **{df['date'].min()}** to **{df['date'].max()}**")
+        if st.button("🤖 Analyze with AI"):
+            with st.spinner("AI is reading your statement..."):
+                ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+                recurring = get_recurring()
+                recurring_names = [e["name"] for e in recurring]
+                prompt = f"""You are a financial assistant analyzing a Canadian bank statement (RBC Chequing account).
+
+Here are the transactions in CSV format:
+{df.to_csv(index=False)}
+
+Recurring expenses already registered in the system: {recurring_names}
+
+For each transaction return a JSON array where each item has:
+- "date": original date string
+- "description": clean merchant name (remove codes like "CONTACTLESS INTERAC PURCHASE - 1234 ")
+- "amount": numeric amount (negative = expense, positive = income)
+- "category": one of: Housing, Food, Transport, Health, Education, Subscriptions, Entertainment, Leisure, Travel, Clothing, Phone, Car, Insurance, Investments, Salary, Other Income, Transfer, Other
+- "is_recurring": true if matches a known recurring expense or is clearly a regular bill
+- "recurring_match": name of matching recurring expense or null
+
+Return ONLY the JSON array, no markdown, no explanation."""
+                try:
+                    resp = requests.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            "Content-Type": "application/json",
+                            "x-api-key": ANTHROPIC_API_KEY,
+                            "anthropic-version": "2023-06-01"
+                        },
+                        json={
+                            "model": "claude-sonnet-4-20250514",
+                            "max_tokens": 4000,
+                            "messages": [{"role": "user", "content": prompt}]
+                        },
+                        timeout=60
+                    )
+                    ai_text = resp.json()["content"][0]["text"]
+                    analyzed = json.loads(ai_text)
+                    st.session_state["analyzed"] = analyzed
+                    st.success(f"AI analyzed {len(analyzed)} transactions!")
+                except Exception as e:
+                    st.error(f"AI error: {e}")
+    if "analyzed" in st.session_state:
+        st.subheader("📋 Review & Confirm")
+        st.caption("Edit any field before importing.")
+        edited = st.data_editor(
+            st.session_state["analyzed"],
+            column_config={
+                "date": st.column_config.TextColumn("Date"),
+                "description": st.column_config.TextColumn("Description"),
+                "amount": st.column_config.NumberColumn("Amount", format="%.2f"),
+                "category": st.column_config.SelectboxColumn("Category", options=CATEGORIES),
+                "is_recurring": st.column_config.CheckboxColumn("Recurring?"),
+                "recurring_match": st.column_config.TextColumn("Recurring Match"),
+            },
+            use_container_width=True,
+            num_rows="fixed"
+        )
+        st.divider()
+        if st.button("✅ Import Transactions", type="primary"):
+            accounts = get_accounts()
+            cad_accounts = [a for a in accounts if a["currency"]=="CAD" and a["account_type"]!="CREDIT_CARD"]
+            if not cad_accounts:
+                st.error("No CAD account found. Please create one first.")
+            else:
+                account_id = cad_accounts[0]["id"]
+                success = 0
+                errors = 0
+                for t in edited:
+                    try:
+                        from datetime import datetime
+                        date_obj = datetime.strptime(t["date"], "%m/%d/%Y")
+                        r = post_data("transactions", {
+                            "account_id": account_id,
+                            "description": t["description"],
+                            "amount": float(t["amount"]),
+                            "currency": "CAD",
+                            "date": date_obj.strftime("%Y-%m-%dT%H:%M:%S"),
+                            "category": t["category"]
+                        })
+                        if r and r.status_code in [200, 201]:
+                            success += 1
+                        else:
+                            errors += 1
+                    except Exception as e:
+                        errors += 1
+                st.success(f"✅ Imported {success} transactions!")
+                if errors:
+                    st.warning(f"⚠️ {errors} transactions failed.")
+                del st.session_state["analyzed"]
+                st.rerun()
