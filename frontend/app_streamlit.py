@@ -162,13 +162,15 @@ elif page == "Monthly View":
     st.divider()
     recurring = get_recurring()
     fx = get_fx()
+    accounts = get_accounts()
     for currency, flag, symbol in [("CAD", "🇨🇦", "CAD$"), ("BRL", "🇧🇷", "R$")]:
         st.subheader(f"{flag} {currency}")
         income = [e for e in recurring if e["currency"]==currency and e.get("type")=="INCOME"]
         expenses = [e for e in recurring if e["currency"]==currency and e.get("type")!="INCOME"]
         total_income = sum(e["amount"] for e in income)
         total_expense = sum(e["amount"] for e in expenses)
-        balance = total_income - total_expense
+        account_balance = sum(a["balance"] for a in accounts if a["currency"]==currency and a["account_type"]!="CREDIT_CARD")
+        balance = account_balance + total_income - total_expense
         if income:
             st.write("**Income**")
             for e in income:
