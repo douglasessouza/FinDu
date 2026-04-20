@@ -120,8 +120,13 @@ elif page == "Dashboard":
                 total_cad -= c["balance"]
             st.info(f"Total Canada: CAD$ {fmt(total_cad,'CAD')}")
         st.divider()
-        total_final = total_cad + (total_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
-        st.metric("Net Worth (CAD)", f"CAD$ {fmt(total_final,'CAD')}")
+        recurring = get_recurring()
+        total_exp_cad = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
+        total_exp_brl = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
+        total_exp_brl_in_cad = total_exp_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0
+        total_bruto = total_cad + (total_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
+        total_futuro = total_bruto - total_exp_cad - total_exp_brl_in_cad
+        st.metric("Net Worth (CAD)", f"CAD$ {fmt(total_bruto,'CAD')}", f"Futuro: CAD$ {fmt(total_futuro,'CAD')}")
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
@@ -186,13 +191,25 @@ elif page == "Recurring Expenses":
     if income_list:
         st.subheader("💰 Income")
         for e in income_list:
-            st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Receive: day {e['due_day']} | {e['category'] or 'No category'}")
+            col1, col2 = st.columns([6,1])
+            with col1:
+                st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Receive: day {e['due_day']} | {e['category'] or 'No category'}")
+            with col2:
+                if st.button("🗑️", key=f"del_inc_{e['id']}"):
+                    delete_data("recurring-expenses", e["id"])
+                    st.rerun()
         st.divider()
 
     if expense_list:
         st.subheader("💸 Expenses")
         for e in expense_list:
-            st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}")
+            col1, col2 = st.columns([6,1])
+            with col1:
+                st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}")
+            with col2:
+                if st.button("🗑️", key=f"del_exp_{e['id']}"):
+                    delete_data("recurring-expenses", e["id"])
+                    st.rerun()
         st.divider()
 
     tab1, tab2 = st.tabs(["➕ Add Expense", "➕ Add Income"])

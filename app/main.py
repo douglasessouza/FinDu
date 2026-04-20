@@ -128,6 +128,15 @@ def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depe
 def list_recurring_expenses(db: Session = Depends(get_db)):
     return db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()
 
+@app.delete("/recurring-expenses/{expense_id}")
+def delete_recurring_expense(expense_id: int, db: Session = Depends(get_db)):
+    expense = db.query(RecurringExpense).filter(RecurringExpense.id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    db.delete(expense)
+    db.commit()
+    return {"message": f"Expense {expense_id} deleted"}
+
 @app.get("/spending-by-category")
 def spending_by_category(currency: Optional[str] = None, db: Session = Depends(get_db)):
     transactions = db.query(Transaction).all()
