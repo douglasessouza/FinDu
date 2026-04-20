@@ -46,4 +46,4 @@ jobs:
             --region us-east1 \
             --platform managed \
             --allow-unauthenticated \
-            --set-env-vars "API_URL=https://findu-api-534834684098.us-east1.run.app"
+            --set-env-vars "API_URL=https://findu-api-uwii3tfcqa-ue.a.run.app"
