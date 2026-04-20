@@ -27,7 +27,7 @@ jobs:
 
       - name: Build and push Streamlit image
         run: |
-          docker build -f Dockerfile.streamlit -t us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} .
+          docker build --no-cache -f Dockerfile.streamlit -t us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} .
           docker push us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }}
 
       - name: Deploy API to Cloud Run
