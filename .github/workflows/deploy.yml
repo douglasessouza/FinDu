@@ -8,7 +8,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -21,17 +20,30 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker us-east1-docker.pkg.dev
 
-      - name: Build and push Docker image
+      - name: Build and push API image
         run: |
-          docker build -t us-east1-docker.pkg.dev/findu23/findu/findu:${{ github.sha }} .
-          docker push us-east1-docker.pkg.dev/findu23/findu/findu:${{ github.sha }}
+          docker build -f Dockerfile.api -t us-east1-docker.pkg.dev/findu23/findu/findu-api:${{ github.sha }} .
+          docker push us-east1-docker.pkg.dev/findu23/findu/findu-api:${{ github.sha }}
 
-      - name: Deploy to Cloud Run
+      - name: Build and push Streamlit image
         run: |
-          gcloud run deploy findu \
-            --image us-east1-docker.pkg.dev/findu23/findu/findu:${{ github.sha }} \
+          docker build -f Dockerfile.streamlit -t us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} .
+          docker push us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }}
+
+      - name: Deploy API to Cloud Run
+        run: |
+          gcloud run deploy findu-api \
+            --image us-east1-docker.pkg.dev/findu23/findu/findu-api:${{ github.sha }} \
             --region us-east1 \
             --platform managed \
             --allow-unauthenticated \
-            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}" \
-            --set-env-vars "API_URL=http://localhost:8000"
+            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }}"
+
+      - name: Deploy Streamlit to Cloud Run
+        run: |
+          gcloud run deploy findu-app \
+            --image us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} \
+            --region us-east1 \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars "API_URL=https://findu-api-534834684098.us-east1.run.app"
