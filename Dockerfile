@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 8080
 
 # Start both FastAPI (port 8000) and Streamlit (port 8080)
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 & streamlit run frontend/app_streamlit.py --server.port 8080 --server.address 0.0.0.0"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port 8000 & sleep 3 && streamlit run frontend/app_streamlit.py --server.port 8080 --server.address 0.0.0.0"]
