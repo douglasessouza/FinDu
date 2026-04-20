@@ -147,7 +147,7 @@ elif page == "Accounts":
                 st.success(f"Account '{name}' created!")
                 st.rerun()
             else:
-                st.error(f"Error: {r.status_code if r else "No response"} — {r.text if r else "Could not reach API"}")
+                st.error(f'Error: {r.status_code if r else None} — {r.text if r else "Could not reach API"}')
 
 elif page == "Credit Cards":
     st.header("💳 Credit Cards")
