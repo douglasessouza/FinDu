@@ -334,95 +334,118 @@ elif page == "Import Statement":
     from datetime import datetime, date
 
     st.header("📂 Import Bank Statement")
-    st.caption("Upload your bank CSV and let AI categorize your transactions.")
+    st.caption("Supports RBC (Chequing & Credit) and Amex CSV formats. BMO coming soon.")
 
     accounts = get_accounts()
-    checking_accounts = [a for a in accounts if a["account_type"] != "CREDIT_CARD"]
-    card_accounts = [a for a in accounts if a["account_type"] == "CREDIT_CARD"]
+    if not accounts:
+        st.warning("Please create an account first.")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            account_options = [f"{a['id']} | {a['name']} ({a['currency']}) — {'Credit Card' if a['account_type'] == 'CREDIT_CARD' else 'Chequing/Savings'}" for a in accounts]
+            selected_account = st.selectbox("Select account to import into", account_options)
+            account_id = int(selected_account.split("|")[0].strip())
+            selected_acc = next(a for a in accounts if a["id"] == account_id)
+            is_credit = selected_acc["account_type"] == "CREDIT_CARD"
+        with col2:
+            from_date = st.date_input("Import transactions from", value=date.today().replace(day=1))
 
-    col1, col2 = st.columns(2)
-    with col1:
-        account_options = [f"{a['id']} | {a['name']} ({a['currency']}) — {'Chequing/Savings' if a['account_type'] != 'CREDIT_CARD' else 'Credit Card'}" for a in accounts]
-        selected_account = st.selectbox("Select account", account_options)
-        account_id = int(selected_account.split("|")[0].strip())
-        selected_acc = next(a for a in accounts if a["id"] == account_id)
-        is_credit = selected_acc["account_type"] == "CREDIT_CARD"
-    with col2:
-        from_date = st.date_input("Import from date", value=date.today().replace(day=1))
+        st.divider()
+        uploaded = st.file_uploader("📁 Upload CSV file (RBC or Amex)", type=["csv"])
 
-    st.divider()
-    uploaded = st.file_uploader("📁 Select CSV file", type=["csv"])
+        if uploaded:
+            raw = pd.read_csv(uploaded, skiprows=0)
 
-    if uploaded:
-        df = pd.read_csv(uploaded)
-        df = df.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
-        df = df[["date","description","amount"]].dropna(subset=["amount"])
-        df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-        df = df.dropna(subset=["amount"])
-        df["date_parsed"] = pd.to_datetime(df["date"])
-        df = df[df["date_parsed"] >= pd.Timestamp(from_date)]
-        df = df.drop(columns=["date_parsed"])
+            # Auto-detect bank format
+            cols = [c.strip().lower() for c in raw.columns]
 
-        if df.empty:
-            st.warning("No transactions found after the selected date.")
-        else:
-            st.success(f"✅ **{len(df)} transactions** from **{df['date'].min()}** to **{df['date'].max()}**")
-            st.dataframe(df, use_container_width=True)
-            st.divider()
+            if "transaction date" in cols and "cad$" in cols:
+                # RBC format (Chequing or Credit)
+                raw.columns = [c.strip() for c in raw.columns]
+                df = raw.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
+                df = df[["date","description","amount"]].dropna(subset=["amount"])
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+                df["date_parsed"] = pd.to_datetime(df["date"])
+                bank_detected = f"RBC {raw['Account Type'].iloc[0] if 'Account Type' in raw.columns else ''}"
 
-            if st.button("🤖 Analyze with AI", type="primary"):
-                with st.spinner("AI is reading and categorizing your transactions... (15-30 seconds)"):
-                    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-                    recurring = get_recurring()
-                    recurring_names = [e["name"] for e in recurring]
-                    account_type_hint = "credit card" if is_credit else "chequing/debit"
-                    prompt = f"""You are a financial assistant analyzing a Canadian bank statement ({selected_acc['bank']} {account_type_hint} account).
+            elif "transaction amount" in cols and "description" in cols:
+                # Amex format
+                raw.columns = [c.strip() for c in raw.columns]
+                df = raw.rename(columns={"Transaction Date":"date","Transaction Amount":"amount","Description":"description"})
+                df = df[["date","description","amount"]].dropna(subset=["amount"])
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1  # Amex inverts signs
+                df["date"] = pd.to_datetime(df["date"], format="%Y%m%d").dt.strftime("%-m/%-d/%Y")
+                df["date_parsed"] = pd.to_datetime(df["date"])
+                bank_detected = "Amex"
 
-Here are the transactions in CSV format:
+            else:
+                st.error("Unrecognized file format. Supported: RBC CSV, Amex CSV.")
+                df = None
+                bank_detected = None
+
+            if df is not None:
+                df = df.dropna(subset=["amount"])
+                df = df[df["date_parsed"] >= pd.Timestamp(from_date)]
+                df = df.drop(columns=["date_parsed"])
+
+                if df.empty:
+                    st.warning("No transactions found after the selected date.")
+                else:
+                    st.success(f"✅ **{bank_detected}** detected — **{len(df)} transactions** from **{df['date'].min()}** to **{df['date'].max()}**")
+                    st.dataframe(df, use_container_width=True)
+                    st.divider()
+
+                    if st.button("🤖 Analyze with AI", type="primary"):
+                        with st.spinner("AI is reading and categorizing... (15-30 seconds)"):
+                            ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+                            recurring = get_recurring()
+                            recurring_names = [e["name"] for e in recurring]
+                            account_type_hint = "credit card" if is_credit else "chequing/debit"
+                            prompt = f"""You are a financial assistant analyzing a Canadian bank statement ({selected_acc['bank']} {account_type_hint} account, {bank_detected}).
+
+Transactions:
 {df.to_csv(index=False)}
 
-Recurring expenses already registered: {recurring_names}
+Recurring expenses already in system: {recurring_names}
 
-For each transaction return a JSON array where each item has:
+Return a JSON array. Each item:
 - "date": original date string
 - "description": clean merchant name (remove codes like "CONTACTLESS INTERAC PURCHASE - 1234 ")
-- "amount": numeric amount (negative = expense, positive = income)
+- "amount": numeric (negative = expense, positive = income/payment)
 - "category": one of: Housing, Food, Transport, Health, Education, Subscriptions, Entertainment, Leisure, Travel, Clothing, Phone, Car, Insurance, Investments, Salary, Other Income, Transfer, Other
-- "is_recurring": true if matches a known recurring expense or is clearly a regular bill
-- "recurring_match": name of matching recurring expense or null
+- "is_recurring": true if matches known recurring expense or clearly a regular bill
+- "recurring_match": matching recurring name or null
 
-Return ONLY the JSON array, no markdown, no explanation."""
-                    try:
-                        resp = requests.post(
-                            "https://api.anthropic.com/v1/messages",
-                            headers={
-                                "Content-Type": "application/json",
-                                "x-api-key": ANTHROPIC_API_KEY,
-                                "anthropic-version": "2023-06-01"
-                            },
-                            json={
-                                "model": "claude-sonnet-4-6",
-                                "max_tokens": 4000,
-                                "messages": [{"role": "user", "content": prompt}]
-                            },
-                            timeout=60
-                        )
-                        ai_text = resp.json()["content"][0]["text"]
-                        analyzed = json.loads(ai_text)
-                        st.session_state["analyzed"] = analyzed
-                        st.session_state["import_account_id"] = account_id
-                        st.session_state["import_is_credit"] = is_credit
-                        st.session_state["import_balance"] = df[df["amount"] > 0]["amount"].sum() - df[df["amount"] < 0]["amount"].abs().sum()
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"AI error: {e}")
-                        if 'resp' in dir():
-                            st.write(resp.json())
+Return ONLY the JSON array."""
+
+                            try:
+                                resp = requests.post(
+                                    "https://api.anthropic.com/v1/messages",
+                                    headers={
+                                        "Content-Type": "application/json",
+                                        "x-api-key": ANTHROPIC_API_KEY,
+                                        "anthropic-version": "2023-06-01"
+                                    },
+                                    json={
+                                        "model": "claude-sonnet-4-6",
+                                        "max_tokens": 4000,
+                                        "messages": [{"role": "user", "content": prompt}]
+                                    },
+                                    timeout=60
+                                )
+                                ai_text = resp.json()["content"][0]["text"]
+                                analyzed = json.loads(ai_text)
+                                st.session_state["analyzed"] = analyzed
+                                st.session_state["import_account_id"] = account_id
+                                st.session_state["import_is_credit"] = is_credit
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"AI error: {e}")
+                                st.write(resp.json() if 'resp' in locals() else "No response")
 
     if "analyzed" in st.session_state:
         analyzed = st.session_state["analyzed"]
         acc_id = st.session_state["import_account_id"]
-        is_credit = st.session_state["import_is_credit"]
 
         st.subheader(f"📋 Review & Confirm ({len(analyzed)} transactions)")
         st.caption("Edit any field before importing.")
@@ -450,9 +473,6 @@ Return ONLY the JSON array, no markdown, no explanation."""
 
         st.divider()
 
-        update_balance = st.checkbox("Update account balance after import", value=True,
-            help="Updates the account balance based on the net of imported transactions")
-
         col1, col2 = st.columns(2)
         with col1:
             if st.button("✅ Import All Transactions", type="primary"):
@@ -461,7 +481,10 @@ Return ONLY the JSON array, no markdown, no explanation."""
                 with st.spinner("Importing..."):
                     for t in edited:
                         try:
-                            date_obj = datetime.strptime(t["date"], "%m/%d/%Y")
+                            try:
+                                date_obj = datetime.strptime(t["date"], "%m/%d/%Y")
+                            except:
+                                date_obj = datetime.strptime(t["date"], "%Y%m%d")
                             r = post_data("transactions", {
                                 "account_id": acc_id,
                                 "description": t["description"],
