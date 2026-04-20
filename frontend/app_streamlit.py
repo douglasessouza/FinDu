@@ -62,13 +62,14 @@ if page == "Debug":
         st.write(f"Response: {r.text[:300]}")
     except Exception as e:
         st.error(f"GET falhou: {e}")
-    try:
-        p = {"name":"Debug","bank":"Debug","account_type":"CHECKING","currency":"BRL","balance":1.0,"credit_limit":None,"closing_day":None,"due_day":None}
-        r2 = requests.post(f"{API_URL}/accounts", json=p, timeout=15)
-        st.write(f"POST status: {r2.status_code}")
-        st.write(f"Response: {r2.text[:300]}")
-    except Exception as e:
-        st.error(f"POST falhou: {e}")
+    if st.button("Testar POST /accounts"):
+        try:
+            p = {"name":"Debug","bank":"Debug","account_type":"CHECKING","currency":"BRL","balance":1.0,"credit_limit":None,"closing_day":None,"due_day":None}
+            r2 = requests.post(f"{API_URL}/accounts", json=p, timeout=15)
+            st.write(f"POST status: {r2.status_code}")
+            st.write(f"Response: {r2.text[:300]}")
+        except Exception as e:
+            st.error(f"POST falhou: {e}")
 
 elif page == "Dashboard":
     st.header("Dashboard")
@@ -125,7 +126,9 @@ elif page == "Dashboard":
         total_exp_brl_in_cad = total_exp_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0
         total_bruto = total_cad + (total_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
         total_futuro = total_bruto - total_exp_cad - total_exp_brl_in_cad
-        st.metric("Net Worth (CAD)", f"CAD$ {fmt(total_bruto,'CAD')}", f"Futuro: CAD$ {fmt(total_futuro,'CAD')}")
+        st.subheader("💰 Net Worth (CAD)")
+        st.caption(f"Soma de todos os saldos convertidos para CAD — 🇧🇷 R$ {fmt(total_brl,'BRL')} ≈ CAD$ {fmt(total_brl * fx['BRL_CAD'] if fx['BRL_CAD'] else 0,'CAD')} + 🇨🇦 CAD$ {fmt(total_cad,'CAD')}")
+        st.metric("Total atual", f"CAD$ {fmt(total_bruto,'CAD')}", f"Futuro (após despesas do mês): CAD$ {fmt(total_futuro,'CAD')}")
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
