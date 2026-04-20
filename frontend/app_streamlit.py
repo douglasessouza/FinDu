@@ -4,7 +4,9 @@ import os
 
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 
-CATEGORIES = ["Housing","Food","Transport","Health","Education","Subscriptions","Entertainment","Leisure","Travel","Clothing","Phone","Car","Insurance","Investments","Salary","Other Income","Transfer","Other"]
+CATEGORIES = ["Housing","Food","Restaurant","Coffee","Transport","Gas","Health","Wellness","Education",
+"Subscriptions","Entertainment","Leisure","Travel","Clothing","Phone","Car","Insurance","Investments","Salary",
+"Other Income","Transfer","Other"]
 
 def get_accounts():
     try:
@@ -226,7 +228,15 @@ elif page == "Credit Cards":
     st.header("💳 Credit Cards")
     cards = [a for a in get_accounts() if a["account_type"]=="CREDIT_CARD"]
     for c in cards:
-        st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])} | Due: day {c['due_day']}")
+        col1, col2 = st.columns([6,1])
+        with col1:
+            st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])} | Due: day {c['due_day']}")
+        with col2:
+            if st.button("🗑️", key=f"del_card_{c['id']}"):
+                r = delete_data("accounts", c["id"])
+                if r is not None and r.status_code in [200,204]:
+                    st.success("Card deleted!")
+                    st.rerun()
     if cards:
         st.divider()
     with st.form("new_card"):
@@ -343,10 +353,16 @@ elif page == "Import Statement":
         col1, col2 = st.columns(2)
         with col1:
             account_options = [f"{a['id']} | {a['name']} ({a['currency']}) — {'Credit Card' if a['account_type'] == 'CREDIT_CARD' else 'Chequing/Savings'}" for a in accounts]
-            selected_account = st.selectbox("Select account to import into", account_options)
+        if not account_options:
+            st.error("No accounts found. Please create an account first.")
+            st.stop()
+        selected_account = st.selectbox("Select account to import into", account_options)
             account_id = int(selected_account.split("|")[0].strip())
             selected_acc = next(a for a in accounts if a["id"] == account_id)
             is_credit = selected_acc["account_type"] == "CREDIT_CARD"
+            if is_credit and not card_accounts:
+                st.warning("⚠️ You selected a Credit Card import but have no credit cards registered. Please go to Credit Cards and add one first.")
+                st.stop()
         with col2:
             from_date = st.date_input("Import transactions from", value=date.today().replace(day=1))
 
