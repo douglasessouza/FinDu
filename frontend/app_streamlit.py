@@ -179,11 +179,12 @@ elif page == "Monthly View":
             st.write("**Expenses**")
             for e in expenses:
                 st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2 = st.columns(2)
         with col1:
             st.metric("In Bank", f"{symbol} {fmt(account_balance,currency)}")
         with col2:
             st.metric("Income", f"{symbol} {fmt(total_income,currency)}")
+        col3, col4 = st.columns(2)
         with col3:
             st.metric("Expenses", f"{symbol} {fmt(total_expense,currency)}")
         with col4:
