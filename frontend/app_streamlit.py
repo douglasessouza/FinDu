@@ -50,7 +50,7 @@ st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
 
-page = st.sidebar.selectbox("Menu", ["Dashboard", "Accounts", "Credit Cards", "Recurring Expenses", "Spending by Category", "Transactions"])
+page = st.sidebar.selectbox("Menu", ["Debug", "Dashboard", "Accounts", "Credit Cards", "Recurring Expenses", "Spending by Category", "Transactions"])
 
 @st.cache_data(ttl=3600)
 def get_fx_rates():
@@ -254,3 +254,18 @@ elif page == "Transactions":
                     st.success("Transaction added!")
                 else:
                     st.error("Error adding transaction")
+if page == "Debug":
+    st.header("Debug")
+    st.write(f"API_URL: {API_URL}")
+    try:
+        r = requests.get(f"{API_URL}/accounts", timeout=10)
+        st.write(f"GET /accounts status: {r.status_code}")
+        st.write(f"Response: {r.text[:200]}")
+    except Exception as e:
+        st.write(f"ERRO: {e}")
+    try:
+        r2 = requests.post(f"{API_URL}/accounts", json={"name": "Debug", "bank": "Debug", "account_type": "CHECKING", "currency": "BRL", "balance": 1.0, "credit_limit": None, "closing_day": None, "due_day": None}, timeout=10)
+        st.write(f"POST /accounts status: {r2.status_code}")
+        st.write(f"Response: {r2.text[:200]}")
+    except Exception as e:
+        st.write(f"ERRO POST: {e}")
