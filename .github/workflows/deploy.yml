@@ -46,4 +46,4 @@ jobs:
             --region us-east1 \
             --platform managed \
             --allow-unauthenticated \
-            --set-env-vars "API_URL=https://findu-api-uwii3tfcqa-ue.a.run.app"
+            --set-env-vars "API_URL=https://findu-api-uwii3tfcqa-ue.a.run.app,ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
