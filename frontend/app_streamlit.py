@@ -444,8 +444,25 @@ elif page == "Import Statement":
                 elif df.empty:
                     st.warning("No transactions found after the selected date.")
                 else:
-                    st.success(f"✅ **{bank_detected}** — **{len(df)} transactions** from **{df['date'].min()}** to **{df['date'].max()}**")
-                    st.dataframe(df, use_container_width=True)
+                    # Anti-duplicate: check last transaction for this account
+                    try:
+                        last_tx = requests.get(f"{API_URL}/accounts/{account_id}/last-transaction", timeout=10).json()
+                        last_date = last_tx.get("last_date")
+                        if last_date:
+                            last_dt = pd.Timestamp(last_date)
+                            new_df = df[pd.to_datetime(df["date"]) > last_dt]
+                            st.info(f"📅 Last transaction registered: **{last_dt.strftime('%b %d, %Y')}**. Found **{len(new_df)} new transactions** out of {len(df)} in the file.")
+                            df = new_df
+                        else:
+                            st.info("No previous transactions found for this account. Showing all transactions.")
+                    except:
+                        pass
+
+                    if df.empty:
+                        st.success("✅ All transactions in this file are already registered!")
+                    else:
+                        st.success(f"✅ **{bank_detected}** — **{len(df)} new transactions** to import")
+                        st.dataframe(df, use_container_width=True)
                     st.divider()
                     if st.button("🤖 Analyze with AI", type="primary"):
                         with st.spinner("AI is reading and categorizing... (15-30 seconds)"):
