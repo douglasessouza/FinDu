@@ -46,33 +46,58 @@ def fmt(v, c):
 def parse_statement(uploaded, from_date):
     """Auto-detect bank format and return normalized dataframe."""
     filename = uploaded.name.lower()
-    content = uploaded.read().decode("utf-8-sig", errors="ignore")
-    uploaded.seek(0)
 
-    # Amex CSV: semicolon-separated, has "Transaction Details" in header
-    if ";" in content.split("\n")[0] or "Transaction Details" in content[:500]:
-        lines = content.split("\n")
-        header_idx = next((i for i, l in enumerate(lines) if l.startswith("Date;") or l.startswith(";Date")), None)
-        if header_idx is None:
-            # Try finding the actual data header
-            header_idx = next((i for i, l in enumerate(lines) if "Description" in l and "Amount" in l), None)
-        if header_idx is None:
-            return None, "Could not find header row in Amex file."
+    # --- AMEX XLS / XLSX ---
+    if filename.endswith(".xls") or filename.endswith(".xlsx"):
         import io
-        raw = pd.read_csv(io.StringIO(content), sep=";", skiprows=header_idx)
-        raw.columns = [c.strip() for c in raw.columns]
-        df = raw[["Date","Description","Amount"]].copy()
-        df.columns = ["date","description","amount"]
-        df = df.dropna(subset=["description"])
+        file_bytes = uploaded.read()
+        engine = "xlrd" if filename.endswith(".xls") else "openpyxl"
+
+        # Read without header to find the real header row
+        raw_scan = pd.read_excel(io.BytesIO(file_bytes), engine=engine, header=None)
+
+        header_idx = None
+        for i, row in raw_scan.iterrows():
+            vals = [str(v).strip() for v in row.values]
+            if "Date" in vals and "Description" in vals and "Amount" in vals:
+                header_idx = i
+                break
+
+        if header_idx is None:
+            return None, "Could not find transaction header in Amex file."
+
+        # Re-read with the correct header row
+        df_raw = pd.read_excel(io.BytesIO(file_bytes), engine=engine, header=header_idx)
+        df_raw.columns = [str(c).strip() for c in df_raw.columns]
+
+        df = df_raw[["Date", "Description", "Amount"]].copy()
+        df.columns = ["date", "description", "amount"]
+        df = df.dropna(subset=["description", "date"])
         df = df[df["description"].str.strip() != ""]
-        df["amount"] = df["amount"].astype(str).str.replace("$","",regex=False).str.replace(",","",regex=False).str.strip()
+
+        # Clean amount: remove $, commas → make negative (credit card charges)
+        df["amount"] = (
+            df["amount"].astype(str)
+            .str.replace("$", "", regex=False)
+            .str.replace(",", "", regex=False)
+            .str.strip()
+        )
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
-        df["date_parsed"] = pd.to_datetime(df["date"].str.strip(), format="%d %b. %Y", errors="coerce")
+
+        # Parse date: "25 Apr. 2026" → remove dot before parsing
+        df["date_parsed"] = pd.to_datetime(
+            df["date"].astype(str).str.strip().str.replace(".", "", regex=False),
+            format="%d %b %Y",
+            errors="coerce"
+        )
         df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
         bank = "Amex"
 
     else:
-        # Try CSV formats
+        # --- CSV formats (RBC, BMO) ---
+        content = uploaded.read().decode("utf-8-sig", errors="ignore")
+        uploaded.seek(0)
+
         raw = pd.read_csv(uploaded)
         uploaded.seek(0)
         cols = [c.strip().lower() for c in raw.columns]
@@ -80,8 +105,8 @@ def parse_statement(uploaded, from_date):
         if "transaction date" in cols and "cad$" in cols:
             # RBC Chequing or Credit
             raw.columns = [c.strip() for c in raw.columns]
-            df = raw.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
-            df = df[["date","description","amount"]].dropna(subset=["amount"])
+            df = raw.rename(columns={"Transaction Date": "date", "Description 1": "description", "CAD$": "amount"})
+            df = df[["date", "description", "amount"]].dropna(subset=["amount"])
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
             df["date_parsed"] = pd.to_datetime(df["date"])
             bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
@@ -89,8 +114,8 @@ def parse_statement(uploaded, from_date):
         elif "transaction amount" in cols:
             # BMO format
             raw.columns = [c.strip() for c in raw.columns]
-            df = raw.rename(columns={"Transaction Date":"date","Transaction Amount":"amount","Description":"description"})
-            df = df[["date","description","amount"]].dropna(subset=["amount"])
+            df = raw.rename(columns={"Transaction Date": "date", "Transaction Amount": "amount", "Description": "description"})
+            df = df[["date", "description", "amount"]].dropna(subset=["amount"])
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
             df["date_parsed"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
             df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
@@ -99,7 +124,7 @@ def parse_statement(uploaded, from_date):
         else:
             return None, f"Unrecognized format. Columns: {list(raw.columns)}"
 
-    df = df.dropna(subset=["amount","date_parsed"])
+    df = df.dropna(subset=["amount", "date_parsed"])
     df = df[df["date_parsed"] >= pd.Timestamp(from_date)]
     df = df.drop(columns=["date_parsed"])
     return df, bank
@@ -286,7 +311,8 @@ elif page == "Credit Cards":
     for c in cards:
         col1, col2 = st.columns([6,1])
         with col1:
-            st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])} | Due: day {c['due_day']}")
+            closing = f" | Closes: day {c['closing_day']}" if c.get('closing_day') else ""
+            st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])}{closing} | Due: day {c['due_day']}")
         with col2:
             if st.button("🗑️", key=f"del_card_{c['id']}"):
                 r = delete_data("accounts", c["id"])
@@ -391,7 +417,7 @@ elif page == "Transactions":
 
 elif page == "Import Statement":
     st.header("📂 Import Bank Statement")
-    st.caption("Supports RBC (Chequing & Credit), Amex CSV, and BMO CSV.")
+    st.caption("Supports RBC (Chequing & Credit), Amex XLS, and BMO CSV.")
     accounts = get_accounts()
     if not accounts:
         st.warning("Please create an account first.")
@@ -406,7 +432,10 @@ elif page == "Import Statement":
         with col2:
             from_date = st.date_input("Import transactions from", value=date.today().replace(day=1))
         st.divider()
-        uploaded = st.file_uploader("📁 Upload CSV file (RBC, Amex, or BMO)", type=["csv"])
+
+        # ✅ Aceita CSV, XLS e XLSX
+        uploaded = st.file_uploader("📁 Upload statement file (CSV or XLS)", type=["csv", "xls", "xlsx"])
+
         if uploaded:
             try:
                 df, bank_detected = parse_statement(uploaded, from_date)
