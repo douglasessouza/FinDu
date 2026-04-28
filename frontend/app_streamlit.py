@@ -44,87 +44,51 @@ def fmt(v, c):
     return f"{v:,.2f}"
 
 def parse_statement(uploaded, from_date):
-    """Auto-detect bank format and return normalized dataframe."""
     filename = uploaded.name.lower()
+    content = uploaded.read().decode("utf-8-sig", errors="ignore")
+    uploaded.seek(0)
 
-    # --- AMEX XLS / XLSX ---
-    if filename.endswith(".xls") or filename.endswith(".xlsx"):
-        import io
-        file_bytes = uploaded.read()
-        engine = "xlrd" if filename.endswith(".xls") else "openpyxl"
-
-        # Read without header to find the real header row
-        raw_scan = pd.read_excel(io.BytesIO(file_bytes), engine=engine, header=None)
-
-        header_idx = None
-        for i, row in raw_scan.iterrows():
-            vals = [str(v).strip() for v in row.values]
-            if "Date" in vals and "Description" in vals and "Amount" in vals:
-                header_idx = i
-                break
-
+    if ";" in content.split("\n")[0] or "Transaction Details" in content[:500]:
+        lines = content.split("\n")
+        header_idx = next((i for i, l in enumerate(lines) if l.startswith("Date;") or "Description" in l and "Amount" in l and ";" in l), None)
         if header_idx is None:
-            return None, "Could not find transaction header in Amex file."
-
-        # Re-read with the correct header row
-        df_raw = pd.read_excel(io.BytesIO(file_bytes), engine=engine, header=header_idx)
-        df_raw.columns = [str(c).strip() for c in df_raw.columns]
-
-        df = df_raw[["Date", "Description", "Amount"]].copy()
-        df.columns = ["date", "description", "amount"]
-        df = df.dropna(subset=["description", "date"])
+            return None, "Could not find header row in Amex file."
+        import io
+        raw = pd.read_csv(io.StringIO(content), sep=";", skiprows=header_idx)
+        raw.columns = [c.strip() for c in raw.columns]
+        df = raw[["Date","Description","Amount"]].copy()
+        df.columns = ["date","description","amount"]
+        df = df.dropna(subset=["description"])
         df = df[df["description"].str.strip() != ""]
-
-        # Clean amount: remove $, commas → make negative (credit card charges)
-        df["amount"] = (
-            df["amount"].astype(str)
-            .str.replace("$", "", regex=False)
-            .str.replace(",", "", regex=False)
-            .str.strip()
-        )
+        df["amount"] = df["amount"].astype(str).str.replace("$","",regex=False).str.replace(",","",regex=False).str.strip()
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
-
-        # Parse date: "25 Apr. 2026" → remove dot before parsing
-        df["date_parsed"] = pd.to_datetime(
-            df["date"].astype(str).str.strip().str.replace(".", "", regex=False),
-            format="%d %b %Y",
-            errors="coerce"
-        )
+        df["date_parsed"] = pd.to_datetime(df["date"].str.strip(), format="%d %b. %Y", errors="coerce")
         df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
         bank = "Amex"
-
     else:
-        # --- CSV formats (RBC, BMO) ---
-        content = uploaded.read().decode("utf-8-sig", errors="ignore")
-        uploaded.seek(0)
-
         raw = pd.read_csv(uploaded)
         uploaded.seek(0)
         cols = [c.strip().lower() for c in raw.columns]
 
         if "transaction date" in cols and "cad$" in cols:
-            # RBC Chequing or Credit
             raw.columns = [c.strip() for c in raw.columns]
-            df = raw.rename(columns={"Transaction Date": "date", "Description 1": "description", "CAD$": "amount"})
-            df = df[["date", "description", "amount"]].dropna(subset=["amount"])
+            df = raw.rename(columns={"Transaction Date":"date","Description 1":"description","CAD$":"amount"})
+            df = df[["date","description","amount"]].dropna(subset=["amount"])
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
             df["date_parsed"] = pd.to_datetime(df["date"])
             bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
-
         elif "transaction amount" in cols:
-            # BMO format
             raw.columns = [c.strip() for c in raw.columns]
-            df = raw.rename(columns={"Transaction Date": "date", "Transaction Amount": "amount", "Description": "description"})
-            df = df[["date", "description", "amount"]].dropna(subset=["amount"])
+            df = raw.rename(columns={"Transaction Date":"date","Transaction Amount":"amount","Description":"description"})
+            df = df[["date","description","amount"]].dropna(subset=["amount"])
             df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
             df["date_parsed"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
             df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
             bank = "BMO"
-
         else:
             return None, f"Unrecognized format. Columns: {list(raw.columns)}"
 
-    df = df.dropna(subset=["amount", "date_parsed"])
+    df = df.dropna(subset=["amount","date_parsed"])
     df = df[df["date_parsed"] >= pd.Timestamp(from_date)]
     df = df.drop(columns=["date_parsed"])
     return df, bank
@@ -133,7 +97,7 @@ def parse_statement(uploaded, from_date):
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
-page = st.sidebar.selectbox("Menu", ["Dashboard","Monthly View","Accounts","Credit Cards","Recurring Expenses","Transactions","Import Statement","Debug"])
+page = st.sidebar.selectbox("Menu", ["Dashboard","Monthly View","Card Summary","Transactions","Accounts","Credit Cards","Recurring Expenses","Import Statement","Debug"])
 
 @st.cache_data(ttl=3600)
 def get_fx():
@@ -251,30 +215,157 @@ elif page == "Monthly View":
     recurring = get_recurring()
     accounts = get_accounts()
     fx = get_fx()
+    current_month_str = f"{st.session_state.mv_year}-{st.session_state.mv_month:02d}"
+
     for currency, flag, symbol in [("CAD","🇨🇦","CAD$"),("BRL","🇧🇷","R$")]:
         st.subheader(f"{flag} {currency}")
         income = [e for e in recurring if e["currency"]==currency and e.get("type")=="INCOME"]
         expenses = [e for e in recurring if e["currency"]==currency and e.get("type")!="INCOME"]
         total_income = sum(e["amount"] for e in income)
         total_expense = sum(e["amount"] for e in expenses)
-        account_balance = sum(a["balance"] for a in accounts if a["currency"]==currency and a["account_type"]!="CREDIT_CARD")
-        balance = account_balance + total_income - total_expense
+
+        # Add real transactions for this month
+        card_accounts = [a for a in accounts if a["currency"]==currency and a["account_type"]=="CREDIT_CARD"]
+        checking_accounts = [a for a in accounts if a["currency"]==currency and a["account_type"]!="CREDIT_CARD"]
+
+        tx_expense = 0
+        tx_income = 0
+        for acc in checking_accounts + card_accounts:
+            try:
+                txs = requests.get(f"{API_URL}/accounts/{acc['id']}/transactions", timeout=10).json()
+                for t in txs:
+                    # For credit cards use statement_month, for checking use transaction date
+                    if acc["account_type"] == "CREDIT_CARD":
+                        if t.get("statement_month") == current_month_str:
+                            if t["amount"] < 0:
+                                tx_expense += abs(t["amount"])
+                    else:
+                        tx_date = t["date"][:7]  # "2026-04"
+                        if tx_date == current_month_str:
+                            if t["amount"] < 0:
+                                tx_expense += abs(t["amount"])
+                            elif t["amount"] > 0:
+                                tx_income += t["amount"]
+            except:
+                pass
+
+        account_balance = sum(a["balance"] for a in checking_accounts)
+        total_expense_all = total_expense + tx_expense
+        total_income_all = total_income + tx_income
+        balance = account_balance + total_income_all - total_expense_all
+
         if income:
-            st.write("**Income**")
+            st.write("**Recurring Income**")
             for e in income:
                 st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
         if expenses:
-            st.write("**Expenses**")
+            st.write("**Recurring Expenses**")
             for e in expenses:
                 st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
+
         col1, col2 = st.columns(2)
         with col1:
             st.metric("In Bank", f"{symbol} {fmt(account_balance,currency)}")
-            st.metric("Expenses", f"{symbol} {fmt(total_expense,currency)}")
+            st.metric("Total Expenses", f"{symbol} {fmt(total_expense_all,currency)}")
         with col2:
-            st.metric("Income", f"{symbol} {fmt(total_income,currency)}")
+            st.metric("Total Income", f"{symbol} {fmt(total_income_all,currency)}")
             st.metric("Balance", f"{symbol} {fmt(balance,currency)}")
         st.divider()
+
+elif page == "Card Summary":
+    st.header("💳 Card Summary")
+    accounts = get_accounts()
+    cards = [a for a in accounts if a["account_type"]=="CREDIT_CARD"]
+    if not cards:
+        st.info("No credit cards registered.")
+    else:
+        selected_card = st.selectbox("Select card", [f"{c['id']} | {c['name']} ({c['bank']})" for c in cards])
+        card_id = int(selected_card.split("|")[0].strip())
+        card = next(c for c in cards if c["id"]==card_id)
+        st.divider()
+        try:
+            summary = requests.get(f"{API_URL}/accounts/{card_id}/statement-summary", timeout=10).json()
+            if not summary:
+                st.info("No transactions imported yet for this card.")
+            else:
+                st.subheader(f"📊 {card['name']} — Statement Summary")
+                for month, data in sorted(summary.items(), reverse=True):
+                    due = data.get("payment_due_date","")[:10] if data.get("payment_due_date") else "—"
+                    total = abs(data["total"])
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(f"📅 {month}", f"CAD$ {fmt(total,'CAD')}")
+                    with col2:
+                        st.caption(f"Transactions: {data['count']}")
+                    with col3:
+                        st.caption(f"Due: {due}")
+                    if st.button(f"View transactions — {month}", key=f"view_{month}"):
+                        st.session_state["view_card_id"] = card_id
+                        st.session_state["view_month"] = month
+                        st.rerun()
+        except Exception as e:
+            st.error(f"Error loading summary: {e}")
+
+elif page == "Transactions":
+    st.header("💸 Transactions")
+    accounts = get_accounts()
+    if not accounts:
+        st.info("No accounts yet.")
+    else:
+        selected = st.selectbox("Select account or card", [f"{a['id']} | {a['name']} ({a['bank']}) — {'Card' if a['account_type']=='CREDIT_CARD' else 'Account'}" for a in accounts])
+        acc_id = int(selected.split("|")[0].strip())
+        acc = next(a for a in accounts if a["id"]==acc_id)
+        is_card = acc["account_type"] == "CREDIT_CARD"
+
+        if is_card:
+            month_filter = st.text_input("Filter by statement month (e.g. 2026-04)", value=f"{date.today().year}-{date.today().month:02d}")
+        st.divider()
+
+        try:
+            txs = requests.get(f"{API_URL}/accounts/{acc_id}/transactions", timeout=10).json()
+            if is_card and month_filter:
+                txs = [t for t in txs if t.get("statement_month")==month_filter]
+
+            if not txs:
+                st.info("No transactions found.")
+            else:
+                df = pd.DataFrame(txs)[["id","date","description","amount","category","statement_month"]] if is_card else pd.DataFrame(txs)[["id","date","description","amount","category"]]
+                df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+
+                edited = st.data_editor(
+                    df,
+                    column_config={
+                        "id": st.column_config.NumberColumn("ID", width="small"),
+                        "date": st.column_config.TextColumn("Date", width="small"),
+                        "description": st.column_config.TextColumn("Description", width="large"),
+                        "amount": st.column_config.NumberColumn("Amount", format="%.2f", width="small"),
+                        "category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="medium"),
+                        "statement_month": st.column_config.TextColumn("Statement", width="small"),
+                    },
+                    use_container_width=True,
+                    num_rows="fixed",
+                    height=400
+                )
+
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("💾 Save category changes", type="primary"):
+                        updated = 0
+                        for _, row in edited.iterrows():
+                            orig = next((t for t in txs if t["id"]==row["id"]), None)
+                            if orig and orig["category"] != row["category"]:
+                                requests.patch(
+                                    f"{API_URL}/transactions/{row['id']}",
+                                    json={"category": row["category"]},
+                                    timeout=10
+                                )
+                                updated += 1
+                        st.success(f"Updated {updated} transactions!")
+                with col2:
+                    total = sum(t["amount"] for t in txs)
+                    st.metric("Total", f"CAD$ {fmt(abs(total),'CAD')}" if is_card else f"{fmt(total,'CAD')}")
+        except Exception as e:
+            st.error(f"Error: {e}")
 
 elif page == "Accounts":
     st.header("🏦 Bank Accounts")
@@ -311,7 +402,6 @@ elif page == "Credit Cards":
     for c in cards:
         col1, col2 = st.columns([6,1])
         with col1:
-            closing = f" | Closes: day {c['closing_day']}" if c.get('closing_day') else ""
             st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])} | Closes: day {c['closing_day']} | Due: day {c['due_day']}")
         with col2:
             if st.button("🗑️", key=f"del_card_{c['id']}"):
@@ -326,7 +416,7 @@ elif page == "Credit Cards":
         bank = st.text_input("Bank")
         currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
         limit = st.number_input("Credit limit", value=0.0)
-        current_balance = st.number_input("Current balance (amount you already owe)", value=0.0, min_value=0.0, help="Current outstanding balance. Leave 0 if starting fresh.")
+        current_balance = st.number_input("Current balance (amount you already owe)", value=0.0, min_value=0.0)
         closing = st.number_input("Closing day", min_value=1, max_value=31, value=1)
         due = st.number_input("Due day", min_value=1, max_value=31, value=10)
         if st.form_submit_button("Add Credit Card"):
@@ -394,30 +484,9 @@ elif page == "Recurring Expenses":
                 else:
                     st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
-elif page == "Transactions":
-    st.header("Transactions")
-    accounts = get_accounts()
-    if not accounts:
-        st.warning("Create an account first!")
-    else:
-        with st.form("new_transaction"):
-            account = st.selectbox("Account", [f"{a['id']} - {a['name']}" for a in accounts])
-            description = st.text_input("Description")
-            amount = st.number_input("Amount (negative = expense)", value=0.0)
-            currency = st.selectbox("Currency", ["BRL","CAD","USD","EUR"])
-            date_input = st.date_input("Date")
-            category = st.selectbox("Category", CATEGORIES)
-            if st.form_submit_button("Add Transaction"):
-                account_id = int(account.split(" - ")[0])
-                r = post_data("transactions", {"account_id":account_id,"description":description,"amount":amount,"currency":currency,"date":str(date_input)+"T00:00:00","category":category})
-                if r is not None and r.status_code in [200,201]:
-                    st.success("Transaction added!")
-                else:
-                    st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
-
 elif page == "Import Statement":
     st.header("📂 Import Bank Statement")
-    st.caption("Supports RBC (Chequing & Credit), Amex XLS, and BMO CSV.")
+    st.caption("Supports RBC (Chequing & Credit), Amex CSV, and BMO CSV.")
     accounts = get_accounts()
     if not accounts:
         st.warning("Please create an account first.")
@@ -432,10 +501,7 @@ elif page == "Import Statement":
         with col2:
             from_date = st.date_input("Import transactions from", value=date.today().replace(day=1))
         st.divider()
-
-        # ✅ Aceita CSV, XLS e XLSX
-        uploaded = st.file_uploader("📁 Upload statement file (CSV or XLS)", type=["csv", "xls", "xlsx"])
-
+        uploaded = st.file_uploader("📁 Upload CSV file (RBC, Amex, or BMO)", type=["csv"])
         if uploaded:
             try:
                 df, bank_detected = parse_statement(uploaded, from_date)
@@ -444,33 +510,33 @@ elif page == "Import Statement":
                 elif df.empty:
                     st.warning("No transactions found after the selected date.")
                 else:
-                    # Anti-duplicate: check last transaction for this account
+                    # Anti-duplicate check
                     try:
                         last_tx = requests.get(f"{API_URL}/accounts/{account_id}/last-transaction", timeout=10).json()
                         last_date = last_tx.get("last_date")
                         if last_date:
                             last_dt = pd.Timestamp(last_date)
                             new_df = df[pd.to_datetime(df["date"]) > last_dt]
-                            st.info(f"📅 Last transaction registered: **{last_dt.strftime('%b %d, %Y')}**. Found **{len(new_df)} new transactions** out of {len(df)} in the file.")
+                            st.info(f"📅 Last transaction: **{last_dt.strftime('%b %d, %Y')}**. Found **{len(new_df)} new transactions** out of {len(df)} in the file.")
                             df = new_df
                         else:
-                            st.info("No previous transactions found for this account. Showing all transactions.")
+                            st.info("No previous transactions found. Showing all transactions.")
                     except:
                         pass
 
                     if df.empty:
-                        st.success("✅ All transactions in this file are already registered!")
+                        st.success("✅ All transactions already registered!")
                     else:
-                        st.success(f"✅ **{bank_detected}** — **{len(df)} new transactions** to import")
+                        st.success(f"✅ **{bank_detected}** — **{len(df)} new transactions**")
                         st.dataframe(df, use_container_width=True)
-                    st.divider()
-                    if st.button("🤖 Analyze with AI", type="primary"):
-                        with st.spinner("AI is reading and categorizing... (15-30 seconds)"):
-                            recurring = get_recurring()
-                            recurring_names = [e["name"] for e in recurring]
-                            account_type_hint = "credit card" if is_credit else "chequing/debit"
-                            credit_note = "IMPORTANT: This is a credit card statement. Payments like 'Payment - Thank You' or 'PAYMENT RECEIVED' must be categorized as 'Transfer'. Focus on categorizing actual purchases." if is_credit else ""
-                            prompt = f"""You are a financial assistant analyzing a Canadian bank statement ({selected_acc['bank']} {account_type_hint}, {bank_detected}).
+                        st.divider()
+                        if st.button("🤖 Analyze with AI", type="primary"):
+                            with st.spinner("AI is reading and categorizing... (15-30 seconds)"):
+                                recurring = get_recurring()
+                                recurring_names = [e["name"] for e in recurring]
+                                account_type_hint = "credit card" if is_credit else "chequing/debit"
+                                credit_note = "IMPORTANT: This is a credit card statement. Payments like 'Payment - Thank You' or 'PAYMENT RECEIVED' must be categorized as 'Transfer'. Focus on categorizing actual purchases." if is_credit else ""
+                                prompt = f"""You are a financial assistant analyzing a Canadian bank statement ({selected_acc['bank']} {account_type_hint}, {bank_detected}).
 {credit_note}
 
 Transactions:
@@ -487,22 +553,22 @@ Return a JSON array. Each item must have:
 - "recurring_match": matching recurring name or null
 
 Return ONLY the JSON array, no markdown."""
-                            try:
-                                resp = requests.post(
-                                    "https://api.anthropic.com/v1/messages",
-                                    headers={"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01"},
-                                    json={"model":"claude-sonnet-4-6","max_tokens":4000,"messages":[{"role":"user","content":prompt}]},
-                                    timeout=60
-                                )
-                                ai_text = resp.json()["content"][0]["text"]
-                                analyzed = json.loads(ai_text)
-                                st.session_state["analyzed"] = analyzed
-                                st.session_state["import_account_id"] = account_id
-                                st.session_state["import_is_credit"] = is_credit
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"AI error: {e}")
-                                st.write(resp.json() if "resp" in locals() else "No response")
+                                try:
+                                    resp = requests.post(
+                                        "https://api.anthropic.com/v1/messages",
+                                        headers={"Content-Type":"application/json","x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01"},
+                                        json={"model":"claude-sonnet-4-6","max_tokens":4000,"messages":[{"role":"user","content":prompt}]},
+                                        timeout=60
+                                    )
+                                    ai_text = resp.json()["content"][0]["text"]
+                                    analyzed = json.loads(ai_text)
+                                    st.session_state["analyzed"] = analyzed
+                                    st.session_state["import_account_id"] = account_id
+                                    st.session_state["import_is_credit"] = is_credit
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"AI error: {e}")
+                                    st.write(resp.json() if "resp" in locals() else "No response")
             except Exception as e:
                 st.error(f"Error reading file: {e}")
 
@@ -546,7 +612,7 @@ Return ONLY the JSON array, no markdown."""
                     with st.spinner("Importing..."):
                         for t in edited:
                             try:
-                                for fmt_str in ["%m/%d/%Y", "%Y%m%d", "%d %b. %Y", "%d/%m/%Y"]:
+                                for fmt_str in ["%m/%d/%Y","%Y%m%d","%d %b. %Y","%d/%m/%Y"]:
                                     try:
                                         date_obj = datetime.strptime(str(t["date"]).strip(), fmt_str)
                                         break
