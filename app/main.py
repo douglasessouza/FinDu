@@ -146,6 +146,15 @@ def list_transactions(account_id: Optional[int] = None, db: Session = Depends(ge
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
 
+@app.delete("/transactions/{transaction_id}")
+def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
+    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    db.delete(transaction)
+    db.commit()
+    return {"message": f"Transaction {transaction_id} deleted"}
+
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
     db_expense = RecurringExpense(**expense.model_dump())
