@@ -182,9 +182,12 @@ def get_statement_summary(account_id: int, db: Session = Depends(get_db)):
     for t in transactions:
         month = t.statement_month
         if month not in summary:
-            summary[month] = {"total": 0, "count": 0, "payment_due_date": None}
-        summary[month]["total"] += t.amount
-        summary[month]["count"] += 1
+            summary[month] = {"charges": 0, "payments": 0, "count": 0, "payment_due_date": None}
+        if t.amount < 0:
+            summary[month]["charges"] += abs(t.amount)
+            summary[month]["count"] += 1
+        else:
+            summary[month]["payments"] += t.amount
         if t.payment_due_date:
             summary[month]["payment_due_date"] = t.payment_due_date.isoformat()
     return dict(sorted(summary.items()))
