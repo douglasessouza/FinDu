@@ -98,6 +98,18 @@ def delete_account(account_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"Account {account_id} deleted"}
 
+@app.patch("/accounts/{account_id}")
+def update_account(account_id: int, updates: dict, db: Session = Depends(get_db)):
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    for key, value in updates.items():
+        if hasattr(account, key):
+            setattr(account, key, value)
+    db.commit()
+    db.refresh(account)
+    return account
+
 @app.post("/transactions")
 def create_transaction(transaction: TransactionCreate, db: Session = Depends(get_db)):
     account = db.query(Account).filter(Account.id == transaction.account_id).first()
