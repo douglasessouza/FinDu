@@ -103,7 +103,37 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
     account = db.query(Account).filter(Account.id == transaction.account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    db_transaction = Transaction(**transaction.model_dump())
+
+    data = transaction.model_dump()
+
+    # Auto-calculate statement_month and payment_due_date for credit cards
+    if account.account_type.value == "CREDIT_CARD" and account.closing_day and account.due_day:
+        tx_date = transaction.date
+        closing = account.closing_day
+        due = account.due_day
+
+        # If purchase date is after closing day, it goes to next month's statement
+        if tx_date.day > closing:
+            # Next month's statement
+            if tx_date.month == 12:
+                stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
+            else:
+                stmt_month = tx_date.replace(month=tx_date.month + 1, day=1)
+        else:
+            # Current month's statement
+            stmt_month = tx_date.replace(day=1)
+
+        data["statement_month"] = stmt_month.strftime("%Y-%m")
+
+        # Payment due date = due_day of the month after statement_month
+        if stmt_month.month == 12:
+            due_date = stmt_month.replace(year=stmt_month.year + 1, month=1, day=due)
+        else:
+            due_date = stmt_month.replace(month=stmt_month.month + 1, day=due)
+
+        data["payment_due_date"] = due_date
+
+    db_transaction = Transaction(**data)
     db.add(db_transaction)
     db.commit()
     db.refresh(db_transaction)

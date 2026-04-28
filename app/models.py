@@ -44,6 +44,8 @@ class Transaction(Base):
     currency = Column(Enum(CurrencyEnum), nullable=False)
     date = Column(DateTime, nullable=False)
     category = Column(String, nullable=True)     # e.g. "food", "transport", "salary"
+    statement_month = Column(String, nullable=True)   # Format: "2026-05" — billing period this transaction belongs to
+    payment_due_date = Column(DateTime, nullable=True) # When this statement is due to be paid
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class RecurringExpense(Base):
