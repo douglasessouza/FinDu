@@ -165,6 +165,42 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": f"Transaction {transaction_id} deleted"}
 
+@app.get("/accounts/{account_id}/transactions")
+def get_account_transactions(account_id: int, db: Session = Depends(get_db)):
+    return db.query(Transaction)\
+        .filter(Transaction.account_id == account_id)\
+        .order_by(Transaction.date.desc())\
+        .all()
+
+@app.get("/accounts/{account_id}/statement-summary")
+def get_statement_summary(account_id: int, db: Session = Depends(get_db)):
+    transactions = db.query(Transaction)\
+        .filter(Transaction.account_id == account_id)\
+        .filter(Transaction.statement_month != None)\
+        .all()
+    summary = {}
+    for t in transactions:
+        month = t.statement_month
+        if month not in summary:
+            summary[month] = {"total": 0, "count": 0, "payment_due_date": None}
+        summary[month]["total"] += t.amount
+        summary[month]["count"] += 1
+        if t.payment_due_date:
+            summary[month]["payment_due_date"] = t.payment_due_date.isoformat()
+    return dict(sorted(summary.items()))
+
+@app.patch("/transactions/{transaction_id}")
+def update_transaction(transaction_id: int, updates: dict, db: Session = Depends(get_db)):
+    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    for key, value in updates.items():
+        if hasattr(transaction, key):
+            setattr(transaction, key, value)
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
     db_expense = RecurringExpense(**expense.model_dump())
