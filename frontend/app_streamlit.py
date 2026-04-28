@@ -312,7 +312,7 @@ elif page == "Credit Cards":
         col1, col2 = st.columns([6,1])
         with col1:
             closing = f" | Closes: day {c['closing_day']}" if c.get('closing_day') else ""
-            st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])}{closing} | Due: day {c['due_day']}")
+            st.write(f"**{c['name']}** — {c['bank']} | {c['currency']} | Limit: {fmt(c['credit_limit'],c['currency'])} | Closes: day {c['closing_day']} | Due: day {c['due_day']}")
         with col2:
             if st.button("🗑️", key=f"del_card_{c['id']}"):
                 r = delete_data("accounts", c["id"])
