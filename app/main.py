@@ -146,6 +146,16 @@ def list_transactions(account_id: Optional[int] = None, db: Session = Depends(ge
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
 
+@app.get("/accounts/{account_id}/last-transaction")
+def get_last_transaction(account_id: int, db: Session = Depends(get_db)):
+    transaction = db.query(Transaction)\
+        .filter(Transaction.account_id == account_id)\
+        .order_by(Transaction.date.desc())\
+        .first()
+    if not transaction:
+        return {"last_date": None}
+    return {"last_date": transaction.date.isoformat()}
+
 @app.delete("/transactions/{transaction_id}")
 def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
