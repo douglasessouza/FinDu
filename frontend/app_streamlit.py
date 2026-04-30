@@ -621,15 +621,17 @@ elif page == "Import Statement":
         st.divider()
 
         # Reconciliation UI (shown after import)
-        if "reconcile_acc_id" in st.session_state:
+        
+            if "reconcile_acc_id" in st.session_state:
             r_acc_id = st.session_state["reconcile_acc_id"]
             r_acc = next((a for a in accounts if a["id"]==r_acc_id), None)
-            st.subheader("💰 Update Account Balance")
-            st.caption("Import complete! Set the current balance of your account based on your bank statement.")
+            auto_balance = st.session_state.get("reconcile_new_balance", float(r_acc["balance"]) if r_acc else 0.0)
+            st.subheader("💰 Confirm Account Balance")
+            st.caption("We calculated the new balance automatically. Please confirm or correct it.")
             if r_acc:
-                st.write(f"Account: **{r_acc['name']}** — current balance: CAD$ {fmt(r_acc['balance'],'CAD')}")
-            new_bal = st.number_input("New balance (from your bank statement):", value=float(r_acc["balance"]) if r_acc else 0.0, key="new_bal_input")
-            col1, col2 = st.columns(2)
+                st.write(f"Account: **{r_acc['name']}**")
+            st.info(f"Calculated new balance: **CAD$ {fmt(auto_balance,'CAD')}**")
+            new_bal = st.number_input("Confirm or correct balance:", value=auto_balance, key="new_bal_input")
             with col1:
                 if st.button("✅ Update balance", type="primary"):
                     patch_account(r_acc_id, {"balance": new_bal})
@@ -776,10 +778,17 @@ Return ONLY the JSON array, no markdown."""
                     st.success(f"✅ Imported {success} transactions!")
                     if errors:
                         st.warning(f"⚠️ {errors} failed.")
-                    del st.session_state["analyzed"]
-                    # For chequing: ask to update balance
+                    # For chequing: auto-calculate and update balance
                     if not is_credit_import:
+                        net = sum(float(t.get("amount", 0)) for t in edited)
+                        current_balance = float(selected_acc.get("balance", 0))
+                        new_balance = round(current_balance + net, 2)
+                        patch_result = patch_account(acc_id, {"balance": new_balance})
+                        if patch_result and patch_result.status_code in [200, 201]:
+                            st.info(f"💰 Account balance automatically updated: CAD$ {fmt(new_balance,'CAD')}")
                         st.session_state["reconcile_acc_id"] = acc_id
+                        st.session_state["reconcile_new_balance"] = new_balance
+                    del st.session_state["analyzed"]
                     st.rerun()
             with col2:
                 if st.button("🗑️ Clear and start over"):
