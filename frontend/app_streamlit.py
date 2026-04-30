@@ -193,6 +193,10 @@ elif page == "Dashboard":
                 except:
                     pass
 
+        if total_cards_due > 0:
+            st.caption(f"Total due: CAD$ {fmt(total_cards_due,'CAD')}")
+        st.divider()
+        
         # Recurring
         cad_rec = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
         cad_inc = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")=="INCOME")
