@@ -665,6 +665,29 @@ Return ONLY the JSON array, no markdown."""
             except Exception as e:
                 st.error(f"Error reading file: {e}")
 
+        if "reconcile_payments" in st.session_state:
+            payments = st.session_state["reconcile_payments"]
+            r_acc_id = st.session_state["reconcile_acc_id"]
+            st.subheader("💳 Card Payments Detected")
+            st.caption("We found possible credit card payments in this statement. Update your account balance?")
+            for cp in payments:
+                st.write(f"  • **{cp['description']}**: CAD$ {fmt(float(cp['amount']),'CAD')}")
+            st.divider()
+            new_bal = st.number_input("Set new account balance to:", value=0.0, key="new_bal_input")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("✅ Update balance", type="primary"):
+                    requests.patch(f"{API_URL}/accounts/{r_acc_id}", json={"balance": new_bal}, timeout=10)
+                    st.success(f"Balance updated to CAD$ {fmt(new_bal,'CAD')}!")
+                    del st.session_state["reconcile_payments"]
+                    del st.session_state["reconcile_acc_id"]
+                    st.rerun()
+            with col2:
+                if st.button("Skip"):
+                    del st.session_state["reconcile_payments"]
+                    del st.session_state["reconcile_acc_id"]
+                    st.rerun()
+
         if "analyzed" in st.session_state:
             analyzed = st.session_state["analyzed"]
             acc_id = st.session_state["import_account_id"]
@@ -728,8 +751,18 @@ Return ONLY the JSON array, no markdown."""
                     st.success(f"✅ Imported {success} transactions!")
                     if errors:
                         st.warning(f"⚠️ {errors} failed.")
-                    del st.session_state["analyzed"]
-                    st.rerun()
+                    # Reconciliation for chequing accounts
+                    if not is_credit_import:
+                        card_keywords = ["american express", "amex", "visa payment", "mastercard", "bmo mastercard", "credit card"]
+                        card_payments = [t for t in edited if any(k in str(t.get("description","")).lower() for k in card_keywords) and float(t.get("amount",0)) > 0]
+                        if card_payments:
+                            st.session_state["reconcile_payments"] = card_payments
+                            st.session_state["reconcile_acc_id"] = acc_id
+                        del st.session_state["analyzed"]
+                        st.rerun()
+                    else:
+                        del st.session_state["analyzed"]
+                        st.rerun()
             with col2:
                 if st.button("🗑️ Clear and start over"):
                     del st.session_state["analyzed"]
