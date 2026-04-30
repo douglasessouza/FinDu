@@ -176,11 +176,11 @@ elif page == "Dashboard":
                         due = data.get("payment_due_date","")[:10]
                         charges = data.get("charges", 0)
                         payments = data.get("payments", 0)
-                        net = charges - payments
+                        net = charges  # Show full charges, payments are separate transactions
                         if net > 0 and due:
                             due_dt = datetime.strptime(due, "%Y-%m-%d").date()
                             days_left = (due_dt - date.today()).days
-                            if -30 <= days_left <= 60:
+                            if days_left >= -5:
                                 status = "🔴 OVERDUE" if days_left < 0 else f"⏳ {days_left}d" if days_left <= 7 else f"📅 {due}"
                                 col1, col2 = st.columns([3,1])
                                 with col1:
