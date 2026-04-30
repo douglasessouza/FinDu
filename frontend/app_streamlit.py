@@ -169,25 +169,27 @@ elif page == "Dashboard":
         total_cards_due = 0
         if cad_cards:
             st.write("**💳 Card payments due:**")
+            from collections import defaultdict
             for card in cad_cards:
                 try:
                     summary = requests.get(f"{API_URL}/accounts/{card['id']}/statement-summary", timeout=10).json()
-                    for month, data in sorted(summary.items()):
+                    due_groups = defaultdict(float)
+                    for month, data in summary.items():
                         due = data.get("payment_due_date","")[:10]
                         charges = data.get("charges", 0)
-                        payments = data.get("payments", 0)
-                        net = charges  # Show full charges, payments are separate transactions
-                        if net > 0 and due:
-                            due_dt = datetime.strptime(due, "%Y-%m-%d").date()
-                            days_left = (due_dt - date.today()).days
-                            if days_left >= -5:
-                                status = "🔴 OVERDUE" if days_left < 0 else f"⏳ {days_left}d" if days_left <= 7 else f"📅 {due}"
-                                col1, col2 = st.columns([3,1])
-                                with col1:
-                                    st.write(f"  • **{card['name']}** {month}: CAD$ {fmt(net,'CAD')}")
-                                with col2:
-                                    st.caption(status)
-                                total_cards_due += net
+                        if due and charges > 0:
+                            due_groups[due] += charges
+                    for due, total in sorted(due_groups.items()):
+                        due_dt = datetime.strptime(due, "%Y-%m-%d").date()
+                        days_left = (due_dt - date.today()).days
+                        if days_left >= -30:
+                            status = "🔴 OVERDUE" if days_left < 0 else f"⏳ {days_left}d" if days_left <= 7 else f"📅 {due}"
+                            col1, col2 = st.columns([3,1])
+                            with col1:
+                                st.write(f"  • **{card['name']}**: CAD$ {fmt(total,'CAD')}")
+                            with col2:
+                                st.caption(status)
+                            total_cards_due += total
                 except:
                     pass
 
