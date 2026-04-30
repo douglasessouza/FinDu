@@ -291,7 +291,7 @@ elif page == "Card Summary":
                 st.subheader(f"📊 {card['name']} — Statement Summary")
                 for month, data in sorted(summary.items(), reverse=True):
                     due = data.get("payment_due_date","")[:10] if data.get("payment_due_date") else "—"
-                    total = abs(data["total"])
+                    total = data.get("charges", abs(data.get("total", 0)))
                     col1, col2, col3 = st.columns(3)
                     with col1:
                         st.metric(f"📅 {month}", f"CAD$ {fmt(total,'CAD')}")
