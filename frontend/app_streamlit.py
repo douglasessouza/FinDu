@@ -328,10 +328,10 @@ elif page == "Transactions":
         default_month = f"{date.today().year}-{date.today().month:02d}"
         nav_id = st.session_state.pop("nav_account_id", None)
         default_month = st.session_state.pop("nav_month", default_month)
-            if nav_id:
-                ids = [a["id"] for a in accounts]
-                if nav_id in ids:
-                    default_acc_idx = ids.index(nav_id)
+        if nav_id:
+            ids = [a["id"] for a in accounts]
+            if nav_id in ids:
+                default_acc_idx = ids.index(nav_id)
 
         selected = st.selectbox("Select account or card",
             [f"{a['id']} | {a['name']} ({a['bank']}) — {'Card' if a['account_type']=='CREDIT_CARD' else 'Account'}" for a in accounts],
