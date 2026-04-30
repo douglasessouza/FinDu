@@ -168,6 +168,28 @@ def get_last_transaction(account_id: int, db: Session = Depends(get_db)):
         return {"last_date": None}
     return {"last_date": transaction.date.isoformat()}
 
+@app.get("/accounts/{account_id}/card-payments-detected")
+def detect_card_payments(account_id: int, db: Session = Depends(get_db)):
+    """Returns transactions from this chequing account that look like card payments"""
+    transactions = db.query(Transaction)\
+        .filter(Transaction.account_id == account_id)\
+        .filter(Transaction.amount > 0)\
+        .all()
+    
+    card_keywords = ["american express", "amex", "visa", "mastercard", "bmo", "credit card payment"]
+    payments = []
+    for t in transactions:
+        desc = t.description.lower()
+        if any(k in desc for k in card_keywords):
+            payments.append({
+                "id": t.id,
+                "date": t.date.isoformat(),
+                "description": t.description,
+                "amount": t.amount,
+                "category": t.category
+            })
+    return payments
+
 @app.delete("/transactions/{transaction_id}")
 def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
