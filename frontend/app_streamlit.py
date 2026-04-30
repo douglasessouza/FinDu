@@ -621,8 +621,7 @@ elif page == "Import Statement":
         st.divider()
 
         # Reconciliation UI (shown after import)
-        
-            if "reconcile_acc_id" in st.session_state:
+        if "reconcile_acc_id" in st.session_state:
             r_acc_id = st.session_state["reconcile_acc_id"]
             r_acc = next((a for a in accounts if a["id"]==r_acc_id), None)
             auto_balance = st.session_state.get("reconcile_new_balance", float(r_acc["balance"]) if r_acc else 0.0)
