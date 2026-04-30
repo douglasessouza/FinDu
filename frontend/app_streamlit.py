@@ -299,8 +299,19 @@ elif page == "Card Summary":
             if not summary:
                 st.info("No transactions imported yet for this card.")
             else:
-                st.subheader(f"📊 {card['name']} — Statement Summary")
-                for month, data in sorted(summary.items(), reverse=True):
+                # Group by payment_due_date to show total due
+                from collections import defaultdict
+                due_groups = defaultdict(float)
+                for month, data in summary.items():
+                    due = data.get("payment_due_date","")[:10]
+                    if due:
+                        due_groups[due] += data.get("charges", 0)
+                
+                st.subheader("💰 Upcoming Payments")
+                for due_date, total in sorted(due_groups.items()):
+                    st.metric(f"Due {due_date}", f"CAD$ {fmt(total,'CAD')}")
+                st.divider()
+                st.subheader("📅 By Statement Period")
                     due = data.get("payment_due_date","")[:10] if data.get("payment_due_date") else "—"
                     total = data.get("charges", abs(data.get("total", 0)))
                     col1, col2, col3 = st.columns(3)
