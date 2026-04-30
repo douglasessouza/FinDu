@@ -300,8 +300,9 @@ elif page == "Card Summary":
                     with col3:
                         st.caption(f"Due: {due}")
                     if st.button(f"View transactions — {month}", key=f"view_{month}"):
-                        st.session_state["view_card_id"] = card_id
-                        st.session_state["view_month"] = month
+                        st.session_state["nav_to_transactions"] = True
+                        st.session_state["nav_account_id"] = card_id
+                        st.session_state["nav_month"] = month
                         st.rerun()
         except Exception as e:
             st.error(f"Error loading summary: {e}")
@@ -312,7 +313,20 @@ elif page == "Transactions":
     if not accounts:
         st.info("No accounts yet.")
     else:
-        selected = st.selectbox("Select account or card", [f"{a['id']} | {a['name']} ({a['bank']}) — {'Card' if a['account_type']=='CREDIT_CARD' else 'Account'}" for a in accounts])
+        default_acc_idx = 0
+        default_month = f"{date.today().year}-{date.today().month:02d}"
+        if st.session_state.get("nav_to_transactions"):
+            nav_id = st.session_state.pop("nav_account_id", None)
+            default_month = st.session_state.pop("nav_month", default_month)
+            st.session_state.pop("nav_to_transactions", None)
+            if nav_id:
+                ids = [a["id"] for a in accounts]
+                if nav_id in ids:
+                    default_acc_idx = ids.index(nav_id)
+
+        selected = st.selectbox("Select account or card",
+            [f"{a['id']} | {a['name']} ({a['bank']}) — {'Card' if a['account_type']=='CREDIT_CARD' else 'Account'}" for a in accounts],
+            index=default_acc_idx)
         acc_id = int(selected.split("|")[0].strip())
         acc = next(a for a in accounts if a["id"]==acc_id)
         is_card = acc["account_type"] == "CREDIT_CARD"
