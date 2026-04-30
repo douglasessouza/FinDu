@@ -397,8 +397,15 @@ elif page == "Transactions":
                                 updated += 1
                         st.success(f"Updated {updated} transactions!")
                 with col2:
-                    total = sum(t["amount"] for t in txs)
-                    st.metric("Total", f"CAD$ {fmt(abs(total),'CAD')}" if is_card else f"{fmt(total,'CAD')}")
+                    if is_card:
+                        charges = sum(abs(t["amount"]) for t in txs if t["amount"] < 0)
+                        payments = sum(t["amount"] for t in txs if t["amount"] > 0)
+                        st.metric("Total Charges", f"CAD$ {fmt(charges,'CAD')}")
+                        if payments > 0:
+                            st.caption(f"Payments received: CAD$ {fmt(payments,'CAD')}")
+                    else:
+                        total = sum(t["amount"] for t in txs)
+                        st.metric("Total", f"CAD$ {fmt(total,'CAD')}")
         except Exception as e:
             st.error(f"Error: {e}")
 
