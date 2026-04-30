@@ -138,7 +138,8 @@ if page == "Debug":
             st.error(f"POST failed: {e}")
 
 elif page == "Dashboard":
-    st.header("Dashboard")
+    st.header("📊 Dashboard")
+    st.caption(f"Today: {date.today().strftime('%B %d, %Y')}")
     fx = get_fx()
     c1, c2 = st.columns(2)
     with c1:
@@ -150,50 +151,98 @@ elif page == "Dashboard":
     st.divider()
     accounts = get_accounts()
     recurring = get_recurring()
-    if not accounts:
-        st.info("No accounts yet.")
-    else:
-        brl_acc = [a for a in accounts if a["currency"]=="BRL" and a["account_type"]!="CREDIT_CARD"]
-        brl_cards = [a for a in accounts if a["currency"]=="BRL" and a["account_type"]=="CREDIT_CARD"]
-        cad_acc = [a for a in accounts if a["currency"]=="CAD" and a["account_type"]!="CREDIT_CARD"]
-        cad_cards = [a for a in accounts if a["currency"]=="CAD" and a["account_type"]=="CREDIT_CARD"]
-        total_brl = 0
-        total_cad = 0
-        if brl_acc or brl_cards:
-            st.subheader("🇧🇷 Brazil (BRL)")
-            brl_exp = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
-            brl_debt = sum(c["balance"] for c in brl_cards)
-            for a in brl_acc:
-                futuro = a["balance"] - brl_exp - brl_debt
-                st.metric(f"🏦 {a['name']}", f"R$ {fmt(a['balance'],'BRL')}", f"Future: R$ {fmt(futuro,'BRL')}")
-                total_brl += a["balance"]
-            for c in brl_cards:
-                st.metric(f"💳 {c['name']}", f"R$ {fmt(c['balance'],'BRL')}", delta_color="inverse")
-                total_brl -= c["balance"]
-            st.info(f"Total Brazil: R$ {fmt(total_brl,'BRL')}")
-            if fx["BRL_CAD"]:
-                st.caption(f"≈ CAD$ {fmt(total_brl*fx['BRL_CAD'],'CAD')}")
+
+    checking = [a for a in accounts if a["account_type"] != "CREDIT_CARD"]
+    cards = [a for a in accounts if a["account_type"] == "CREDIT_CARD"]
+
+    # ── CANADA ──────────────────────────────────────────
+    cad_checking = [a for a in checking if a["currency"] == "CAD"]
+    cad_cards = [a for a in cards if a["currency"] == "CAD"]
+    if cad_checking or cad_cards:
+        st.subheader("🇨🇦 Canada (CAD)")
+        total_cad_cash = 0
+        for a in cad_checking:
+            st.metric(f"🏦 {a['name']}", f"CAD$ {fmt(a['balance'],'CAD')}")
+            total_cad_cash += a["balance"]
+
+        # Card payments due
+        total_cards_due = 0
+        if cad_cards:
+            st.write("**💳 Card payments due:**")
+            for card in cad_cards:
+                try:
+                    summary = requests.get(f"{API_URL}/accounts/{card['id']}/statement-summary", timeout=10).json()
+                    for month, data in sorted(summary.items()):
+                        due = data.get("payment_due_date","")[:10]
+                        charges = data.get("charges", 0)
+                        payments = data.get("payments", 0)
+                        net = charges - payments
+                        if net > 0 and due:
+                            due_dt = datetime.strptime(due, "%Y-%m-%d").date()
+                            days_left = (due_dt - date.today()).days
+                            if -30 <= days_left <= 60:
+                                status = "🔴 OVERDUE" if days_left < 0 else f"⏳ {days_left}d" if days_left <= 7 else f"📅 {due}"
+                                col1, col2 = st.columns([3,1])
+                                with col1:
+                                    st.write(f"  • **{card['name']}** {month}: CAD$ {fmt(net,'CAD')}")
+                                with col2:
+                                    st.caption(status)
+                                total_cards_due += net
+                except:
+                    pass
+
+        # Recurring
+        cad_rec = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
+        cad_inc = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")=="INCOME")
+
+        # Net position
         st.divider()
-        if cad_acc or cad_cards:
-            st.subheader("🇨🇦 Canada (CAD)")
-            cad_exp = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
-            cad_debt = sum(c["balance"] for c in cad_cards)
-            for a in cad_acc:
-                futuro = a["balance"] - cad_exp - cad_debt
-                st.metric(f"🏦 {a['name']}", f"CAD$ {fmt(a['balance'],'CAD')}", f"Future: CAD$ {fmt(futuro,'CAD')}")
-                total_cad += a["balance"]
-            for c in cad_cards:
-                st.metric(f"💳 {c['name']}", f"CAD$ {fmt(c['balance'],'CAD')}", delta_color="inverse")
-                total_cad -= c["balance"]
-            st.info(f"Total Canada: CAD$ {fmt(total_cad,'CAD')}")
-        st.divider()
-        total_bruto = total_cad + (total_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
-        total_exp_cad = sum(e["amount"] for e in recurring if e["currency"]=="CAD" and e.get("type")!="INCOME")
-        total_exp_brl = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
-        total_futuro = total_bruto - total_exp_cad - (total_exp_brl * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
-        st.subheader("💰 Net Worth (CAD)")
-        st.caption(f"🇧🇷 R$ {fmt(total_brl,'BRL')} ≈ CAD$ {fmt(total_brl*fx['BRL_CAD'] if fx['BRL_CAD'] else 0,'CAD')} + 🇨🇦 CAD$ {fmt(total_cad,'CAD')}")
-        st.metric("Total", f"CAD$ {fmt(total_bruto,'CAD')}", f"Future (after monthly expenses): CAD$ {fmt(total_futuro,'CAD')}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("💰 In Bank", f"CAD$ {fmt(total_cad_cash,'CAD')}")
+            st.metric("💳 Cards Due", f"- CAD$ {fmt(total_cards_due,'CAD')}", delta_color="inverse")
+            st.metric("🔄 Recurring", f"- CAD$ {fmt(cad_rec,'CAD')}", delta_color="inverse")
+        with col2:
+            net = total_cad_cash - total_cards_due - cad_rec
+            st.metric("📊 Net Position", f"CAD$ {fmt(net,'CAD')}")
+            if cad_inc > 0:
+                st.metric("📈 + Income", f"CAD$ {fmt(cad_inc,'CAD')}")
+                st.metric("🎯 After Income", f"CAD$ {fmt(net+cad_inc,'CAD')}")
+
+    st.divider()
+
+    # ── BRAZIL ──────────────────────────────────────────
+    brl_checking = [a for a in checking if a["currency"] == "BRL"]
+    brl_cards_list = [a for a in cards if a["currency"] == "BRL"]
+    if brl_checking or brl_cards_list:
+        st.subheader("🇧🇷 Brazil (BRL)")
+        total_brl_cash = 0
+        for a in brl_checking:
+            st.metric(f"🏦 {a['name']}", f"R$ {fmt(a['balance'],'BRL')}")
+            total_brl_cash += a["balance"]
+        brl_rec = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")!="INCOME")
+        brl_inc = sum(e["amount"] for e in recurring if e["currency"]=="BRL" and e.get("type")=="INCOME")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("💰 In Bank", f"R$ {fmt(total_brl_cash,'BRL')}")
+            st.metric("🔄 Recurring", f"- R$ {fmt(brl_rec,'BRL')}", delta_color="inverse")
+        with col2:
+            net_brl = total_brl_cash - brl_rec
+            st.metric("📊 Net Position", f"R$ {fmt(net_brl,'BRL')}")
+            if brl_inc > 0:
+                st.metric("🎯 After Income", f"R$ {fmt(net_brl+brl_inc,'BRL')}")
+        if fx["BRL_CAD"]:
+            st.caption(f"≈ CAD$ {fmt(total_brl_cash*fx['BRL_CAD'],'CAD')}")
+
+    st.divider()
+
+    # ── NET WORTH ──────────────────────────────────────
+    st.subheader("💰 Net Worth (CAD)")
+    total_cad_cash = sum(a["balance"] for a in cad_checking) if cad_checking else 0
+    total_brl_cash = sum(a["balance"] for a in brl_checking) if brl_checking else 0
+    total_bruto = total_cad_cash + (total_brl_cash * fx["BRL_CAD"] if fx["BRL_CAD"] else 0)
+    st.caption(f"🇧🇷 R$ {fmt(total_brl_cash,'BRL')} ≈ CAD$ {fmt(total_brl_cash*fx['BRL_CAD'] if fx['BRL_CAD'] else 0,'CAD')} + 🇨🇦 CAD$ {fmt(total_cad_cash,'CAD')}")
+    st.metric("Total assets", f"CAD$ {fmt(total_bruto,'CAD')}")
 
 elif page == "Monthly View":
     import calendar
