@@ -97,7 +97,18 @@ def parse_statement(uploaded, from_date):
 st.set_page_config(page_title="FinDu", page_icon="💰", layout="centered")
 st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
-page = st.sidebar.selectbox("Menu", ["Dashboard","Monthly View","Card Summary","Transactions","Accounts","Credit Cards","Recurring Expenses","Import Statement","Debug"])
+if "current_page" not in st.session_state:
+    st.session_state.current_page = "Dashboard"
+
+if st.session_state.get("nav_to_transactions"):
+    st.session_state.current_page = "Transactions"
+
+page = st.sidebar.selectbox(
+    "Menu",
+    ["Dashboard","Monthly View","Card Summary","Transactions","Accounts","Credit Cards","Recurring Expenses","Import Statement","Debug"],
+    index=["Dashboard","Monthly View","Card Summary","Transactions","Accounts","Credit Cards","Recurring Expenses","Import Statement","Debug"].index(st.session_state.current_page)
+)
+st.session_state.current_page = page
 
 @st.cache_data(ttl=3600)
 def get_fx():
@@ -300,7 +311,7 @@ elif page == "Card Summary":
                     with col3:
                         st.caption(f"Due: {due}")
                     if st.button(f"View transactions — {month}", key=f"view_{month}"):
-                        st.session_state["nav_to_transactions"] = True
+                        st.session_state["current_page"] = "Transactions"
                         st.session_state["nav_account_id"] = card_id
                         st.session_state["nav_month"] = month
                         st.rerun()
@@ -315,10 +326,8 @@ elif page == "Transactions":
     else:
         default_acc_idx = 0
         default_month = f"{date.today().year}-{date.today().month:02d}"
-        if st.session_state.get("nav_to_transactions"):
-            nav_id = st.session_state.pop("nav_account_id", None)
-            default_month = st.session_state.pop("nav_month", default_month)
-            st.session_state.pop("nav_to_transactions", None)
+        nav_id = st.session_state.pop("nav_account_id", None)
+        default_month = st.session_state.pop("nav_month", default_month)
             if nav_id:
                 ids = [a["id"] for a in accounts]
                 if nav_id in ids:
