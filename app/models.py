@@ -24,8 +24,8 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)        # User-defined label e.g. "Nubank Personal", "TD Checking"
-    bank = Column(String, nullable=False)        # Financial institution e.g. "Nubank", "TD Bank"
+    name = Column(String, nullable=False)        # User-defined label e.g. "RBC Chequing"
+    bank = Column(String, nullable=False)        # Financial institution e.g. "RBC"
     account_type = Column(Enum(AccountTypeEnum), nullable=False)  # Checking, Savings or Credit Card
     currency = Column(Enum(CurrencyEnum), nullable=False)         # BRL, CAD, USD or EUR
     balance = Column(Float, default=0.0)         # Current balance (negative for credit card debt)
@@ -43,9 +43,10 @@ class Transaction(Base):
     amount = Column(Float, nullable=False)       # Positive = income, negative = expense
     currency = Column(Enum(CurrencyEnum), nullable=False)
     date = Column(DateTime, nullable=False)
-    category = Column(String, nullable=True)     # e.g. "food", "transport", "salary"
-    statement_month = Column(String, nullable=True)   # Format: "2026-05" — billing period this transaction belongs to
-    payment_due_date = Column(DateTime, nullable=True) # When this statement is due to be paid
+    category = Column(String, nullable=True)     # e.g. "Food", "Transport", "Salary"
+    statement_month = Column(String, nullable=True)    # Format: "2026-05" — billing period for credit cards
+    payment_due_date = Column(DateTime, nullable=True) # Payment due date for credit card statements
+    import_batch_id = Column(String, nullable=True)    # UUID grouping all transactions from the same import
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class RecurringExpense(Base):
@@ -57,6 +58,6 @@ class RecurringExpense(Base):
     currency = Column(Enum(CurrencyEnum), nullable=False)
     due_day = Column(Integer, nullable=False)    # Day of month it's due (1-31)
     type = Column(Enum(RecurringTypeEnum), nullable=False, default=RecurringTypeEnum.EXPENSE)
-    category = Column(String, nullable=True)     # e.g. "housing", "subscriptions"
+    category = Column(String, nullable=True)     # e.g. "Housing", "Subscriptions"
     is_active = Column(Boolean, default=True)    # Can be deactivated without deleting
     created_at = Column(DateTime, default=datetime.utcnow)

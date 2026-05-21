@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel
 from typing import Optional
@@ -40,7 +40,8 @@ CATEGORIES = [
     "Housing", "Food", "Transport", "Health", "Education",
     "Subscriptions", "Entertainment", "Leisure", "Travel",
     "Clothing", "Phone", "Car", "Insurance", "Investments",
-    "Salary", "Other Income", "Transfer", "Other"
+    "Salary", "Other Income", "Transfer", "Other",
+    "Restaurant", "Coffee", "Gas", "Wellness"
 ]
 
 @app.get("/categories")
@@ -64,6 +65,7 @@ class TransactionCreate(BaseModel):
     currency: CurrencyEnum
     date: datetime
     category: Optional[str] = None
+    import_batch_id: Optional[str] = None  # UUID from the import session
 
 class RecurringExpenseCreate(BaseModel):
     name: str
@@ -126,13 +128,11 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
 
         # If purchase date is after closing day, it goes to next month's statement
         if tx_date.day > closing:
-            # Next month's statement
             if tx_date.month == 12:
                 stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
             else:
                 stmt_month = tx_date.replace(month=tx_date.month + 1, day=1)
         else:
-            # Current month's statement
             stmt_month = tx_date.replace(day=1)
 
         data["statement_month"] = stmt_month.strftime("%Y-%m")
@@ -170,12 +170,12 @@ def get_last_transaction(account_id: int, db: Session = Depends(get_db)):
 
 @app.get("/accounts/{account_id}/card-payments-detected")
 def detect_card_payments(account_id: int, db: Session = Depends(get_db)):
-    """Returns transactions from this chequing account that look like card payments"""
+    """Returns transactions from this chequing account that look like card payments."""
     transactions = db.query(Transaction)\
         .filter(Transaction.account_id == account_id)\
         .filter(Transaction.amount > 0)\
         .all()
-    
+
     card_keywords = ["american express", "amex", "visa", "mastercard", "bmo", "credit card payment"]
     payments = []
     for t in transactions:
@@ -237,6 +237,55 @@ def update_transaction(transaction_id: int, updates: dict, db: Session = Depends
     db.commit()
     db.refresh(transaction)
     return transaction
+
+# --- Import batch endpoints ---
+
+@app.get("/imports")
+def list_imports(db: Session = Depends(get_db)):
+    """Returns all import batches grouped by import_batch_id, with account info and transaction count."""
+    rows = db.query(
+        Transaction.import_batch_id,
+        Transaction.account_id,
+        func.count(Transaction.id).label("count"),
+        func.min(Transaction.date).label("first_date"),
+        func.max(Transaction.date).label("last_date"),
+        func.max(Transaction.created_at).label("imported_at"),
+    ).filter(Transaction.import_batch_id != None)\
+     .group_by(Transaction.import_batch_id, Transaction.account_id)\
+     .order_by(func.max(Transaction.created_at).desc())\
+     .all()
+
+    accounts = {a.id: a for a in db.query(Account).all()}
+    result = []
+    for row in rows:
+        acc = accounts.get(row.account_id)
+        result.append({
+            "import_batch_id": row.import_batch_id,
+            "account_id": row.account_id,
+            "account_name": acc.name if acc else "Unknown",
+            "account_currency": acc.currency.value if acc else "CAD",
+            "transaction_count": row.count,
+            "first_date": row.first_date.strftime("%Y-%m-%d") if row.first_date else None,
+            "last_date": row.last_date.strftime("%Y-%m-%d") if row.last_date else None,
+            "imported_at": row.imported_at.strftime("%Y-%m-%d %H:%M") if row.imported_at else None,
+        })
+    return result
+
+@app.delete("/imports/{batch_id}")
+def delete_import_batch(batch_id: str, db: Session = Depends(get_db)):
+    """Deletes all transactions belonging to a specific import batch."""
+    transactions = db.query(Transaction)\
+        .filter(Transaction.import_batch_id == batch_id)\
+        .all()
+    if not transactions:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    count = len(transactions)
+    for t in transactions:
+        db.delete(t)
+    db.commit()
+    return {"message": f"Deleted {count} transactions from batch {batch_id}"}
+
+# --- Recurring expenses ---
 
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
