@@ -356,9 +356,7 @@ elif page == "Monthly View":
 
     for currency, flag, symbol in [("CAD", "🇨🇦", "CAD$"), ("BRL", "🇧🇷", "R$")]:
         st.subheader(f"{flag} {currency}")
-        income_rec = [e for e in recurring if e["currency"] == currency and e.get("type") == "INCOME"]
         expense_rec = [e for e in recurring if e["currency"] == currency and e.get("type") != "INCOME"]
-        total_rec_income = sum(e["amount"] for e in income_rec)
         total_rec_expense = sum(e["amount"] for e in expense_rec)
 
         card_accounts = [a for a in accounts if a["currency"] == currency and a["account_type"] == "CREDIT_CARD"]
@@ -407,20 +405,14 @@ elif page == "Monthly View":
             st.metric("💳 Card charges", f"{symbol} {fmt(card_charges,currency)}")
             st.metric("🔄 Recurring expenses", f"- {symbol} {fmt(total_rec_expense,currency)}")
         with col2:
-            st.metric("📈 Recurring income", f"{symbol} {fmt(total_rec_income,currency)}")
-            balance = account_balance + total_rec_income - total_rec_expense - card_charges
+            balance = account_balance - total_rec_expense - card_charges
             st.metric("📊 Balance", f"{symbol} {fmt(balance,currency)}")
 
-        if income_rec or expense_rec:
+        if expense_rec:
             with st.expander("Recurring details"):
-                if income_rec:
-                    st.write("**Income:**")
-                    for e in income_rec:
-                        st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
-                if expense_rec:
-                    st.write("**Expenses:**")
-                    for e in expense_rec:
-                        st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
+                st.write("**Expenses:**")
+                for e in expense_rec:
+                    st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
 
         if card_breakdown:
             with st.expander(f"Card charges breakdown — {current_month_str}"):
