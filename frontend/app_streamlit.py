@@ -365,16 +365,20 @@ elif page == "Monthly View":
         checking_accounts = [a for a in accounts if a["currency"] == currency and a["account_type"] != "CREDIT_CARD"]
         account_balance = sum(a["balance"] for a in checking_accounts)
 
-        # Card charges for this statement month
+        # Card charges due in this month — group by payment_due_date, not statement_month
         card_charges = 0
         card_breakdown = {}
         for acc in card_accounts:
             try:
                 summary = requests.get(f"{API_URL}/accounts/{acc['id']}/statement-summary", timeout=10).json()
-                if current_month_str in summary:
-                    charges = summary[current_month_str].get("charges", 0)
-                    card_charges += charges
-                    card_breakdown[acc["name"]] = charges
+                acc_total = 0
+                for month_data in summary.values():
+                    due = month_data.get("payment_due_date", "")[:7]  # "YYYY-MM"
+                    if due == current_month_str:
+                        acc_total += month_data.get("charges", 0)
+                if acc_total > 0:
+                    card_charges += acc_total
+                    card_breakdown[acc["name"]] = acc_total
             except:
                 pass
 
