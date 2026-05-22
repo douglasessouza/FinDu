@@ -483,53 +483,52 @@ elif page == "Spending Analysis":
         all_cats = sorted(set(cat for month in data.values() for cat in month.keys()))
         all_months = sorted(data.keys())
 
-        # Build multi-level columns: month → Cards, Debit
         rows = []
         for cat in all_cats:
             row = {"Category": cat}
-            cat_total_cards = 0
-            cat_total_debit = 0
+            cat_total = 0
             for m in all_months:
                 cards_val = data.get(m, {}).get(cat, {}).get("cards", 0)
                 debit_val = data.get(m, {}).get(cat, {}).get("debit", 0)
+                total_val = round(cards_val + debit_val, 2)
                 label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
-                row[f"{label} | Cards"] = round(cards_val, 2) if cards_val else ""
-                row[f"{label} | Debit"] = round(debit_val, 2) if debit_val else ""
-                cat_total_cards += cards_val
-                cat_total_debit += debit_val
-            row["Total Cards"] = round(cat_total_cards, 2) if cat_total_cards else ""
-            row["Total Debit"] = round(cat_total_debit, 2) if cat_total_debit else ""
+                row[label] = total_val if total_val > 0 else ""
+                cat_total += total_val
+            row["Total"] = round(cat_total, 2) if cat_total > 0 else ""
             rows.append(row)
 
-        # Add totals row
+        # Totals row
         totals_row = {"Category": "💰 TOTAL"}
-        grand_cards = 0
-        grand_debit = 0
+        grand_total = 0
         for m in all_months:
-            m_cards = sum(data.get(m, {}).get(cat, {}).get("cards", 0) for cat in all_cats)
-            m_debit = sum(data.get(m, {}).get(cat, {}).get("debit", 0) for cat in all_cats)
+            m_total = sum(
+                data.get(m, {}).get(cat, {}).get("cards", 0) +
+                data.get(m, {}).get(cat, {}).get("debit", 0)
+                for cat in all_cats
+            )
             label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
-            totals_row[f"{label} | Cards"] = round(m_cards, 2) if m_cards else ""
-            totals_row[f"{label} | Debit"] = round(m_debit, 2) if m_debit else ""
-            grand_cards += m_cards
-            grand_debit += m_debit
-        totals_row["Total Cards"] = round(grand_cards, 2)
-        totals_row["Total Debit"] = round(grand_debit, 2)
+            totals_row[label] = round(m_total, 2)
+            grand_total += m_total
+        totals_row["Total"] = round(grand_total, 2)
         rows.append(totals_row)
 
         df_table = pd.DataFrame(rows)
+
+        # Build column config dynamically
+        col_config = {"Category": st.column_config.TextColumn("Category", width="medium")}
+        for m in all_months:
+            label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
+            col_config[label] = st.column_config.NumberColumn(label, format="$ %.2f")
+        col_config["Total"] = st.column_config.NumberColumn("Total", format="$ %.2f")
 
         st.dataframe(
             df_table,
             use_container_width=True,
             height=min(50 + len(rows) * 35, 600),
-            column_config={
-                "Category": st.column_config.TextColumn("Category", width="medium"),
-                "Total Cards": st.column_config.NumberColumn("Total Cards", format="CAD$ %.2f"),
-                "Total Debit": st.column_config.NumberColumn("Total Debit", format="CAD$ %.2f"),
-            }
+            column_config=col_config,
+            column_order=["Category"] + [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in all_months] + ["Total"]
         )
-        st.caption(f"Grand total: CAD$ {fmt(grand_cards + grand_debit, 'CAD')} (Cards: CAD$ {fmt(grand_cards, 'CAD')} + Debit: CAD$ {fmt(grand_debit, 'CAD')})")
+        st.caption(f"Grand total: CAD$ {fmt(grand_total, 'CAD')}")
 
 
 # ─────────────────────────────────────────────────────────────────
