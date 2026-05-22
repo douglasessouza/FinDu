@@ -335,7 +335,10 @@ def spending_analysis(db: Session = Depends(get_db)):
     card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
     debit_ids = {a.id for a in all_accounts if a.account_type.value != "CREDIT_CARD"}
 
+    # Only expenses (negative amounts), exclude income and transfer categories
+    excluded_categories = {"Salary", "Other Income", "Transfer"}
     transactions = db.query(Transaction).filter(Transaction.amount < 0).all()
+    transactions = [t for t in transactions if (t.category or "Other") not in excluded_categories]
 
     # result[month][category] = {"cards": 0.0, "debit": 0.0}
     result = {}

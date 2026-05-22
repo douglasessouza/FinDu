@@ -477,6 +477,55 @@ elif page == "Spending Analysis":
 
         st.divider()
 
+        # ── Bar chart: category comparison across months ──
+        st.subheader("📊 Category Trends")
+
+        all_months_sorted = sorted(data.keys())
+        n_months = st.slider("Number of months to compare", min_value=1, max_value=len(all_months_sorted), value=min(3, len(all_months_sorted)))
+        months_to_show = all_months_sorted[-n_months:]
+
+        all_cats_bar = sorted(set(cat for m in months_to_show for cat in data.get(m, {}).keys()))
+
+        # Build data for grouped bar chart
+        bar_rows = []
+        for m in months_to_show:
+            label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
+            for cat in all_cats_bar:
+                cards_val = data.get(m, {}).get(cat, {}).get("cards", 0)
+                debit_val = data.get(m, {}).get(cat, {}).get("debit", 0)
+                total_val = round(cards_val + debit_val, 2)
+                if total_val > 0:
+                    bar_rows.append({"Month": label, "Category": cat, "Amount": total_val})
+
+        if bar_rows:
+            df_bar = pd.DataFrame(bar_rows)
+            # Sort categories by total across shown months (descending)
+            cat_totals = df_bar.groupby("Category")["Amount"].sum().sort_values(ascending=False)
+            cat_order = cat_totals.index.tolist()
+
+            fig_bar = px.bar(
+                df_bar,
+                x="Category",
+                y="Amount",
+                color="Month",
+                barmode="group",
+                category_orders={"Category": cat_order},
+                title=f"Spending by Category — Last {n_months} month{'s' if n_months > 1 else ''}",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+                labels={"Amount": "CAD$", "Category": ""},
+            )
+            fig_bar.update_layout(
+                xaxis_tickangle=-35,
+                legend_title="Month",
+                margin=dict(t=50, b=80, l=20, r=20),
+                height=420,
+            )
+            st.plotly_chart(fig_bar, use_container_width=True)
+        else:
+            st.info("No data for the selected months.")
+
+        st.divider()
+
         # ── Category × Month table ──
         st.subheader("📋 Category Breakdown by Month")
 
