@@ -127,7 +127,7 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
         due = account.due_day
 
         # If purchase date is after closing day, it goes to next month's statement
-        if tx_date.day > closing:
+        if tx_date.day >= closing:
             if tx_date.month == 12:
                 stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
             else:
