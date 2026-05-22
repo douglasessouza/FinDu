@@ -320,3 +320,53 @@ def spending_by_category(currency: Optional[str] = None, db: Session = Depends(g
             result[cat] = 0
         result[cat] += t.amount
     return result
+@app.get("/spending-analysis")
+def spending_analysis(db: Session = Depends(get_db)):
+    """
+    Returns spending by category grouped by billing month.
+    - Credit cards: grouped by payment_due_date month minus 1 (the month you consider the expense)
+    - Checking accounts: grouped by transaction date month
+    Separates card vs debit spending per category per month.
+    """
+    from datetime import timedelta
+
+    # Fetch all accounts to classify them
+    all_accounts = db.query(Account).all()
+    card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
+    debit_ids = {a.id for a in all_accounts if a.account_type.value != "CREDIT_CARD"}
+
+    transactions = db.query(Transaction).filter(Transaction.amount < 0).all()
+
+    # result[month][category] = {"cards": 0.0, "debit": 0.0}
+    result = {}
+
+    for t in transactions:
+        cat = t.category or "Other"
+        amount = abs(t.amount)
+
+        if t.account_id in card_ids:
+            # For credit cards: billing month = payment_due_date month - 1
+            if t.payment_due_date:
+                due = t.payment_due_date
+                # Go back one month
+                if due.month == 1:
+                    billing_month = due.replace(year=due.year - 1, month=12, day=1)
+                else:
+                    billing_month = due.replace(month=due.month - 1, day=1)
+                month_key = billing_month.strftime("%Y-%m")
+            else:
+                month_key = t.date.strftime("%Y-%m")
+            col = "cards"
+        elif t.account_id in debit_ids:
+            month_key = t.date.strftime("%Y-%m")
+            col = "debit"
+        else:
+            continue
+
+        if month_key not in result:
+            result[month_key] = {}
+        if cat not in result[month_key]:
+            result[month_key][cat] = {"cards": 0.0, "debit": 0.0}
+        result[month_key][cat][col] += round(amount, 2)
+
+    return dict(sorted(result.items()))

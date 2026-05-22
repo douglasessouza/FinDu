@@ -177,6 +177,7 @@ MENU = [
     "Dashboard",
     "Import Statement",
     "Monthly View",
+    "Spending Analysis",
     "Card Summary",
     "Transactions",
     "Accounts",
@@ -298,17 +299,7 @@ elif page == "Dashboard":
         for a in brl_checking:
             st.metric(f"🏦 {a['name']}", f"R$ {fmt(a['balance'],'BRL')}")
             total_brl_cash += a["balance"]
-        brl_rec = sum(e["amount"] for e in recurring if e["currency"] == "BRL" and e.get("type") != "INCOME")
-        brl_inc = sum(e["amount"] for e in recurring if e["currency"] == "BRL" and e.get("type") == "INCOME")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("💰 In Bank", f"R$ {fmt(total_brl_cash,'BRL')}")
-            st.metric("🔄 Recurring", f"- R$ {fmt(brl_rec,'BRL')}", delta_color="inverse")
-        with col2:
-            net_brl = total_brl_cash - brl_rec
-            st.metric("📊 Net Position", f"R$ {fmt(net_brl,'BRL')}")
-            if brl_inc > 0:
-                st.metric("🎯 After Income", f"R$ {fmt(net_brl+brl_inc,'BRL')}")
+        st.metric("💰 In Bank", f"R$ {fmt(total_brl_cash,'BRL')}")
         if fx["BRL_CAD"]:
             st.caption(f"≈ CAD$ {fmt(total_brl_cash*fx['BRL_CAD'],'CAD')}")
     st.divider()
@@ -433,6 +424,113 @@ elif page == "Monthly View":
                     for cat, amount in sorted(category_totals.items(), key=lambda x: -x[1]):
                         st.write(f"  • {cat}: {symbol} {fmt(amount,currency)}")
         st.divider()
+
+# ─────────────────────────────────────────────────────────────────
+elif page == "Spending Analysis":
+    import plotly.express as px
+    import plotly.graph_objects as go
+
+    st.header("📊 Spending Analysis")
+
+    try:
+        data = requests.get(f"{API_URL}/spending-analysis", timeout=15).json()
+    except:
+        data = {}
+
+    if not data:
+        st.info("No spending data yet. Import some transactions first!")
+    else:
+        months_available = sorted(data.keys(), reverse=True)
+        month_labels = {m: datetime.strptime(m, "%Y-%m").strftime("%B %Y") for m in months_available}
+
+        # ── Month selector for pie chart ──
+        selected_month = st.selectbox(
+            "Select month",
+            months_available,
+            format_func=lambda m: month_labels[m]
+        )
+        st.divider()
+
+        # ── Pie chart ──
+        month_data = data.get(selected_month, {})
+        categories = []
+        totals = []
+        for cat, vals in month_data.items():
+            total = vals.get("cards", 0) + vals.get("debit", 0)
+            if total > 0:
+                categories.append(cat)
+                totals.append(round(total, 2))
+
+        if categories:
+            fig = px.pie(
+                names=categories,
+                values=totals,
+                title=f"Spending by Category — {month_labels[selected_month]}",
+                hole=0.4,
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
+            fig.update_layout(showlegend=True, margin=dict(t=50, b=20, l=20, r=20))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No expenses for this month.")
+
+        st.divider()
+
+        # ── Category × Month table ──
+        st.subheader("📋 Category Breakdown by Month")
+
+        all_cats = sorted(set(cat for month in data.values() for cat in month.keys()))
+        all_months = sorted(data.keys())
+
+        # Build multi-level columns: month → Cards, Debit
+        rows = []
+        for cat in all_cats:
+            row = {"Category": cat}
+            cat_total_cards = 0
+            cat_total_debit = 0
+            for m in all_months:
+                cards_val = data.get(m, {}).get(cat, {}).get("cards", 0)
+                debit_val = data.get(m, {}).get(cat, {}).get("debit", 0)
+                label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
+                row[f"{label} | Cards"] = round(cards_val, 2) if cards_val else ""
+                row[f"{label} | Debit"] = round(debit_val, 2) if debit_val else ""
+                cat_total_cards += cards_val
+                cat_total_debit += debit_val
+            row["Total Cards"] = round(cat_total_cards, 2) if cat_total_cards else ""
+            row["Total Debit"] = round(cat_total_debit, 2) if cat_total_debit else ""
+            rows.append(row)
+
+        # Add totals row
+        totals_row = {"Category": "💰 TOTAL"}
+        grand_cards = 0
+        grand_debit = 0
+        for m in all_months:
+            m_cards = sum(data.get(m, {}).get(cat, {}).get("cards", 0) for cat in all_cats)
+            m_debit = sum(data.get(m, {}).get(cat, {}).get("debit", 0) for cat in all_cats)
+            label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
+            totals_row[f"{label} | Cards"] = round(m_cards, 2) if m_cards else ""
+            totals_row[f"{label} | Debit"] = round(m_debit, 2) if m_debit else ""
+            grand_cards += m_cards
+            grand_debit += m_debit
+        totals_row["Total Cards"] = round(grand_cards, 2)
+        totals_row["Total Debit"] = round(grand_debit, 2)
+        rows.append(totals_row)
+
+        df_table = pd.DataFrame(rows)
+
+        st.dataframe(
+            df_table,
+            use_container_width=True,
+            height=min(50 + len(rows) * 35, 600),
+            column_config={
+                "Category": st.column_config.TextColumn("Category", width="medium"),
+                "Total Cards": st.column_config.NumberColumn("Total Cards", format="CAD$ %.2f"),
+                "Total Debit": st.column_config.NumberColumn("Total Debit", format="CAD$ %.2f"),
+            }
+        )
+        st.caption(f"Grand total: CAD$ {fmt(grand_cards + grand_debit, 'CAD')} (Cards: CAD$ {fmt(grand_cards, 'CAD')} + Debit: CAD$ {fmt(grand_debit, 'CAD')})")
+
 
 # ─────────────────────────────────────────────────────────────────
 elif page == "Card Summary":
