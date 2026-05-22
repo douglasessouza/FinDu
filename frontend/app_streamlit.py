@@ -103,7 +103,7 @@ def parse_statement(uploaded, from_date):
                 df["amount"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip(),
                 errors="coerce"
             ) * -1  # Amex shows charges as positive — invert to negative
-            df["date_parsed"] = pd.to_datetime(df["date"], errors="coerce")
+            df["date_parsed"] = pd.to_datetime(df["date"].astype(str).str.strip(), format="mixed", dayfirst=True, errors="coerce")
             df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
             bank = "Amex"
         except Exception as e:
