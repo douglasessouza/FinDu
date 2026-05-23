@@ -224,7 +224,21 @@ st.sidebar.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown("### FinDu")
+st.sidebar.markdown("### 💰 FinDu")
+
+# FX pill — live USD/CAD rate
+try:
+    _fx = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()
+    _usd_cad = _fx["rates"]["CAD"]
+    st.sidebar.markdown(f"""
+    <div style="display:inline-block;background:rgba(99,102,241,0.12);border:1px solid rgba(99,102,241,0.3);
+    border-radius:20px;padding:3px 10px;font-size:12px;margin-bottom:4px;color:inherit">
+    💵 1 USD = CAD$ {_usd_cad:.4f}
+    </div>
+    """, unsafe_allow_html=True)
+except:
+    pass
+
 st.sidebar.divider()
 
 for icon, label in MENU:
@@ -732,13 +746,19 @@ elif page == "Transactions":
         acc_id = int(selected.split("|")[0].strip())
         acc = next(a for a in accounts if a["id"] == acc_id)
         is_card = acc["account_type"] == "CREDIT_CARD"
-        if is_card:
-            month_filter = st.text_input("Filter by statement month (e.g. 2026-04)", value=default_month)
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            if is_card:
+                month_filter = st.text_input("Filter by statement month (e.g. 2026-04)", value=default_month)
+            else:
+                month_filter = st.text_input("Filter by month (e.g. 2026-04, leave empty for all)", value="")
         st.divider()
         try:
             txs = requests.get(f"{API_URL}/accounts/{acc_id}/transactions", timeout=10).json()
             if is_card and month_filter:
                 txs = [t for t in txs if t.get("statement_month") == month_filter]
+            elif not is_card and month_filter:
+                txs = [t for t in txs if t.get("date", "")[:7] == month_filter]
             if not txs:
                 st.info("No transactions found.")
             else:
@@ -775,8 +795,11 @@ elif page == "Transactions":
                         if payments > 0:
                             st.caption(f"Payments: CAD$ {fmt(payments,'CAD')}")
                     else:
-                        total = sum(t["amount"] for t in txs)
-                        st.metric("Total", f"CAD$ {fmt(total,'CAD')}")
+                        expenses = sum(abs(t["amount"]) for t in txs if t["amount"] < 0)
+                        income = sum(t["amount"] for t in txs if t["amount"] > 0)
+                        st.metric("💸 Spent", f"CAD$ {fmt(expenses,'CAD')}")
+                        if income > 0:
+                            st.metric("💰 Received", f"CAD$ {fmt(income,'CAD')}")
         except Exception as e:
             st.error(f"Error: {e}")
 
