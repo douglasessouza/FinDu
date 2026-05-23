@@ -10,9 +10,21 @@ from collections import defaultdict
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-CATEGORIES = ["Housing","Food","Restaurant","Coffee","Transport","Gas","Health","Wellness",
+CATEGORIES = ["Housing","Rent","Food","Restaurant","Coffee","Transport","Gas","Health","Wellness",
               "Education","Subscriptions","Entertainment","Leisure","Travel","Clothing",
               "Phone","Car","Insurance","Investments","Salary","Other Income","Transfer","Other"]
+
+def get_categories():
+    """Fetch categories from API dynamically, fallback to static list."""
+    try:
+        r = requests.get(f"{API_URL}/categories", timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if data and isinstance(data[0], dict):
+                return sorted([c["name"] for c in data])
+    except:
+        pass
+    return CATEGORIES
 
 # ── API helpers ────────────────────────────────────────────────────
 
@@ -740,7 +752,7 @@ elif page == "Transactions":
                         "date": st.column_config.TextColumn("Date", width="small"),
                         "description": st.column_config.TextColumn("Description", width="large"),
                         "amount": st.column_config.NumberColumn("Amount", format="%.2f", width="small"),
-                        "category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="medium"),
+                        "category": st.column_config.SelectboxColumn("Category", options=get_categories(), width="medium"),
                         "statement_month": st.column_config.TextColumn("Statement", width="small"),
                     },
                     use_container_width=True, num_rows="fixed", height=400
@@ -878,7 +890,7 @@ elif page == "Recurring Expenses":
             amount = st.number_input("Amount", value=0.0, min_value=0.0)
             currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
             due = st.number_input("Due day", min_value=1, max_value=31, value=1)
-            category = st.selectbox("Category", CATEGORIES)
+            category = st.selectbox("Category", get_categories())
             if st.form_submit_button("Add Expense"):
                 r = post_data("recurring-expenses", {"name": name, "amount": amount, "currency": currency,
                                                       "due_day": int(due), "category": category, "type": "EXPENSE"})
@@ -1030,7 +1042,7 @@ Return a JSON array. Each item must have:
 - "date": original date string
 - "description": clean merchant name (remove codes like "CONTACTLESS INTERAC PURCHASE - 1234 ")
 - "amount": numeric (negative = expense, positive = income/payment)
-- "category": one of: {", ".join(CATEGORIES)}
+- "category": one of: {", ".join(get_categories())}
 - "is_recurring": true if matches known recurring or clearly a regular bill
 - "recurring_match": matching recurring name or null
 
@@ -1074,7 +1086,7 @@ Return ONLY the JSON array, no markdown."""
                     "date": st.column_config.TextColumn("Date", width="small"),
                     "description": st.column_config.TextColumn("Description", width="large"),
                     "amount": st.column_config.NumberColumn("Amount", format="%.2f", width="small"),
-                    "category": st.column_config.SelectboxColumn("Category", options=CATEGORIES, width="medium"),
+                    "category": st.column_config.SelectboxColumn("Category", options=get_categories(), width="medium"),
                     "is_recurring": st.column_config.CheckboxColumn("Recurring?", width="small"),
                     "recurring_match": st.column_config.TextColumn("Match", width="medium"),
                 },
