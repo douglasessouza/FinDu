@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -36,17 +36,64 @@ def get_db():
     finally:
         db.close()
 
-CATEGORIES = [
-    "Housing", "Food", "Transport", "Health", "Education",
-    "Subscriptions", "Entertainment", "Leisure", "Travel",
-    "Clothing", "Phone", "Car", "Insurance", "Investments",
-    "Salary", "Other Income", "Transfer", "Other",
-    "Restaurant", "Coffee", "Gas", "Wellness"
+DEFAULT_CATEGORIES = [
+    ("Housing", "EXPENSE"), ("Rent", "EXPENSE"), ("Food", "EXPENSE"),
+    ("Restaurant", "EXPENSE"), ("Coffee", "EXPENSE"), ("Transport", "EXPENSE"),
+    ("Gas", "EXPENSE"), ("Health", "EXPENSE"), ("Wellness", "EXPENSE"),
+    ("Education", "EXPENSE"), ("Subscriptions", "EXPENSE"), ("Entertainment", "EXPENSE"),
+    ("Leisure", "EXPENSE"), ("Travel", "EXPENSE"), ("Clothing", "EXPENSE"),
+    ("Phone", "EXPENSE"), ("Car", "EXPENSE"), ("Insurance", "EXPENSE"),
+    ("Investments", "EXPENSE"), ("Other", "EXPENSE"),
+    ("Salary", "INCOME"), ("Other Income", "INCOME"),
+    ("Transfer", "TRANSFER"),
 ]
 
+@app.on_event("startup")
+def seed_default_categories():
+    """Seed default categories on startup if they don't exist yet."""
+    db = SessionLocal()
+    try:
+        for name, cat_type in DEFAULT_CATEGORIES:
+            exists = db.query(Category).filter(Category.name == name).first()
+            if not exists:
+                db.add(Category(name=name, type=CategoryTypeEnum[cat_type], is_default=True))
+        db.commit()
+    finally:
+        db.close()
+
 @app.get("/categories")
-def list_categories():
-    return CATEGORIES
+def list_categories(db: Session = Depends(get_db)):
+    """Returns all categories (default + user-created) sorted alphabetically."""
+    cats = db.query(Category).order_by(Category.name).all()
+    return [{"id": c.id, "name": c.name, "type": c.type.value, "is_default": c.is_default} for c in cats]
+
+class CategoryCreate(BaseModel):
+    name: str
+    type: str = "EXPENSE"
+
+@app.post("/categories")
+def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
+    """Creates a new user-defined category."""
+    existing = db.query(Category).filter(Category.name == category.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Category already exists")
+    db_cat = Category(name=category.name, type=CategoryTypeEnum[category.type], is_default=False)
+    db.add(db_cat)
+    db.commit()
+    db.refresh(db_cat)
+    return {"id": db_cat.id, "name": db_cat.name, "type": db_cat.type.value, "is_default": db_cat.is_default}
+
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: int, db: Session = Depends(get_db)):
+    """Deletes a user-created category. Default categories cannot be deleted."""
+    cat = db.query(Category).filter(Category.id == category_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    if cat.is_default:
+        raise HTTPException(status_code=400, detail="Cannot delete default categories")
+    db.delete(cat)
+    db.commit()
+    return {"message": f"Category {cat.name} deleted"}
 
 class AccountCreate(BaseModel):
     name: str

@@ -61,3 +61,16 @@ class RecurringExpense(Base):
     category = Column(String, nullable=True)     # e.g. "Housing", "Subscriptions"
     is_active = Column(Boolean, default=True)    # Can be deactivated without deleting
     created_at = Column(DateTime, default=datetime.utcnow)
+class CategoryTypeEnum(enum.Enum):
+    EXPENSE = "EXPENSE"
+    INCOME = "INCOME"
+    TRANSFER = "TRANSFER"
+
+class Category(Base):
+    __tablename__ = "categories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)   # Category name e.g. "Rent"
+    type = Column(Enum(CategoryTypeEnum), nullable=False, default=CategoryTypeEnum.EXPENSE)
+    is_default = Column(Boolean, default=False)          # True = system default, cannot be deleted
+    created_at = Column(DateTime, default=datetime.utcnow)

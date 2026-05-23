@@ -183,6 +183,7 @@ MENU = [
     ("🏦", "Accounts"),
     ("💳", "Credit Cards"),
     ("🔄", "Recurring Expenses"),
+    ("🏷️", "Categories"),
 ]
 
 # ── Sidebar nav ────────────────────────────────────────────────────
@@ -587,6 +588,68 @@ elif page == "Spending Analysis":
             column_order=["Category"] + [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in all_months] + ["Total"]
         )
         st.caption(f"Grand total: CAD$ {fmt(grand_total, 'CAD')}")
+
+
+# ─────────────────────────────────────────────────────────────────
+elif page == "Categories":
+    st.header("🏷️ Categories")
+    st.caption("Manage your spending categories. Default categories (🔒) cannot be deleted.")
+
+    try:
+        cats_resp = requests.get(f"{API_URL}/categories", timeout=10)
+        cats = cats_resp.json() if cats_resp.status_code == 200 else []
+        # Handle old format (list of strings) vs new format (list of dicts)
+        if cats and isinstance(cats[0], str):
+            st.info("Categories are being migrated. Please redeploy the API.")
+            cats = []
+    except:
+        cats = []
+
+    expense_cats = [c for c in cats if isinstance(c, dict) and c.get("type") == "EXPENSE"]
+    income_cats = [c for c in cats if isinstance(c, dict) and c.get("type") == "INCOME"]
+    transfer_cats = [c for c in cats if isinstance(c, dict) and c.get("type") == "TRANSFER"]
+
+    for section_label, section_cats in [
+        ("💸 Expense", expense_cats),
+        ("💰 Income", income_cats),
+        ("↔️ Transfer", transfer_cats)
+    ]:
+        if section_cats:
+            st.subheader(section_label)
+            for c in section_cats:
+                col1, col2 = st.columns([6, 1])
+                with col1:
+                    badge = "🔒" if c["is_default"] else "✏️"
+                    st.write(f"{badge} {c['name']}")
+                with col2:
+                    if not c["is_default"]:
+                        if st.button("🗑️", key=f"del_cat_{c['id']}"):
+                            r = requests.delete(f"{API_URL}/categories/{c['id']}", timeout=10)
+                            if r.status_code == 200:
+                                st.success(f"Deleted {c['name']}!")
+                                st.rerun()
+            st.divider()
+
+    st.subheader("➕ Add New Category")
+    with st.form("new_category"):
+        new_name = st.text_input("Category name", placeholder="e.g. Rent, Groceries, Pet")
+        new_type = st.selectbox("Type", ["EXPENSE", "INCOME", "TRANSFER"])
+        if st.form_submit_button("Add Category"):
+            if not new_name.strip():
+                st.error("Name cannot be empty.")
+            else:
+                r = requests.post(
+                    f"{API_URL}/categories",
+                    json={"name": new_name.strip(), "type": new_type},
+                    timeout=10
+                )
+                if r.status_code == 200:
+                    st.success(f"Category '{new_name}' added!")
+                    st.rerun()
+                elif r.status_code == 400:
+                    st.warning("Category already exists.")
+                else:
+                    st.error(f"Error: {r.text}")
 
 
 # ─────────────────────────────────────────────────────────────────
