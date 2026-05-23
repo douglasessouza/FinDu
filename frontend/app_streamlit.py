@@ -10,9 +10,18 @@ from collections import defaultdict
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
-CATEGORIES = ["Housing","Food","Restaurant","Coffee","Transport","Gas","Health","Wellness",
+CATEGORIES = ["Housing","Rent","Food","Restaurant","Coffee","Transport","Gas","Health","Wellness",
               "Education","Subscriptions","Entertainment","Leisure","Travel","Clothing",
               "Phone","Car","Insurance","Investments","Salary","Other Income","Transfer","Other"]
+
+def get_categories():
+    try:
+        r = requests.get(f"{API_URL}/categories", timeout=10)
+        if r.status_code == 200:
+            return [c["name"] for c in r.json()]
+    except:
+        pass
+    return CATEGORIES
 
 # ── API helpers ────────────────────────────────────────────────────
 
@@ -174,53 +183,24 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = "Dashboard"
 
 MENU = [
-    ("📊", "Dashboard"),
-    ("📂", "Import Statement"),
-    ("📅", "Monthly View"),
-    ("📈", "Spending Analysis"),
-    ("💳", "Card Summary"),
-    ("💸", "Transactions"),
-    ("🏦", "Accounts"),
-    ("💳", "Credit Cards"),
-    ("🔄", "Recurring Expenses"),
+    "Dashboard",
+    "Import Statement",
+    "Monthly View",
+    "Spending Analysis",
+    "Card Summary",
+    "Transactions",
+    "Accounts",
+    "Credit Cards",
+    "Recurring Expenses",
+    "Debug",
 ]
 
-# ── Sidebar nav ────────────────────────────────────────────────────
-st.sidebar.markdown("""
-<style>
-    div[data-testid="stSidebar"] .stButton button {
-        width: 100%;
-        text-align: left;
-        background: transparent;
-        border: none;
-        padding: 10px 14px;
-        border-radius: 8px;
-        font-size: 15px;
-        color: inherit;
-        cursor: pointer;
-        transition: background 0.15s;
-    }
-    div[data-testid="stSidebar"] .stButton button:hover {
-        background: rgba(128,128,128,0.15);
-    }
-    div[data-testid="stSidebar"] .stButton button[kind="primary"] {
-        background: rgba(99, 102, 241, 0.18);
-        font-weight: 600;
-        border-left: 3px solid #6366f1;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.sidebar.markdown("### FinDu")
-st.sidebar.divider()
-
-for icon, label in MENU:
-    is_active = st.session_state.current_page == label
-    if st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}", type="primary" if is_active else "secondary", use_container_width=True):
-        st.session_state.current_page = label
-        st.rerun()
-
-page = st.session_state.current_page
+page = st.sidebar.selectbox(
+    "Menu",
+    MENU,
+    index=MENU.index(st.session_state.current_page) if st.session_state.current_page in MENU else 0
+)
+st.session_state.current_page = page
 
 @st.cache_data(ttl=3600)
 def get_fx():
@@ -232,7 +212,27 @@ def get_fx():
         return {"BRL_CAD": None, "USD_CAD": None}
 
 # ─────────────────────────────────────────────────────────────────
-if page == "Dashboard":
+if page == "Debug":
+    st.header("Debug")
+    st.write(f"API_URL: {API_URL}")
+    try:
+        r = requests.get(f"{API_URL}/accounts", timeout=15)
+        st.write(f"GET status: {r.status_code}")
+        st.write(f"Response: {r.text[:300]}")
+    except Exception as e:
+        st.error(f"GET failed: {e}")
+    if st.button("Test POST /accounts"):
+        try:
+            p = {"name": "Debug", "bank": "Debug", "account_type": "CHECKING", "currency": "BRL",
+                 "balance": 1.0, "credit_limit": None, "closing_day": None, "due_day": None}
+            r2 = requests.post(f"{API_URL}/accounts", json=p, timeout=15)
+            st.write(f"POST status: {r2.status_code}")
+            st.write(f"Response: {r2.text[:300]}")
+        except Exception as e:
+            st.error(f"POST failed: {e}")
+
+# ─────────────────────────────────────────────────────────────────
+elif page == "Dashboard":
     st.header("📊 Dashboard")
     st.caption(f"Today: {date.today().strftime('%B %d, %Y')}")
     fx = get_fx()
@@ -442,7 +442,8 @@ elif page == "Spending Analysis":
     st.header("📊 Spending Analysis")
 
     try:
-        data = requests.get(f"{API_URL}/spending-analysis", timeout=15).json()
+        resp_data = requests.get(f"{API_URL}/spending-analysis", timeout=15)
+        data = resp_data.json() if resp_data.status_code == 200 else {}
     except:
         data = {}
 
@@ -452,7 +453,6 @@ elif page == "Spending Analysis":
         months_available = sorted(data.keys(), reverse=True)
         month_labels = {m: datetime.strptime(m, "%Y-%m").strftime("%B %Y") for m in months_available}
 
-        # ── Month selector for pie chart ──
         selected_month = st.selectbox(
             "Select month",
             months_available,
@@ -460,7 +460,6 @@ elif page == "Spending Analysis":
         )
         st.divider()
 
-        # ── Pie chart ──
         month_data = data.get(selected_month, {})
         categories = []
         totals = []
@@ -470,19 +469,64 @@ elif page == "Spending Analysis":
                 categories.append(cat)
                 totals.append(round(total, 2))
 
-        if categories:
-            fig = px.pie(
-                names=categories,
-                values=totals,
-                title=f"Spending by Category — {month_labels[selected_month]}",
-                hole=0.4,
-                color_discrete_sequence=px.colors.qualitative.Set3
-            )
-            fig.update_traces(textposition="inside", textinfo="percent+label")
-            fig.update_layout(showlegend=True, margin=dict(t=50, b=20, l=20, r=20))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No expenses for this month.")
+        # ── 2-column layout: pie chart + category list with drill-down ──
+        col_pie, col_cats = st.columns([3, 2])
+
+        with col_pie:
+            if categories:
+                fig = px.pie(
+                    names=categories,
+                    values=totals,
+                    title=f"Spending — {month_labels[selected_month]}",
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.qualitative.Set3
+                )
+                fig.update_traces(textposition="inside", textinfo="percent+label")
+                fig.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10), height=420)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No expenses for this month.")
+
+        with col_cats:
+            st.markdown("**Categories**")
+            if categories:
+                sorted_cats = sorted(zip(categories, totals), key=lambda x: -x[1])
+                total_month = sum(totals)
+                if "expanded_cat" not in st.session_state:
+                    st.session_state.expanded_cat = None
+
+                for cat, amt in sorted_cats:
+                    pct = (amt / total_month * 100) if total_month > 0 else 0
+                    is_expanded = st.session_state.expanded_cat == f"{selected_month}_{cat}"
+                    if st.button(
+                        f"{'▾' if is_expanded else '▸'} {cat}  CAD$ {fmt(amt,'CAD')}  ({pct:.1f}%)",
+                        key=f"cat_btn_{cat}_{selected_month}",
+                        use_container_width=True
+                    ):
+                        st.session_state.expanded_cat = None if is_expanded else f"{selected_month}_{cat}"
+                        st.rerun()
+
+                    if is_expanded:
+                        try:
+                            txs = requests.get(
+                                f"{API_URL}/transactions-by-category",
+                                params={"month": selected_month, "category": cat},
+                                timeout=10
+                            ).json()
+                            if isinstance(txs, list) and txs:
+                                for t in txs:
+                                    icon = "💳" if t["type"] == "card" else "🏦"
+                                    st.markdown(
+                                        f"<div style='font-size:12px;padding:2px 8px;border-left:2px solid #6366f1;margin:2px 0'>"
+                                        f"{icon} <b>{t['date']}</b> · {t['description'][:28]} · "
+                                        f"<span style='color:#ef4444'>-${abs(t['amount']):.2f}</span>"
+                                        f"</div>",
+                                        unsafe_allow_html=True
+                                    )
+                            else:
+                                st.caption("No transactions found.")
+                        except Exception as e:
+                            st.caption(f"Error loading transactions.")
 
         st.divider()
 
@@ -587,6 +631,55 @@ elif page == "Spending Analysis":
             column_order=["Category"] + [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in all_months] + ["Total"]
         )
         st.caption(f"Grand total: CAD$ {fmt(grand_total, 'CAD')}")
+
+
+# ─────────────────────────────────────────────────────────────────
+elif page == "Categories":
+    st.header("🏷️ Categories")
+    st.caption("Manage your spending categories. Default categories (🔒) cannot be deleted.")
+
+    try:
+        cats = requests.get(f"{API_URL}/categories", timeout=10).json()
+    except:
+        cats = []
+
+    expense_cats = [c for c in cats if c["type"] == "EXPENSE"]
+    income_cats = [c for c in cats if c["type"] == "INCOME"]
+    transfer_cats = [c for c in cats if c["type"] == "TRANSFER"]
+
+    for section_label, section_cats in [("💸 Expense", expense_cats), ("💰 Income", income_cats), ("↔️ Transfer", transfer_cats)]:
+        if section_cats:
+            st.subheader(section_label)
+            for c in section_cats:
+                col1, col2 = st.columns([6, 1])
+                with col1:
+                    badge = "🔒" if c["is_default"] else "✏️"
+                    st.write(f"{badge} {c['name']}")
+                with col2:
+                    if not c["is_default"]:
+                        if st.button("🗑️", key=f"del_cat_{c['id']}"):
+                            r = requests.delete(f"{API_URL}/categories/{c['id']}", timeout=10)
+                            if r.status_code == 200:
+                                st.success(f"Deleted {c['name']}!")
+                                st.rerun()
+            st.divider()
+
+    st.subheader("➕ Add New Category")
+    with st.form("new_category"):
+        new_name = st.text_input("Category name", placeholder="e.g. Rent, Groceries, Pet")
+        new_type = st.selectbox("Type", ["EXPENSE", "INCOME", "TRANSFER"])
+        if st.form_submit_button("Add Category"):
+            if not new_name.strip():
+                st.error("Name cannot be empty.")
+            else:
+                r = requests.post(f"{API_URL}/categories", json={"name": new_name.strip(), "type": new_type}, timeout=10)
+                if r.status_code == 200:
+                    st.success(f"Category '{new_name}' added!")
+                    st.rerun()
+                elif r.status_code == 400:
+                    st.warning("Category already exists.")
+                else:
+                    st.error(f"Error: {r.text}")
 
 
 # ─────────────────────────────────────────────────────────────────

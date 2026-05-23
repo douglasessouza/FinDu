@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -36,17 +36,64 @@ def get_db():
     finally:
         db.close()
 
-CATEGORIES = [
-    "Housing", "Food", "Transport", "Health", "Education",
-    "Subscriptions", "Entertainment", "Leisure", "Travel",
-    "Clothing", "Phone", "Car", "Insurance", "Investments",
-    "Salary", "Other Income", "Transfer", "Other",
-    "Restaurant", "Coffee", "Gas", "Wellness"
+DEFAULT_CATEGORIES = [
+    ("Housing", "EXPENSE"), ("Rent", "EXPENSE"), ("Food", "EXPENSE"),
+    ("Restaurant", "EXPENSE"), ("Coffee", "EXPENSE"), ("Transport", "EXPENSE"),
+    ("Gas", "EXPENSE"), ("Health", "EXPENSE"), ("Wellness", "EXPENSE"),
+    ("Education", "EXPENSE"), ("Subscriptions", "EXPENSE"), ("Entertainment", "EXPENSE"),
+    ("Leisure", "EXPENSE"), ("Travel", "EXPENSE"), ("Clothing", "EXPENSE"),
+    ("Phone", "EXPENSE"), ("Car", "EXPENSE"), ("Insurance", "EXPENSE"),
+    ("Investments", "EXPENSE"), ("Other", "EXPENSE"),
+    ("Salary", "INCOME"), ("Other Income", "INCOME"),
+    ("Transfer", "TRANSFER"),
 ]
 
+@app.on_event("startup")
+def seed_default_categories():
+    """Seed default categories into the database if they don't exist yet."""
+    db = SessionLocal()
+    try:
+        for name, cat_type in DEFAULT_CATEGORIES:
+            exists = db.query(Category).filter(Category.name == name).first()
+            if not exists:
+                db.add(Category(name=name, type=CategoryTypeEnum[cat_type], is_default=True))
+        db.commit()
+    finally:
+        db.close()
+
 @app.get("/categories")
-def list_categories():
-    return CATEGORIES
+def list_categories(db: Session = Depends(get_db)):
+    """Returns all categories sorted alphabetically."""
+    cats = db.query(Category).order_by(Category.name).all()
+    return [{"id": c.id, "name": c.name, "type": c.type.value, "is_default": c.is_default} for c in cats]
+
+class CategoryCreate(BaseModel):
+    name: str
+    type: str = "EXPENSE"
+
+@app.post("/categories")
+def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
+    """Creates a new user-defined category."""
+    existing = db.query(Category).filter(Category.name == category.name).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Category already exists")
+    db_cat = Category(name=category.name, type=CategoryTypeEnum[category.type], is_default=False)
+    db.add(db_cat)
+    db.commit()
+    db.refresh(db_cat)
+    return {"id": db_cat.id, "name": db_cat.name, "type": db_cat.type.value, "is_default": db_cat.is_default}
+
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: int, db: Session = Depends(get_db)):
+    """Deletes a user-created category. Default categories cannot be deleted."""
+    cat = db.query(Category).filter(Category.id == category_id).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    if cat.is_default:
+        raise HTTPException(status_code=400, detail="Cannot delete default categories")
+    db.delete(cat)
+    db.commit()
+    return {"message": f"Category {cat.name} deleted"}
 
 class AccountCreate(BaseModel):
     name: str
@@ -65,7 +112,7 @@ class TransactionCreate(BaseModel):
     currency: CurrencyEnum
     date: datetime
     category: Optional[str] = None
-    import_batch_id: Optional[str] = None  # UUID from the import session
+    import_batch_id: Optional[str] = None
 
 class RecurringExpenseCreate(BaseModel):
     name: str
@@ -126,7 +173,7 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
         closing = account.closing_day
         due = account.due_day
 
-        # If purchase date is after closing day, it goes to next month's statement
+        # If purchase date is on or after closing day, it goes to next month's statement
         if tx_date.day >= closing:
             if tx_date.month == 12:
                 stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
@@ -137,7 +184,6 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
 
         data["statement_month"] = stmt_month.strftime("%Y-%m")
 
-        # Payment due date = due_day of the month after statement_month
         if stmt_month.month == 12:
             due_date = stmt_month.replace(year=stmt_month.year + 1, month=1, day=due)
         else:
@@ -175,7 +221,6 @@ def detect_card_payments(account_id: int, db: Session = Depends(get_db)):
         .filter(Transaction.account_id == account_id)\
         .filter(Transaction.amount > 0)\
         .all()
-
     card_keywords = ["american express", "amex", "visa", "mastercard", "bmo", "credit card payment"]
     payments = []
     for t in transactions:
@@ -238,11 +283,9 @@ def update_transaction(transaction_id: int, updates: dict, db: Session = Depends
     db.refresh(transaction)
     return transaction
 
-# --- Import batch endpoints ---
-
 @app.get("/imports")
 def list_imports(db: Session = Depends(get_db)):
-    """Returns all import batches grouped by import_batch_id, with account info and transaction count."""
+    """Returns all import batches grouped by import_batch_id."""
     rows = db.query(
         Transaction.import_batch_id,
         Transaction.account_id,
@@ -254,7 +297,6 @@ def list_imports(db: Session = Depends(get_db)):
      .group_by(Transaction.import_batch_id, Transaction.account_id)\
      .order_by(func.max(Transaction.created_at).desc())\
      .all()
-
     accounts = {a.id: a for a in db.query(Account).all()}
     result = []
     for row in rows:
@@ -284,8 +326,6 @@ def delete_import_batch(batch_id: str, db: Session = Depends(get_db)):
         db.delete(t)
     db.commit()
     return {"message": f"Deleted {count} transactions from batch {batch_id}"}
-
-# --- Recurring expenses ---
 
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
@@ -320,42 +360,70 @@ def spending_by_category(currency: Optional[str] = None, db: Session = Depends(g
             result[cat] = 0
         result[cat] += t.amount
     return result
+
+@app.get("/transactions-by-category")
+def transactions_by_category(month: str, category: str, db: Session = Depends(get_db)):
+    """Returns individual transactions for a given billing month and category."""
+    all_accounts = db.query(Account).all()
+    card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
+    debit_ids = {a.id for a in all_accounts if a.account_type.value != "CREDIT_CARD"}
+    result = []
+
+    # Card transactions: billing_month = payment_due_date - 1 month
+    card_txs = db.query(Transaction).filter(
+        Transaction.account_id.in_(card_ids),
+        Transaction.amount < 0,
+        Transaction.category == category,
+        Transaction.payment_due_date != None
+    ).all()
+    for t in card_txs:
+        due = t.payment_due_date
+        billing = due.replace(month=due.month - 1) if due.month > 1 else due.replace(year=due.year - 1, month=12)
+        if billing.strftime("%Y-%m") == month:
+            acc = next((a for a in all_accounts if a.id == t.account_id), None)
+            result.append({
+                "id": t.id, "date": t.date.strftime("%Y-%m-%d"),
+                "description": t.description, "amount": t.amount,
+                "account": acc.name if acc else "Unknown", "type": "card"
+            })
+
+    # Debit transactions
+    debit_txs = db.query(Transaction).filter(
+        Transaction.account_id.in_(debit_ids),
+        Transaction.amount < 0,
+        Transaction.category == category
+    ).all()
+    for t in debit_txs:
+        if t.date.strftime("%Y-%m") == month:
+            acc = next((a for a in all_accounts if a.id == t.account_id), None)
+            result.append({
+                "id": t.id, "date": t.date.strftime("%Y-%m-%d"),
+                "description": t.description, "amount": t.amount,
+                "account": acc.name if acc else "Unknown", "type": "debit"
+            })
+
+    return sorted(result, key=lambda x: x["date"], reverse=True)
+
 @app.get("/spending-analysis")
 def spending_analysis(db: Session = Depends(get_db)):
-    """
-    Returns spending by category grouped by billing month.
-    - Credit cards: grouped by payment_due_date month minus 1 (the month you consider the expense)
-    - Checking accounts: grouped by transaction date month
-    Separates card vs debit spending per category per month.
-    """
-    from datetime import timedelta
-
-    # Fetch all accounts to classify them
+    """Returns spending by category grouped by billing month."""
     all_accounts = db.query(Account).all()
     card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
     debit_ids = {a.id for a in all_accounts if a.account_type.value != "CREDIT_CARD"}
 
-    # Only expenses (negative amounts), exclude income and transfer categories
     excluded_categories = {"Salary", "Other Income", "Transfer"}
     transactions = db.query(Transaction).filter(Transaction.amount < 0).all()
     transactions = [t for t in transactions if (t.category or "Other") not in excluded_categories]
 
-    # result[month][category] = {"cards": 0.0, "debit": 0.0}
     result = {}
-
     for t in transactions:
         cat = t.category or "Other"
         amount = abs(t.amount)
 
         if t.account_id in card_ids:
-            # For credit cards: billing month = payment_due_date month - 1
             if t.payment_due_date:
                 due = t.payment_due_date
-                # Go back one month
-                if due.month == 1:
-                    billing_month = due.replace(year=due.year - 1, month=12, day=1)
-                else:
-                    billing_month = due.replace(month=due.month - 1, day=1)
+                billing_month = due.replace(month=due.month - 1) if due.month > 1 else due.replace(year=due.year - 1, month=12)
                 month_key = billing_month.strftime("%Y-%m")
             else:
                 month_key = t.date.strftime("%Y-%m")
