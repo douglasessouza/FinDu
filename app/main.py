@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -36,61 +36,17 @@ def get_db():
     finally:
         db.close()
 
-DEFAULT_CATEGORIES = [
-    "Housing", "Rent", "Food", "Restaurant", "Coffee", "Transport", "Gas",
-    "Health", "Wellness", "Education", "Subscriptions", "Entertainment",
-    "Leisure", "Travel", "Clothing", "Phone", "Car", "Insurance",
-    "Investments", "Salary", "Other Income", "Transfer", "Other"
+CATEGORIES = [
+    "Housing", "Food", "Transport", "Health", "Education",
+    "Subscriptions", "Entertainment", "Leisure", "Travel",
+    "Clothing", "Phone", "Car", "Insurance", "Investments",
+    "Salary", "Other Income", "Transfer", "Other",
+    "Restaurant", "Coffee", "Gas", "Wellness"
 ]
 
-@app.on_event("startup")
-def seed_default_categories(db: Session = None):
-    """Seed default categories into the database if they don't exist yet."""
-    db = SessionLocal()
-    try:
-        for name in DEFAULT_CATEGORIES:
-            exists = db.query(Category).filter(Category.name == name).first()
-            if not exists:
-                cat_type = CategoryTypeEnum.INCOME if name in ("Salary", "Other Income") else                            CategoryTypeEnum.TRANSFER if name == "Transfer" else                            CategoryTypeEnum.EXPENSE
-                db.add(Category(name=name, type=cat_type, is_default=True))
-        db.commit()
-    finally:
-        db.close()
-
 @app.get("/categories")
-def list_categories(db: Session = Depends(get_db)):
-    """Returns all categories (default + user-created), sorted alphabetically."""
-    cats = db.query(Category).order_by(Category.name).all()
-    return [{"id": c.id, "name": c.name, "type": c.type.value, "is_default": c.is_default} for c in cats]
-
-class CategoryCreate(BaseModel):
-    name: str
-    type: str = "EXPENSE"  # EXPENSE, INCOME, TRANSFER
-
-@app.post("/categories")
-def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
-    """Creates a new user-defined category."""
-    existing = db.query(Category).filter(Category.name == category.name).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Category already exists")
-    cat_type = CategoryTypeEnum[category.type]
-    db_cat = Category(name=category.name, type=cat_type, is_default=False)
-    db.add(db_cat)
-    db.commit()
-    db.refresh(db_cat)
-    return {"id": db_cat.id, "name": db_cat.name, "type": db_cat.type.value, "is_default": db_cat.is_default}
-
-@app.delete("/categories/{category_id}")
-def delete_category(category_id: int, db: Session = Depends(get_db)):
-    """Deletes a user-created category. Default categories cannot be deleted."""
-    cat = db.query(Category).filter(Category.id == category_id).first()
-    if not cat:
-        raise HTTPException(status_code=404, detail="Category not found")
-    if cat.is_default:
-        raise HTTPException(status_code=400, detail="Cannot delete default categories")
-    db.delete(cat)
-    db.commit()
-    return {"message": f"Category {cat.name} deleted"}
+def list_categories():
+    return CATEGORIES
 
 class AccountCreate(BaseModel):
     name: str
@@ -364,3 +320,56 @@ def spending_by_category(currency: Optional[str] = None, db: Session = Depends(g
             result[cat] = 0
         result[cat] += t.amount
     return result
+@app.get("/spending-analysis")
+def spending_analysis(db: Session = Depends(get_db)):
+    """
+    Returns spending by category grouped by billing month.
+    - Credit cards: grouped by payment_due_date month minus 1 (the month you consider the expense)
+    - Checking accounts: grouped by transaction date month
+    Separates card vs debit spending per category per month.
+    """
+    from datetime import timedelta
+
+    # Fetch all accounts to classify them
+    all_accounts = db.query(Account).all()
+    card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
+    debit_ids = {a.id for a in all_accounts if a.account_type.value != "CREDIT_CARD"}
+
+    # Only expenses (negative amounts), exclude income and transfer categories
+    excluded_categories = {"Salary", "Other Income", "Transfer"}
+    transactions = db.query(Transaction).filter(Transaction.amount < 0).all()
+    transactions = [t for t in transactions if (t.category or "Other") not in excluded_categories]
+
+    # result[month][category] = {"cards": 0.0, "debit": 0.0}
+    result = {}
+
+    for t in transactions:
+        cat = t.category or "Other"
+        amount = abs(t.amount)
+
+        if t.account_id in card_ids:
+            # For credit cards: billing month = payment_due_date month - 1
+            if t.payment_due_date:
+                due = t.payment_due_date
+                # Go back one month
+                if due.month == 1:
+                    billing_month = due.replace(year=due.year - 1, month=12, day=1)
+                else:
+                    billing_month = due.replace(month=due.month - 1, day=1)
+                month_key = billing_month.strftime("%Y-%m")
+            else:
+                month_key = t.date.strftime("%Y-%m")
+            col = "cards"
+        elif t.account_id in debit_ids:
+            month_key = t.date.strftime("%Y-%m")
+            col = "debit"
+        else:
+            continue
+
+        if month_key not in result:
+            result[month_key] = {}
+        if cat not in result[month_key]:
+            result[month_key][cat] = {"cards": 0.0, "debit": 0.0}
+        result[month_key][cat][col] += round(amount, 2)
+
+    return dict(sorted(result.items()))
