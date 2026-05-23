@@ -174,24 +174,53 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = "Dashboard"
 
 MENU = [
-    "Dashboard",
-    "Import Statement",
-    "Monthly View",
-    "Spending Analysis",
-    "Card Summary",
-    "Transactions",
-    "Accounts",
-    "Credit Cards",
-    "Recurring Expenses",
-    "Debug",
+    ("📊", "Dashboard"),
+    ("📂", "Import Statement"),
+    ("📅", "Monthly View"),
+    ("📈", "Spending Analysis"),
+    ("💳", "Card Summary"),
+    ("💸", "Transactions"),
+    ("🏦", "Accounts"),
+    ("💳", "Credit Cards"),
+    ("🔄", "Recurring Expenses"),
 ]
 
-page = st.sidebar.selectbox(
-    "Menu",
-    MENU,
-    index=MENU.index(st.session_state.current_page) if st.session_state.current_page in MENU else 0
-)
-st.session_state.current_page = page
+# ── Sidebar nav ────────────────────────────────────────────────────
+st.sidebar.markdown("""
+<style>
+    div[data-testid="stSidebar"] .stButton button {
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: none;
+        padding: 10px 14px;
+        border-radius: 8px;
+        font-size: 15px;
+        color: inherit;
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    div[data-testid="stSidebar"] .stButton button:hover {
+        background: rgba(128,128,128,0.15);
+    }
+    div[data-testid="stSidebar"] .stButton button[kind="primary"] {
+        background: rgba(99, 102, 241, 0.18);
+        font-weight: 600;
+        border-left: 3px solid #6366f1;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.sidebar.markdown("### FinDu")
+st.sidebar.divider()
+
+for icon, label in MENU:
+    is_active = st.session_state.current_page == label
+    if st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}", type="primary" if is_active else "secondary", use_container_width=True):
+        st.session_state.current_page = label
+        st.rerun()
+
+page = st.session_state.current_page
 
 @st.cache_data(ttl=3600)
 def get_fx():
@@ -203,27 +232,7 @@ def get_fx():
         return {"BRL_CAD": None, "USD_CAD": None}
 
 # ─────────────────────────────────────────────────────────────────
-if page == "Debug":
-    st.header("Debug")
-    st.write(f"API_URL: {API_URL}")
-    try:
-        r = requests.get(f"{API_URL}/accounts", timeout=15)
-        st.write(f"GET status: {r.status_code}")
-        st.write(f"Response: {r.text[:300]}")
-    except Exception as e:
-        st.error(f"GET failed: {e}")
-    if st.button("Test POST /accounts"):
-        try:
-            p = {"name": "Debug", "bank": "Debug", "account_type": "CHECKING", "currency": "BRL",
-                 "balance": 1.0, "credit_limit": None, "closing_day": None, "due_day": None}
-            r2 = requests.post(f"{API_URL}/accounts", json=p, timeout=15)
-            st.write(f"POST status: {r2.status_code}")
-            st.write(f"Response: {r2.text[:300]}")
-        except Exception as e:
-            st.error(f"POST failed: {e}")
-
-# ─────────────────────────────────────────────────────────────────
-elif page == "Dashboard":
+if page == "Dashboard":
     st.header("📊 Dashboard")
     st.caption(f"Today: {date.today().strftime('%B %d, %Y')}")
     fx = get_fx()
