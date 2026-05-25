@@ -462,24 +462,25 @@ elif page == "Monthly View":
         st.divider()
 
 # ─────────────────────────────────────────────────────────────────
+
 elif page == "Spending Analysis":
     import plotly.express as px
     import plotly.graph_objects as go
- 
+
     st.header("📈 Spending Analysis")
- 
+
     # ── Fetch spending summary ──────────────────────────────────────
     try:
         data = requests.get(f"{API_URL}/spending-analysis", timeout=15).json()
     except:
         data = {}
- 
+
     if not data:
         st.info("No spending data yet. Import some transactions first!")
     else:
         months_available = sorted(data.keys(), reverse=True)
         month_labels = {m: datetime.strptime(m, "%Y-%m").strftime("%B %Y") for m in months_available}
- 
+
         # ── Month selector ──────────────────────────────────────────
         selected_month = st.selectbox(
             "Select month",
@@ -487,7 +488,7 @@ elif page == "Spending Analysis":
             format_func=lambda m: month_labels[m]
         )
         st.divider()
- 
+
         # ── Prepare pie data ────────────────────────────────────────
         month_data = data.get(selected_month, {})
         categories = []
@@ -497,136 +498,30 @@ elif page == "Spending Analysis":
             if total > 0:
                 categories.append(cat)
                 totals.append(round(total, 2))
- 
+
         if not categories:
             st.info("No expenses for this month.")
         else:
-            # ── Pie chart ───────────────────────────────────────────
-            st.subheader(f"Spending by Category — {month_labels[selected_month]}")
- 
-            # Build color map so pills match the chart colors
+            # Build color map — same palette as pie chart
             color_palette = px.colors.qualitative.Set3
             color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
- 
-            fig = px.pie(
-                names=categories,
-                values=totals,
-                hole=0.4,
-                color_discrete_sequence=color_palette,
-            )
-            fig.update_traces(textposition="inside", textinfo="percent+label")
-            fig.update_layout(
-                showlegend=True,
-                margin=dict(t=20, b=20, l=20, r=20),
-                legend=dict(
-                    orientation="v",
-                    yanchor="middle",
-                    y=0.5,
-                    xanchor="left",
-                    x=1.02,
-                ),
-            )
-            st.plotly_chart(fig, use_container_width=True)
- 
-            # ── Category pills + transaction drill-down ─────────────
-            st.subheader("📋 Click a category to see transactions")
- 
-            # Fetch all accounts once (needed to query transactions per account)
-            accounts = get_accounts()
- 
-            # Sort categories by total (descending) — same order as pie
+
+            # Sort categories by total descending
             cat_sorted = sorted(
                 [(cat, round(month_data[cat].get("cards", 0) + month_data[cat].get("debit", 0), 2))
                  for cat in categories],
                 key=lambda x: -x[1]
             )
             grand_total = sum(t for _, t in cat_sorted)
- 
-            # CSS for the pills
-            st.markdown("""
-            <style>
-            .pill-row {
-                display: flex;
-                flex-wrap: wrap;
-                gap: 8px;
-                margin-bottom: 12px;
-            }
-            .pill {
-                display: inline-flex;
-                align-items: center;
-                gap: 6px;
-                padding: 6px 14px;
-                border-radius: 999px;
-                font-size: 13px;
-                font-weight: 500;
-                cursor: pointer;
-                border: 1.5px solid rgba(0,0,0,0.08);
-                background: rgba(255,255,255,0.08);
-                white-space: nowrap;
-            }
-            .pill-dot {
-                width: 10px;
-                height: 10px;
-                border-radius: 50%;
-                display: inline-block;
-                flex-shrink: 0;
-            }
-            .tx-pill {
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                padding: 5px 12px;
-                border-radius: 8px;
-                font-size: 12px;
-                background: rgba(128,128,128,0.08);
-                border: 1px solid rgba(128,128,128,0.15);
-                margin: 3px 0;
-                width: 100%;
-                box-sizing: border-box;
-            }
-            .tx-date {
-                color: #888;
-                font-size: 11px;
-                min-width: 70px;
-                flex-shrink: 0;
-            }
-            .tx-desc {
-                flex: 1;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-            }
-            .tx-amount {
-                font-weight: 600;
-                flex-shrink: 0;
-                color: #e05a5a;
-            }
-            </style>
-            """, unsafe_allow_html=True)
- 
-            # Render pill row (static — Streamlit can't intercept HTML clicks,
-            # so we use st.button to handle the expand/collapse)
-            pill_html = '<div class="pill-row">'
-            for cat, total in cat_sorted:
-                pct = round(total / grand_total * 100, 1) if grand_total else 0
-                color = color_map.get(cat, "#aaa")
-                pill_html += (
-                    f'<div class="pill">'
-                    f'<span class="pill-dot" style="background:{color}"></span>'
-                    f'{cat} &nbsp;<strong>CAD$ {fmt(total, "CAD")}</strong>&nbsp;'
-                    f'<span style="color:#888;font-size:11px">{pct}%</span>'
-                    f'</div>'
-                )
-            pill_html += '</div>'
-            st.markdown(pill_html, unsafe_allow_html=True)
- 
-            # ── Expandable transaction list per category ────────────
-            # We cache fetched transactions in session_state to avoid re-fetching
+
+            # ── Fetch all accounts once ─────────────────────────────
+            accounts = get_accounts()
+
+            # ── Transaction cache ───────────────────────────────────
             if "sa_transactions_cache" not in st.session_state:
-                st.session_state["sa_transactions_cache"] = {}  # {account_id: [txs]}
- 
+                st.session_state["sa_transactions_cache"] = {}
+
             def get_account_txs(account_id):
-                """Fetch & cache transactions for an account."""
                 if account_id not in st.session_state["sa_transactions_cache"]:
                     try:
                         r = requests.get(f"{API_URL}/accounts/{account_id}/transactions", timeout=15)
@@ -634,111 +529,166 @@ elif page == "Spending Analysis":
                     except:
                         st.session_state["sa_transactions_cache"][account_id] = []
                 return st.session_state["sa_transactions_cache"][account_id]
- 
-            def get_txs_for_month_category(selected_month, category):
-                """
-                Returns all transactions matching selected_month + category across all accounts.
-                - Credit cards: match by statement_month
-                - Debit accounts: match by transaction date month
-                """
+
+            def get_txs_for_month_category(sel_month, category):
                 results = []
                 excluded_cats = {"Salary", "Other Income", "Transfer"}
                 if category in excluded_cats:
                     return results
- 
                 for acc in accounts:
                     txs = get_account_txs(acc["id"])
                     is_card = acc["account_type"] == "CREDIT_CARD"
- 
                     for t in txs:
                         if float(t.get("amount", 0)) >= 0:
-                            continue  # skip income/payments
+                            continue
                         if (t.get("category") or "Other") != category:
                             continue
- 
                         if is_card:
-                            # Credit card: match by statement_month
-                            if t.get("statement_month") == selected_month:
+                            if t.get("statement_month") == sel_month:
                                 results.append({**t, "_account_name": acc["name"], "_is_card": True})
                         else:
-                            # Debit: match by transaction date month
-                            tx_month = t["date"][:7]  # "YYYY-MM"
-                            if tx_month == selected_month:
+                            if t["date"][:7] == sel_month:
                                 results.append({**t, "_account_name": acc["name"], "_is_card": False})
- 
-                # Sort by date descending
                 results.sort(key=lambda x: x["date"], reverse=True)
                 return results
- 
-            # Button to reset cache if user wants fresh data
-            if st.button("🔄 Refresh transaction data", key="sa_refresh"):
-                st.session_state["sa_transactions_cache"] = {}
-                st.rerun()
- 
-            st.markdown("---")
- 
-            # One expander per category
-            for cat, total in cat_sorted:
-                pct = round(total / grand_total * 100, 1) if grand_total else 0
-                color = color_map.get(cat, "#aaa")
- 
-                with st.expander(f"🔵 **{cat}** — CAD$ {fmt(total, 'CAD')}  ·  {pct}%"):
-                    txs = get_txs_for_month_category(selected_month, cat)
- 
-                    if not txs:
-                        st.caption("No individual transactions found for this category in this month.")
-                    else:
-                        # Header
-                        col_a, col_b, col_c, col_d = st.columns([1.2, 3.5, 1.5, 1.5])
-                        with col_a:
-                            st.caption("**Date**")
-                        with col_b:
-                            st.caption("**Description**")
-                        with col_c:
-                            st.caption("**Account**")
-                        with col_d:
-                            st.caption("**Amount**")
- 
-                        cat_running = 0.0
-                        for t in txs:
-                            amt = abs(float(t["amount"]))
-                            cat_running += amt
-                            raw_date = t.get("date", "")
-                            try:
-                                date_fmt = datetime.fromisoformat(raw_date).strftime("%b %d")
-                            except:
-                                date_fmt = raw_date[:10]
- 
-                            col_a, col_b, col_c, col_d = st.columns([1.2, 3.5, 1.5, 1.5])
-                            with col_a:
-                                st.markdown(
-                                    f'<span style="color:#888;font-size:12px">{date_fmt}</span>',
-                                    unsafe_allow_html=True
-                                )
-                            with col_b:
-                                st.markdown(
-                                    f'<span style="font-size:13px">{t.get("description","—")}</span>',
-                                    unsafe_allow_html=True
-                                )
-                            with col_c:
+
+            # ── Layout: pie (left) + expanders (right) ─────────────
+            col_chart, col_list = st.columns([1.1, 0.9], gap="large")
+
+            with col_chart:
+                fig = px.pie(
+                    names=categories,
+                    values=totals,
+                    hole=0.4,
+                    color_discrete_sequence=color_palette,
+                )
+                fig.update_traces(textposition="inside", textinfo="percent+label")
+                fig.update_layout(
+                    showlegend=False,   # legend is now the expander list on the right
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    height=460,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                if st.button("🔄 Refresh", key="sa_refresh", help="Reload transaction data"):
+                    st.session_state["sa_transactions_cache"] = {}
+                    st.rerun()
+
+            with col_list:
+                # Inline CSS for colored dot in expander label
+                st.markdown("""
+                <style>
+                /* tighten expander spacing */
+                div[data-testid="stExpander"] {
+                    margin-bottom: 4px !important;
+                }
+                div[data-testid="stExpander"] summary {
+                    padding: 6px 10px !important;
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
+                all_cats_list = get_categories()
+
+                for cat, total in cat_sorted:
+                    pct = round(total / grand_total * 100, 1) if grand_total else 0
+                    color = color_map.get(cat, "#aaa")
+
+                    # Colored dot rendered via markdown before the expander
+                    dot_html = f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{color};margin-right:6px;vertical-align:middle"></span>'
+                    label = f"{cat} — CAD$ {fmt(total, 'CAD')} · {pct}%"
+
+                    with st.expander(label):
+                        # Colored dot + title inside expander
+                        st.markdown(
+                            f'{dot_html}<strong>{cat}</strong> &nbsp;·&nbsp; CAD$ {fmt(total, "CAD")} &nbsp;·&nbsp; {pct}%',
+                            unsafe_allow_html=True
+                        )
+                        st.markdown("---")
+
+                        txs = get_txs_for_month_category(selected_month, cat)
+
+                        if not txs:
+                            st.caption("No transactions found for this category.")
+                        else:
+                            cat_running = 0.0
+                            for t in txs:
+                                amt = abs(float(t["amount"]))
+                                cat_running += amt
+                                raw_date = t.get("date", "")
+                                try:
+                                    date_fmt = datetime.fromisoformat(raw_date).strftime("%b %d")
+                                except:
+                                    date_fmt = raw_date[:10]
+
                                 icon = "💳" if t.get("_is_card") else "🏦"
-                                st.markdown(
-                                    f'<span style="color:#888;font-size:11px">{icon} {t.get("_account_name","")}</span>',
-                                    unsafe_allow_html=True
-                                )
-                            with col_d:
-                                st.markdown(
-                                    f'<span style="font-weight:600;color:#e05a5a;font-size:13px">CAD$ {fmt(amt,"CAD")}</span>',
-                                    unsafe_allow_html=True
-                                )
- 
-                        st.markdown(f"**{len(txs)} transactions · Total: CAD$ {fmt(cat_running, 'CAD')}**")
- 
+
+                                # Row: date | description | amount
+                                r1, r2, r3 = st.columns([1, 2.8, 1.2])
+                                with r1:
+                                    st.markdown(
+                                        f'<span style="color:#888;font-size:11px">{date_fmt}</span>',
+                                        unsafe_allow_html=True
+                                    )
+                                with r2:
+                                    st.markdown(
+                                        f'<span style="font-size:12px">{t.get("description","—")}</span>',
+                                        unsafe_allow_html=True
+                                    )
+                                with r3:
+                                    st.markdown(
+                                        f'<span style="font-weight:600;color:#e05a5a;font-size:12px">$ {fmt(amt,"CAD")}</span>',
+                                        unsafe_allow_html=True
+                                    )
+
+                                # Category edit row
+                                edit_key = f"cat_edit_{t['id']}"
+                                save_key = f"cat_save_{t['id']}"
+
+                                current_cat = t.get("category") or "Other"
+                                try:
+                                    default_idx = all_cats_list.index(current_cat)
+                                except ValueError:
+                                    default_idx = 0
+
+                                re1, re2 = st.columns([3, 1])
+                                with re1:
+                                    new_cat = st.selectbox(
+                                        "Category",
+                                        all_cats_list,
+                                        index=default_idx,
+                                        key=edit_key,
+                                        label_visibility="collapsed"
+                                    )
+                                with re2:
+                                    if st.button("Save", key=save_key, use_container_width=True):
+                                        try:
+                                            r = requests.patch(
+                                                f"{API_URL}/transactions/{t['id']}",
+                                                json={"category": new_cat},
+                                                timeout=10
+                                            )
+                                            if r.status_code in [200, 201]:
+                                                # Invalidate cache for this account so it reloads
+                                                acc_id = t.get("account_id")
+                                                if acc_id and acc_id in st.session_state["sa_transactions_cache"]:
+                                                    del st.session_state["sa_transactions_cache"][acc_id]
+                                                st.success(f"✅ Saved!")
+                                                st.rerun()
+                                            else:
+                                                st.error("Failed to save.")
+                                        except Exception as e:
+                                            st.error(f"Error: {e}")
+
+                                st.markdown('<hr style="margin:4px 0;opacity:0.15">', unsafe_allow_html=True)
+
+                            st.caption(f"**{len(txs)} transactions · CAD$ {fmt(cat_running, 'CAD')}**")
+
         st.divider()
- 
+
         # ── Bar chart: category comparison across months ─────────────
         st.subheader("📊 Category Trends")
- 
+
         all_months_sorted = sorted(data.keys())
         n_months = st.slider(
             "Number of months to compare",
@@ -747,9 +697,8 @@ elif page == "Spending Analysis":
             value=min(3, len(all_months_sorted))
         )
         months_to_show = all_months_sorted[-n_months:]
- 
         all_cats_bar = sorted(set(cat for m in months_to_show for cat in data.get(m, {}).keys()))
- 
+
         bar_rows = []
         for m in months_to_show:
             label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
@@ -759,41 +708,34 @@ elif page == "Spending Analysis":
                 total_val = round(cards_val + debit_val, 2)
                 if total_val > 0:
                     bar_rows.append({"Month": label, "Category": cat, "Amount": total_val})
- 
+
         if bar_rows:
             df_bar = pd.DataFrame(bar_rows)
             cat_totals = df_bar.groupby("Category")["Amount"].sum().sort_values(ascending=False)
             cat_order = cat_totals.index.tolist()
- 
             fig_bar = px.bar(
-                df_bar,
-                x="Category",
-                y="Amount",
-                color="Month",
-                barmode="group",
+                df_bar, x="Category", y="Amount", color="Month", barmode="group",
                 category_orders={"Category": cat_order},
                 title=f"Spending by Category — Last {n_months} month{'s' if n_months > 1 else ''}",
                 color_discrete_sequence=px.colors.qualitative.Set2,
                 labels={"Amount": "CAD$", "Category": ""},
             )
             fig_bar.update_layout(
-                xaxis_tickangle=-35,
-                legend_title="Month",
-                margin=dict(t=50, b=80, l=20, r=20),
-                height=420,
+                xaxis_tickangle=-35, legend_title="Month",
+                margin=dict(t=50, b=80, l=20, r=20), height=420,
             )
             st.plotly_chart(fig_bar, use_container_width=True)
         else:
             st.info("No data for the selected months.")
- 
+
         st.divider()
- 
+
         # ── Category × Month table ───────────────────────────────────
         st.subheader("📋 Category Breakdown by Month")
- 
+
         all_cats = sorted(set(cat for month in data.values() for cat in month.keys()))
         all_months = sorted(data.keys())
- 
+
         rows = []
         for cat in all_cats:
             row = {"Category": cat}
@@ -807,7 +749,7 @@ elif page == "Spending Analysis":
                 cat_total += total_val
             row["Total"] = round(cat_total, 2) if cat_total > 0 else ""
             rows.append(row)
- 
+
         totals_row = {"Category": "💰 TOTAL"}
         grand_total = 0
         for m in all_months:
@@ -821,15 +763,14 @@ elif page == "Spending Analysis":
             grand_total += m_total
         totals_row["Total"] = round(grand_total, 2)
         rows.append(totals_row)
- 
+
         df_table = pd.DataFrame(rows)
- 
         col_config = {"Category": st.column_config.TextColumn("Category", width="medium")}
         for m in all_months:
             label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
             col_config[label] = st.column_config.NumberColumn(label, format="$ %.2f")
         col_config["Total"] = st.column_config.NumberColumn("Total", format="$ %.2f")
- 
+
         st.dataframe(
             df_table,
             use_container_width=True,
@@ -838,7 +779,6 @@ elif page == "Spending Analysis":
             column_order=["Category"] + [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in all_months] + ["Total"]
         )
         st.caption(f"Grand total: CAD$ {fmt(grand_total, 'CAD')}")
-
 
 # ─────────────────────────────────────────────────────────────────
 elif page == "Categories":
