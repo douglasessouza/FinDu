@@ -121,6 +121,7 @@ class RecurringExpenseCreate(BaseModel):
     due_day: int
     category: Optional[str] = None
     type: RecurringTypeEnum = RecurringTypeEnum.EXPENSE
+    valid_until: Optional[datetime] = None   # ← NEW FIELD
 
 @app.get("/health")
 def health_check():
@@ -344,6 +345,23 @@ def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depe
 
 @app.get("/recurring-expenses")
 def list_recurring_expenses(db: Session = Depends(get_db)):
+    """
+    Returns active recurring expenses/income.
+    Auto-expires entries where valid_until < today (sets is_active=False).
+    """
+    now = datetime.utcnow()
+ 
+    # Auto-deactivate expired entries
+    expired = db.query(RecurringExpense).filter(
+        RecurringExpense.is_active == True,
+        RecurringExpense.valid_until != None,
+        RecurringExpense.valid_until < now
+    ).all()
+    for e in expired:
+        e.is_active = False
+    if expired:
+        db.commit()
+ 
     return db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()
 
 @app.delete("/recurring-expenses/{expense_id}")

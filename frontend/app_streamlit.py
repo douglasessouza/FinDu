@@ -15,7 +15,6 @@ CATEGORIES = ["Housing","Rent","Food","Restaurant","Coffee","Transport","Gas","H
               "Phone","Car","Insurance","Investments","Salary","Other Income","Transfer","Other"]
 
 def get_categories():
-    """Fetch categories from API dynamically, fallback to static list."""
     try:
         r = requests.get(f"{API_URL}/categories", timeout=10)
         if r.status_code == 200:
@@ -25,8 +24,6 @@ def get_categories():
     except:
         pass
     return CATEGORIES
-
-# ── API helpers ────────────────────────────────────────────────────
 
 def get_accounts():
     try:
@@ -79,12 +76,10 @@ def fmt(v, c):
 def parse_statement(uploaded, from_date):
     filename = uploaded.name.lower()
 
-    # Handle XLS/XLSX (Amex Excel format)
     if filename.endswith(".xls") or filename.endswith(".xlsx"):
         try:
             engine = "xlrd" if filename.endswith(".xls") else "openpyxl"
             raw = pd.read_excel(uploaded, header=None, engine=engine)
-            # Find header row: look for a row containing "Date" and "Amount"
             header_idx = None
             for i, row in raw.iterrows():
                 row_str = " ".join(str(v).lower() for v in row.values)
@@ -95,7 +90,6 @@ def parse_statement(uploaded, from_date):
                 return None, "Could not find header row in Excel file."
             df_raw = pd.read_excel(uploaded, header=header_idx, engine=engine)
             df_raw.columns = [str(c).strip() for c in df_raw.columns]
-            # Find date, description, amount columns (case-insensitive)
             col_map = {}
             for c in df_raw.columns:
                 cl = c.lower()
@@ -114,20 +108,16 @@ def parse_statement(uploaded, from_date):
             df["amount"] = pd.to_numeric(
                 df["amount"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip(),
                 errors="coerce"
-            ) * -1  # Amex shows charges as positive — invert to negative
+            ) * -1
             df["date_parsed"] = pd.to_datetime(df["date"].astype(str).str.strip(), format="mixed", dayfirst=True, errors="coerce")
             df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
             bank = "Amex"
         except Exception as e:
             return None, f"Error reading Excel file: {e}"
-
     else:
-        # CSV handling
         content = uploaded.read().decode("utf-8-sig", errors="ignore")
         uploaded.seek(0)
-
         if ";" in content.split("\n")[0] or "Transaction Details" in content[:500]:
-            # Amex CSV (semicolon-separated)
             lines = content.split("\n")
             header_idx = next(
                 (i for i, l in enumerate(lines) if l.startswith("Date;") or ("Description" in l and "Amount" in l and ";" in l)),
@@ -152,7 +142,6 @@ def parse_statement(uploaded, from_date):
             uploaded.seek(0)
             cols = [c.strip().lower() for c in raw.columns]
             if "transaction date" in cols and "cad$" in cols:
-                # RBC format
                 raw.columns = [c.strip() for c in raw.columns]
                 df = raw.rename(columns={"Transaction Date": "date", "Description 1": "description", "CAD$": "amount"})
                 df = df[["date", "description", "amount"]].dropna(subset=["amount"])
@@ -160,7 +149,6 @@ def parse_statement(uploaded, from_date):
                 df["date_parsed"] = pd.to_datetime(df["date"])
                 bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
             elif "transaction amount" in cols:
-                # BMO format
                 raw.columns = [c.strip() for c in raw.columns]
                 df = raw.rename(columns={"Transaction Date": "date", "Transaction Amount": "amount", "Description": "description"})
                 df = df[["date", "description", "amount"]].dropna(subset=["amount"])
@@ -198,7 +186,6 @@ MENU = [
     ("🏷️", "Categories"),
 ]
 
-# ── Sidebar nav ────────────────────────────────────────────────────
 st.sidebar.markdown("""
 <style>
     div[data-testid="stSidebar"] .stButton button {
@@ -226,7 +213,6 @@ st.sidebar.markdown("""
 
 st.sidebar.markdown("### 💰 FinDu")
 
-# FX pill — live USD/CAD rate
 try:
     _fx = requests.get("https://api.exchangerate-api.com/v4/latest/USD", timeout=5).json()
     _usd_cad = _fx["rates"]["CAD"]
@@ -356,6 +342,7 @@ elif page == "Monthly View":
         st.session_state.mv_year = today.year
     if "mv_month" not in st.session_state:
         st.session_state.mv_month = today.month
+
     col_prev, col_title, col_next = st.columns([1, 3, 1])
     with col_prev:
         if st.button("←"):
@@ -376,6 +363,7 @@ elif page == "Monthly View":
                 st.session_state.mv_month += 1
             st.rerun()
     st.divider()
+
     recurring = get_recurring()
     accounts = get_accounts()
     fx = get_fx()
@@ -383,14 +371,20 @@ elif page == "Monthly View":
 
     for currency, flag, symbol in [("CAD", "🇨🇦", "CAD$"), ("BRL", "🇧🇷", "R$")]:
         st.subheader(f"{flag} {currency}")
-        expense_rec = [e for e in recurring if e["currency"] == currency and e.get("type") != "INCOME"]
-        total_rec_expense = sum(e["amount"] for e in expense_rec)
 
         card_accounts = [a for a in accounts if a["currency"] == currency and a["account_type"] == "CREDIT_CARD"]
         checking_accounts = [a for a in accounts if a["currency"] == currency and a["account_type"] != "CREDIT_CARD"]
         account_balance = sum(a["balance"] for a in checking_accounts)
 
-        # Card charges due in this month — group by payment_due_date, not statement_month
+        # Recurring income
+        income_rec = [e for e in recurring if e["currency"] == currency and e.get("type") == "INCOME"]
+        total_rec_income = sum(e["amount"] for e in income_rec)
+
+        # Recurring expenses
+        expense_rec = [e for e in recurring if e["currency"] == currency and e.get("type") != "INCOME"]
+        total_rec_expense = sum(e["amount"] for e in expense_rec)
+
+        # Card charges due this month
         card_charges = 0
         card_breakdown = {}
         for acc in card_accounts:
@@ -398,7 +392,7 @@ elif page == "Monthly View":
                 summary = requests.get(f"{API_URL}/accounts/{acc['id']}/statement-summary", timeout=10).json()
                 acc_total = 0
                 for month_data in summary.values():
-                    due = month_data.get("payment_due_date", "")[:7]  # "YYYY-MM"
+                    due = month_data.get("payment_due_date", "")[:7]
                     if due == current_month_str:
                         acc_total += month_data.get("charges", 0)
                 if acc_total > 0:
@@ -407,7 +401,7 @@ elif page == "Monthly View":
             except:
                 pass
 
-        # Chequing transactions this month (already paid — shown for info only, not added to expenses)
+        # Chequing transactions this month (info only)
         checking_expenses = 0
         checking_income = 0
         category_totals = defaultdict(float)
@@ -425,51 +419,127 @@ elif page == "Monthly View":
             except:
                 pass
 
-        # Summary metrics
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("🏦 In Bank", f"{symbol} {fmt(account_balance,currency)}")
-            st.metric("💳 Card charges", f"{symbol} {fmt(card_charges,currency)}")
-            st.metric("🔄 Recurring expenses", f"- {symbol} {fmt(total_rec_expense,currency)}")
-        with col2:
-            balance = account_balance - total_rec_expense - card_charges
-            st.metric("📊 Balance", f"{symbol} {fmt(balance,currency)}")
+        # ── 💰 INCOME ──────────────────────────────────────────────
+        st.markdown("#### 💰 Income")
+        if income_rec:
+            for e in income_rec:
+                valid_str = ""
+                if e.get("valid_until"):
+                    try:
+                        vd = datetime.fromisoformat(e["valid_until"]).strftime("%b %d, %Y")
+                        valid_str = f' <span style="color:#f0a500;font-size:11px">until {vd}</span>'
+                    except:
+                        pass
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
+                    f'border-bottom:1px solid rgba(128,128,128,0.1)">'
+                    f'<span>📈 {e["name"]}{valid_str} <span style="color:#888;font-size:11px">(day {e["due_day"]})</span></span>'
+                    f'<span style="color:#2ecc71;font-weight:600">+ {symbol} {fmt(e["amount"], currency)}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700">'
+                f'<span>Total Income</span>'
+                f'<span style="color:#2ecc71">+ {symbol} {fmt(total_rec_income, currency)}</span>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.caption("No recurring income registered.")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── 💸 EXPENSES ────────────────────────────────────────────
+        st.markdown("#### 💸 Expenses")
+
+        if card_charges > 0:
+            st.markdown(
+                f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
+                f'border-bottom:1px solid rgba(128,128,128,0.1)">'
+                f'<span>💳 Card charges</span>'
+                f'<span style="color:#e05a5a;font-weight:600">- {symbol} {fmt(card_charges, currency)}</span>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            if card_breakdown:
+                with st.expander(f"Card charges breakdown — {current_month_str}"):
+                    for card_name, amount in card_breakdown.items():
+                        st.write(f"  • {card_name}: {symbol} {fmt(amount, currency)}")
 
         if expense_rec:
-            with st.expander("Recurring details"):
-                st.write("**Expenses:**")
-                for e in expense_rec:
-                    st.write(f"  • {e['name']}: {symbol} {fmt(e['amount'],currency)} (day {e['due_day']})")
+            for e in expense_rec:
+                valid_str = ""
+                if e.get("valid_until"):
+                    try:
+                        vd = datetime.fromisoformat(e["valid_until"]).strftime("%b %d, %Y")
+                        valid_str = f' <span style="color:#f0a500;font-size:11px">until {vd}</span>'
+                    except:
+                        pass
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
+                    f'border-bottom:1px solid rgba(128,128,128,0.1)">'
+                    f'<span>🔄 {e["name"]}{valid_str} <span style="color:#888;font-size:11px">(day {e["due_day"]})</span></span>'
+                    f'<span style="color:#e05a5a;font-weight:600">- {symbol} {fmt(e["amount"], currency)}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
 
-        if card_breakdown:
-            with st.expander(f"Card charges breakdown — {current_month_str}"):
-                for card_name, amount in card_breakdown.items():
-                    st.write(f"  • {card_name}: {symbol} {fmt(amount,currency)}")
+        total_expenses = card_charges + total_rec_expense
+        st.markdown(
+            f'<div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700">'
+            f'<span>Total Expenses</span>'
+            f'<span style="color:#e05a5a">- {symbol} {fmt(total_expenses, currency)}</span>'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
-        # Chequing transactions shown separately — these are already paid from bank
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── 📊 BALANCE ─────────────────────────────────────────────
+        st.markdown("#### 📊 Balance")
+        balance_base = account_balance - total_rec_expense - card_charges
+        balance_with_income = balance_base + total_rec_income
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.metric("🏦 In Bank", f"{symbol} {fmt(account_balance, currency)}")
+        with c2:
+            st.metric(
+                "📊 After expenses",
+                f"{symbol} {fmt(balance_base, currency)}",
+                delta=f"- {symbol} {fmt(total_expenses, currency)}",
+                delta_color="inverse"
+            )
+        with c3:
+            st.metric(
+                "🎯 After Income",
+                f"{symbol} {fmt(balance_with_income, currency)}",
+                delta=f"+ {symbol} {fmt(total_rec_income, currency)}" if total_rec_income > 0 else None,
+            )
+
         if checking_expenses > 0 or checking_income > 0:
-            with st.expander("Chequing transactions (already paid from bank)"):
-                st.caption("These are debit transactions already deducted from your bank balance.")
+            with st.expander("🏦 Chequing transactions (already deducted from bank balance)"):
+                st.caption("These are debit transactions already paid — not added to balance calculation.")
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.metric("Spent", f"{symbol} {fmt(checking_expenses,currency)}")
+                    st.metric("Spent", f"{symbol} {fmt(checking_expenses, currency)}")
                 with col2:
-                    st.metric("Received", f"{symbol} {fmt(checking_income,currency)}")
+                    st.metric("Received", f"{symbol} {fmt(checking_income, currency)}")
                 if category_totals:
                     st.write("**By category:**")
                     for cat, amount in sorted(category_totals.items(), key=lambda x: -x[1]):
-                        st.write(f"  • {cat}: {symbol} {fmt(amount,currency)}")
+                        st.write(f"  • {cat}: {symbol} {fmt(amount, currency)}")
+
         st.divider()
 
 # ─────────────────────────────────────────────────────────────────
-
 elif page == "Spending Analysis":
     import plotly.express as px
     import plotly.graph_objects as go
 
     st.header("📈 Spending Analysis")
 
-    # ── Fetch spending summary ──────────────────────────────────────
     try:
         data = requests.get(f"{API_URL}/spending-analysis", timeout=15).json()
     except:
@@ -481,7 +551,6 @@ elif page == "Spending Analysis":
         months_available = sorted(data.keys(), reverse=True)
         month_labels = {m: datetime.strptime(m, "%Y-%m").strftime("%B %Y") for m in months_available}
 
-        # ── Month selector ──────────────────────────────────────────
         selected_month = st.selectbox(
             "Select month",
             months_available,
@@ -489,7 +558,6 @@ elif page == "Spending Analysis":
         )
         st.divider()
 
-        # ── Prepare pie data ────────────────────────────────────────
         month_data = data.get(selected_month, {})
         categories = []
         totals = []
@@ -502,11 +570,9 @@ elif page == "Spending Analysis":
         if not categories:
             st.info("No expenses for this month.")
         else:
-            # Build color map — same palette as pie chart
             color_palette = px.colors.qualitative.Set3
             color_map = {cat: color_palette[i % len(color_palette)] for i, cat in enumerate(categories)}
 
-            # Sort categories by total descending
             cat_sorted = sorted(
                 [(cat, round(month_data[cat].get("cards", 0) + month_data[cat].get("debit", 0), 2))
                  for cat in categories],
@@ -514,10 +580,8 @@ elif page == "Spending Analysis":
             )
             grand_total = sum(t for _, t in cat_sorted)
 
-            # ── Fetch all accounts once ─────────────────────────────
             accounts = get_accounts()
 
-            # ── Transaction cache ───────────────────────────────────
             if "sa_transactions_cache" not in st.session_state:
                 st.session_state["sa_transactions_cache"] = {}
 
@@ -552,7 +616,6 @@ elif page == "Spending Analysis":
                 results.sort(key=lambda x: x["date"], reverse=True)
                 return results
 
-            # ── Layout: pie (left) + expanders (right) ─────────────
             col_chart, col_list = st.columns([1.1, 0.9], gap="large")
 
             with col_chart:
@@ -564,7 +627,7 @@ elif page == "Spending Analysis":
                 )
                 fig.update_traces(textposition="inside", textinfo="percent+label")
                 fig.update_layout(
-                    showlegend=False,   # legend is now the expander list on the right
+                    showlegend=False,
                     margin=dict(t=10, b=10, l=10, r=10),
                     height=460,
                 )
@@ -575,16 +638,10 @@ elif page == "Spending Analysis":
                     st.rerun()
 
             with col_list:
-                # Inline CSS for colored dot in expander label
                 st.markdown("""
                 <style>
-                /* tighten expander spacing */
-                div[data-testid="stExpander"] {
-                    margin-bottom: 4px !important;
-                }
-                div[data-testid="stExpander"] summary {
-                    padding: 6px 10px !important;
-                }
+                div[data-testid="stExpander"] { margin-bottom: 4px !important; }
+                div[data-testid="stExpander"] summary { padding: 6px 10px !important; }
                 </style>
                 """, unsafe_allow_html=True)
 
@@ -593,13 +650,10 @@ elif page == "Spending Analysis":
                 for cat, total in cat_sorted:
                     pct = round(total / grand_total * 100, 1) if grand_total else 0
                     color = color_map.get(cat, "#aaa")
-
-                    # Colored dot rendered via markdown before the expander
                     dot_html = f'<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{color};margin-right:6px;vertical-align:middle"></span>'
                     label = f"{cat} — CAD$ {fmt(total, 'CAD')} · {pct}%"
 
                     with st.expander(label):
-                        # Colored dot + title inside expander
                         st.markdown(
                             f'{dot_html}<strong>{cat}</strong> &nbsp;·&nbsp; CAD$ {fmt(total, "CAD")} &nbsp;·&nbsp; {pct}%',
                             unsafe_allow_html=True
@@ -623,28 +677,16 @@ elif page == "Spending Analysis":
 
                                 icon = "💳" if t.get("_is_card") else "🏦"
 
-                                # Row: date | description | amount
                                 r1, r2, r3 = st.columns([1, 2.8, 1.2])
                                 with r1:
-                                    st.markdown(
-                                        f'<span style="color:#888;font-size:11px">{date_fmt}</span>',
-                                        unsafe_allow_html=True
-                                    )
+                                    st.markdown(f'<span style="color:#888;font-size:11px">{date_fmt}</span>', unsafe_allow_html=True)
                                 with r2:
-                                    st.markdown(
-                                        f'<span style="font-size:12px">{t.get("description","—")}</span>',
-                                        unsafe_allow_html=True
-                                    )
+                                    st.markdown(f'<span style="font-size:12px">{t.get("description","—")}</span>', unsafe_allow_html=True)
                                 with r3:
-                                    st.markdown(
-                                        f'<span style="font-weight:600;color:#e05a5a;font-size:12px">$ {fmt(amt,"CAD")}</span>',
-                                        unsafe_allow_html=True
-                                    )
+                                    st.markdown(f'<span style="font-weight:600;color:#e05a5a;font-size:12px">$ {fmt(amt,"CAD")}</span>', unsafe_allow_html=True)
 
-                                # Category edit row
                                 edit_key = f"cat_edit_{t['id']}"
                                 save_key = f"cat_save_{t['id']}"
-
                                 current_cat = t.get("category") or "Other"
                                 try:
                                     default_idx = all_cats_list.index(current_cat)
@@ -653,27 +695,16 @@ elif page == "Spending Analysis":
 
                                 re1, re2 = st.columns([3, 1])
                                 with re1:
-                                    new_cat = st.selectbox(
-                                        "Category",
-                                        all_cats_list,
-                                        index=default_idx,
-                                        key=edit_key,
-                                        label_visibility="collapsed"
-                                    )
+                                    new_cat = st.selectbox("Category", all_cats_list, index=default_idx, key=edit_key, label_visibility="collapsed")
                                 with re2:
                                     if st.button("Save", key=save_key, use_container_width=True):
                                         try:
-                                            r = requests.patch(
-                                                f"{API_URL}/transactions/{t['id']}",
-                                                json={"category": new_cat},
-                                                timeout=10
-                                            )
+                                            r = requests.patch(f"{API_URL}/transactions/{t['id']}", json={"category": new_cat}, timeout=10)
                                             if r.status_code in [200, 201]:
-                                                # Invalidate cache for this account so it reloads
                                                 acc_id = t.get("account_id")
                                                 if acc_id and acc_id in st.session_state["sa_transactions_cache"]:
                                                     del st.session_state["sa_transactions_cache"][acc_id]
-                                                st.success(f"✅ Saved!")
+                                                st.success("✅ Saved!")
                                                 st.rerun()
                                             else:
                                                 st.error("Failed to save.")
@@ -686,16 +717,9 @@ elif page == "Spending Analysis":
 
         st.divider()
 
-        # ── Bar chart: category comparison across months ─────────────
         st.subheader("📊 Category Trends")
-
         all_months_sorted = sorted(data.keys())
-        n_months = st.slider(
-            "Number of months to compare",
-            min_value=1,
-            max_value=len(all_months_sorted),
-            value=min(3, len(all_months_sorted))
-        )
+        n_months = st.slider("Number of months to compare", min_value=1, max_value=len(all_months_sorted), value=min(3, len(all_months_sorted)))
         months_to_show = all_months_sorted[-n_months:]
         all_cats_bar = sorted(set(cat for m in months_to_show for cat in data.get(m, {}).keys()))
 
@@ -713,26 +737,20 @@ elif page == "Spending Analysis":
             df_bar = pd.DataFrame(bar_rows)
             cat_totals = df_bar.groupby("Category")["Amount"].sum().sort_values(ascending=False)
             cat_order = cat_totals.index.tolist()
-            fig_bar = px.bar(
-                df_bar, x="Category", y="Amount", color="Month", barmode="group",
+            fig_bar = px.bar(df_bar, x="Category", y="Amount", color="Month", barmode="group",
                 category_orders={"Category": cat_order},
                 title=f"Spending by Category — Last {n_months} month{'s' if n_months > 1 else ''}",
                 color_discrete_sequence=px.colors.qualitative.Set2,
                 labels={"Amount": "CAD$", "Category": ""},
             )
-            fig_bar.update_layout(
-                xaxis_tickangle=-35, legend_title="Month",
-                margin=dict(t=50, b=80, l=20, r=20), height=420,
-            )
+            fig_bar.update_layout(xaxis_tickangle=-35, legend_title="Month", margin=dict(t=50, b=80, l=20, r=20), height=420)
             st.plotly_chart(fig_bar, use_container_width=True)
         else:
             st.info("No data for the selected months.")
 
         st.divider()
 
-        # ── Category × Month table ───────────────────────────────────
         st.subheader("📋 Category Breakdown by Month")
-
         all_cats = sorted(set(cat for month in data.values() for cat in month.keys()))
         all_months = sorted(data.keys())
 
@@ -753,11 +771,7 @@ elif page == "Spending Analysis":
         totals_row = {"Category": "💰 TOTAL"}
         grand_total = 0
         for m in all_months:
-            m_total = sum(
-                data.get(m, {}).get(cat, {}).get("cards", 0) +
-                data.get(m, {}).get(cat, {}).get("debit", 0)
-                for cat in all_cats
-            )
+            m_total = sum(data.get(m, {}).get(cat, {}).get("cards", 0) + data.get(m, {}).get(cat, {}).get("debit", 0) for cat in all_cats)
             label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
             totals_row[label] = round(m_total, 2)
             grand_total += m_total
@@ -770,25 +784,17 @@ elif page == "Spending Analysis":
             label = datetime.strptime(m, "%Y-%m").strftime("%b %Y")
             col_config[label] = st.column_config.NumberColumn(label, format="$ %.2f")
         col_config["Total"] = st.column_config.NumberColumn("Total", format="$ %.2f")
-
-        st.dataframe(
-            df_table,
-            use_container_width=True,
-            height=min(50 + len(rows) * 35, 600),
-            column_config=col_config,
-            column_order=["Category"] + [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in all_months] + ["Total"]
-        )
+        st.dataframe(df_table, use_container_width=True, height=min(50 + len(rows) * 35, 600), column_config=col_config,
+            column_order=["Category"] + [datetime.strptime(m, "%Y-%m").strftime("%b %Y") for m in all_months] + ["Total"])
         st.caption(f"Grand total: CAD$ {fmt(grand_total, 'CAD')}")
 
 # ─────────────────────────────────────────────────────────────────
 elif page == "Categories":
     st.header("🏷️ Categories")
     st.caption("Manage your spending categories. Default categories (🔒) cannot be deleted.")
-
     try:
         cats_resp = requests.get(f"{API_URL}/categories", timeout=10)
         cats = cats_resp.json() if cats_resp.status_code == 200 else []
-        # Handle old format (list of strings) vs new format (list of dicts)
         if cats and isinstance(cats[0], str):
             st.info("Categories are being migrated. Please redeploy the API.")
             cats = []
@@ -799,11 +805,7 @@ elif page == "Categories":
     income_cats = [c for c in cats if isinstance(c, dict) and c.get("type") == "INCOME"]
     transfer_cats = [c for c in cats if isinstance(c, dict) and c.get("type") == "TRANSFER"]
 
-    for section_label, section_cats in [
-        ("💸 Expense", expense_cats),
-        ("💰 Income", income_cats),
-        ("↔️ Transfer", transfer_cats)
-    ]:
+    for section_label, section_cats in [("💸 Expense", expense_cats), ("💰 Income", income_cats), ("↔️ Transfer", transfer_cats)]:
         if section_cats:
             st.subheader(section_label)
             for c in section_cats:
@@ -828,11 +830,7 @@ elif page == "Categories":
             if not new_name.strip():
                 st.error("Name cannot be empty.")
             else:
-                r = requests.post(
-                    f"{API_URL}/categories",
-                    json={"name": new_name.strip(), "type": new_type},
-                    timeout=10
-                )
+                r = requests.post(f"{API_URL}/categories", json={"name": new_name.strip(), "type": new_type}, timeout=10)
                 if r.status_code == 200:
                     st.success(f"Category '{new_name}' added!")
                     st.rerun()
@@ -840,7 +838,6 @@ elif page == "Categories":
                     st.warning("Category already exists.")
                 else:
                     st.error(f"Error: {r.text}")
-
 
 # ─────────────────────────────────────────────────────────────────
 elif page == "Card Summary":
@@ -1048,28 +1045,33 @@ elif page == "Recurring Expenses":
     expenses = get_recurring()
     income_list = [e for e in expenses if e.get("type") == "INCOME"]
     expense_list = [e for e in expenses if e.get("type") != "INCOME"]
+
     if income_list:
         st.subheader("💰 Income")
         for e in income_list:
             col1, col2 = st.columns([6, 1])
             with col1:
-                st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Receive: day {e['due_day']} | {e['category'] or 'No category'}")
+                valid_str = f" | Until: {e['valid_until'][:10]}" if e.get("valid_until") else ""
+                st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Receive: day {e['due_day']} | {e['category'] or 'No category'}{valid_str}")
             with col2:
                 if st.button("🗑️", key=f"del_inc_{e['id']}"):
                     delete_data("recurring-expenses", e["id"])
                     st.rerun()
         st.divider()
+
     if expense_list:
         st.subheader("💸 Expenses")
         for e in expense_list:
             col1, col2 = st.columns([6, 1])
             with col1:
-                st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}")
+                valid_str = f" | Until: {e['valid_until'][:10]}" if e.get("valid_until") else ""
+                st.write(f"**{e['name']}** — {e['currency']} {fmt(e['amount'],e['currency'])} | Due: day {e['due_day']} | {e['category'] or 'No category'}{valid_str}")
             with col2:
                 if st.button("🗑️", key=f"del_exp_{e['id']}"):
                     delete_data("recurring-expenses", e["id"])
                     st.rerun()
         st.divider()
+
     tab1, tab2 = st.tabs(["➕ Add Expense", "➕ Add Income"])
     with tab1:
         with st.form("new_expense"):
@@ -1078,24 +1080,39 @@ elif page == "Recurring Expenses":
             currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
             due = st.number_input("Due day", min_value=1, max_value=31, value=1)
             category = st.selectbox("Category", get_categories())
+            valid_until = st.date_input(
+                "Valid until (optional — leave as-is if ongoing)",
+                value=None,
+                help="Set a date if this expense will stop. It will disappear automatically after this date."
+            )
             if st.form_submit_button("Add Expense"):
-                r = post_data("recurring-expenses", {"name": name, "amount": amount, "currency": currency,
-                                                      "due_day": int(due), "category": category, "type": "EXPENSE"})
+                payload = {"name": name, "amount": amount, "currency": currency,
+                           "due_day": int(due), "category": category, "type": "EXPENSE",
+                           "valid_until": valid_until.isoformat() if valid_until else None}
+                r = post_data("recurring-expenses", payload)
                 if r is not None and r.status_code in [200, 201]:
                     st.success("Expense added!")
                     st.rerun()
                 else:
                     st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
+
     with tab2:
         with st.form("new_income"):
-            name = st.text_input("Name", placeholder="e.g. Salary, Freelance")
+            name = st.text_input("Name", placeholder="e.g. Doug Salary, Vida Salary")
             amount = st.number_input("Amount", value=0.0, min_value=0.0)
             currency = st.selectbox("Currency", ["BRL", "CAD", "USD", "EUR"])
             due = st.number_input("Receive day", min_value=1, max_value=31, value=1)
             category = st.selectbox("Category", ["Salary", "Other Income", "Transfer", "Other"])
+            valid_until = st.date_input(
+                "Valid until (optional — leave as-is if ongoing)",
+                value=None,
+                help="Set a date if this income will change or stop. It will disappear automatically after this date."
+            )
             if st.form_submit_button("Add Income"):
-                r = post_data("recurring-expenses", {"name": name, "amount": amount, "currency": currency,
-                                                      "due_day": int(due), "category": category, "type": "INCOME"})
+                payload = {"name": name, "amount": amount, "currency": currency,
+                           "due_day": int(due), "category": category, "type": "INCOME",
+                           "valid_until": valid_until.isoformat() if valid_until else None}
+                r = post_data("recurring-expenses", payload)
                 if r is not None and r.status_code in [200, 201]:
                     st.success("Income added!")
                     st.rerun()
@@ -1110,7 +1127,6 @@ elif page == "Import Statement":
     if not accounts:
         st.warning("Please create an account first.")
     else:
-        # ── Import History ─────────────────────────────────────────
         with st.expander("🗂️ Import History — view and delete past imports"):
             imports = get_imports()
             if not imports:
@@ -1119,12 +1135,8 @@ elif page == "Import Statement":
                 for imp in imports:
                     col1, col2, col3 = st.columns([5, 1, 1])
                     with col1:
-                        st.write(
-                            f"**{imp['account_name']}** — {imp['transaction_count']} transactions "
-                            f"({imp['first_date']} → {imp['last_date']}) · imported {imp['imported_at']}"
-                        )
+                        st.write(f"**{imp['account_name']}** — {imp['transaction_count']} transactions ({imp['first_date']} → {imp['last_date']}) · imported {imp['imported_at']}")
                     with col2:
-                        # Delete all transactions in this batch
                         if st.button("🗑️ All", key=f"del_batch_{imp['import_batch_id']}"):
                             r = requests.delete(f"{API_URL}/imports/{imp['import_batch_id']}", timeout=15)
                             if r and r.status_code == 200:
@@ -1133,14 +1145,12 @@ elif page == "Import Statement":
                             else:
                                 st.error("Error deleting batch.")
                     with col3:
-                        # Navigate to Transactions page filtered by this account to delete individually
                         if st.button("👁️ View", key=f"view_batch_{imp['import_batch_id']}"):
                             st.session_state["current_page"] = "Transactions"
                             st.session_state["nav_account_id"] = imp["account_id"]
                             st.rerun()
             st.divider()
 
-        # ── Import form ────────────────────────────────────────────
         col1, col2 = st.columns(2)
         with col1:
             account_options = [
@@ -1155,7 +1165,6 @@ elif page == "Import Statement":
             from_date = st.date_input("Import transactions from", value=date.today().replace(day=1))
         st.divider()
 
-        # Reconciliation UI shown after a chequing import
         if "reconcile_acc_id" in st.session_state:
             r_acc_id = st.session_state["reconcile_acc_id"]
             r_acc = next((a for a in accounts if a["id"] == r_acc_id), None)
@@ -1179,7 +1188,6 @@ elif page == "Import Statement":
                     st.rerun()
             st.divider()
 
-        # File upload — accepts CSV, XLS, XLSX
         uploaded = st.file_uploader("📁 Upload statement file (CSV, XLS, or XLSX)", type=["csv", "xls", "xlsx"])
         if uploaded:
             try:
@@ -1296,7 +1304,7 @@ Return ONLY the JSON array, no markdown."""
                 if st.button("✅ Import All Transactions", type="primary"):
                     success = 0
                     errors = 0
-                    batch_id = str(uuid.uuid4())  # Unique ID for this import session
+                    batch_id = str(uuid.uuid4())
                     with st.spinner("Importing..."):
                         for t in edited:
                             try:
@@ -1328,7 +1336,6 @@ Return ONLY the JSON array, no markdown."""
                     st.success(f"✅ Imported {success} transactions!")
                     if errors:
                         st.warning(f"⚠️ {errors} failed.")
-                    # For chequing: auto-calculate new balance and prompt user to confirm
                     if not is_credit_import:
                         net = sum(float(t.get("amount", 0)) for t in edited)
                         current_balance = float(selected_acc.get("balance", 0))

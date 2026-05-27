@@ -24,14 +24,14 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)        # User-defined label e.g. "RBC Chequing"
-    bank = Column(String, nullable=False)        # Financial institution e.g. "RBC"
-    account_type = Column(Enum(AccountTypeEnum), nullable=False)  # Checking, Savings or Credit Card
-    currency = Column(Enum(CurrencyEnum), nullable=False)         # BRL, CAD, USD or EUR
-    balance = Column(Float, default=0.0)         # Current balance (negative for credit card debt)
-    credit_limit = Column(Float, nullable=True)         # Credit limit (credit card only)
-    closing_day = Column(Integer, nullable=True)        # Statement closing day (credit card only)
-    due_day = Column(Integer, nullable=True)            # Payment due day (credit card only)
+    name = Column(String, nullable=False)
+    bank = Column(String, nullable=False)
+    account_type = Column(Enum(AccountTypeEnum), nullable=False)
+    currency = Column(Enum(CurrencyEnum), nullable=False)
+    balance = Column(Float, default=0.0)
+    credit_limit = Column(Float, nullable=True)
+    closing_day = Column(Integer, nullable=True)
+    due_day = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Transaction(Base):
@@ -40,27 +40,29 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
     description = Column(String, nullable=False)
-    amount = Column(Float, nullable=False)       # Positive = income, negative = expense
+    amount = Column(Float, nullable=False)
     currency = Column(Enum(CurrencyEnum), nullable=False)
     date = Column(DateTime, nullable=False)
-    category = Column(String, nullable=True)     # e.g. "Food", "Transport", "Salary"
-    statement_month = Column(String, nullable=True)    # Format: "2026-05" — billing period for credit cards
-    payment_due_date = Column(DateTime, nullable=True) # Payment due date for credit card statements
-    import_batch_id = Column(String, nullable=True)    # UUID grouping all transactions from the same import
+    category = Column(String, nullable=True)
+    statement_month = Column(String, nullable=True)
+    payment_due_date = Column(DateTime, nullable=True)
+    import_batch_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class RecurringExpense(Base):
     __tablename__ = "recurring_expenses"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)        # e.g. "Rent", "Netflix"
-    amount = Column(Float, nullable=False)        # Fixed monthly amount
+    name = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
     currency = Column(Enum(CurrencyEnum), nullable=False)
-    due_day = Column(Integer, nullable=False)    # Day of month it's due (1-31)
+    due_day = Column(Integer, nullable=False)
     type = Column(Enum(RecurringTypeEnum), nullable=False, default=RecurringTypeEnum.EXPENSE)
-    category = Column(String, nullable=True)     # e.g. "Housing", "Subscriptions"
-    is_active = Column(Boolean, default=True)    # Can be deactivated without deleting
+    category = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)
+    valid_until = Column(DateTime, nullable=True)   # If set, auto-expires after this date
     created_at = Column(DateTime, default=datetime.utcnow)
+
 class CategoryTypeEnum(enum.Enum):
     EXPENSE = "EXPENSE"
     INCOME = "INCOME"
@@ -70,7 +72,7 @@ class Category(Base):
     __tablename__ = "categories"
 
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)   # Category name e.g. "Rent"
+    name = Column(String, nullable=False, unique=True)
     type = Column(Enum(CategoryTypeEnum), nullable=False, default=CategoryTypeEnum.EXPENSE)
-    is_default = Column(Boolean, default=False)          # True = system default, cannot be deleted
+    is_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
