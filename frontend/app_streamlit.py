@@ -148,12 +148,30 @@ def parse_statement(uploaded, from_date):
                 df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
                 df["date_parsed"] = pd.to_datetime(df["date"])
                 bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
-            elif "transaction amount" in cols:
-                raw.columns = [c.strip() for c in raw.columns]
-                df = raw.rename(columns={"Transaction Date": "date", "Transaction Amount": "amount", "Description": "description"})
+            elif "transaction amount" in cols or "item #" in cols:
+                # BMO Credit Card format:
+                # Row 1: "Following data is valid as of YYYYMMDDHHMMSS:"
+                # Row 2: blank
+                # Row 3: Item #,Card #,Transaction Date,Posting Date,Transaction Amount,Description
+                import io
+                # Find the real header row by scanning for "Transaction Date"
+                lines = content.split("\n")
+                header_idx = next(
+                    (i for i, l in enumerate(lines) if "Transaction Date" in l and "Transaction Amount" in l),
+                    None
+                )
+                if header_idx is None:
+                    return None, f"Could not find BMO header row. Content start: {content[:200]}"
+                df_raw = pd.read_csv(io.StringIO(content), skiprows=header_idx)
+                df_raw.columns = [c.strip() for c in df_raw.columns]
+                df = df_raw.rename(columns={
+                    "Transaction Date": "date",
+                    "Transaction Amount": "amount",
+                    "Description": "description"
+                })
                 df = df[["date", "description", "amount"]].dropna(subset=["amount"])
-                df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
-                df["date_parsed"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d")
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1  # BMO: positive = expense
+                df["date_parsed"] = pd.to_datetime(df["date"].astype(str).str.strip(), format="%Y%m%d", errors="coerce")
                 df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
                 bank = "BMO"
             else:
@@ -642,6 +660,54 @@ elif page == "Spending Analysis":
                     st.session_state["sa_transactions_cache"] = {}
                     st.rerun()
 
+                # ── Card summary for selected month ────────────────
+                card_accs = [a for a in accounts if a["account_type"] == "CREDIT_CARD"]
+                card_summary_rows = []
+                card_summary_total = 0.0
+                for acc in card_accs:
+                    try:
+                        s = requests.get(f"{API_URL}/accounts/{acc['id']}/statement-summary", timeout=10).json()
+                        acc_total = 0.0
+                        for md in s.values():
+                            due_str = md.get("payment_due_date", "")[:7]
+                            if due_str:
+                                try:
+                                    due_dt = datetime.strptime(due_str, "%Y-%m")
+                                    if due_dt.month == 1:
+                                        bm = due_dt.replace(year=due_dt.year - 1, month=12)
+                                    else:
+                                        bm = due_dt.replace(month=due_dt.month - 1)
+                                    if bm.strftime("%Y-%m") == selected_month:
+                                        acc_total += md.get("charges", 0)
+                                except:
+                                    pass
+                    except:
+                        acc_total = 0.0
+                    if acc_total > 0:
+                        card_summary_rows.append((acc["name"], round(acc_total, 2)))
+                        card_summary_total += acc_total
+
+                if card_summary_rows:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    st.markdown("**💳 Card charges this month**")
+                    for cname, camt in card_summary_rows:
+                        st.markdown(
+                            f'<div style="display:flex;justify-content:space-between;padding:4px 0;'
+                            f'border-bottom:1px solid rgba(128,128,128,0.1);font-size:13px">'
+                            f'<span style="color:#888">↳ {cname}</span>'
+                            f'<span style="color:#e05a5a;font-weight:600">CAD$ {fmt(camt, "CAD")}</span>'
+                            f'</div>',
+                            unsafe_allow_html=True
+                        )
+                    st.markdown(
+                        f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
+                        f'font-weight:700;font-size:13px">'
+                        f'<span>Total cards</span>'
+                        f'<span style="color:#e05a5a">CAD$ {fmt(card_summary_total, "CAD")}</span>'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
+
             with col_list:
                 st.markdown("""
                 <style>
@@ -1025,6 +1091,59 @@ elif page == "Credit Cards":
                     st.success("Deleted!")
                     st.rerun()
     if cards:
+        st.divider()
+
+        # ── Billing cycle table ────────────────────────────────────
+        st.subheader("📅 Current Billing Cycles")
+        st.caption(f"Based on today: {date.today().strftime('%B %d, %Y')}")
+
+        def get_current_cycle(closing_day, due_day):
+            from dateutil.relativedelta import relativedelta
+            today = date.today()
+            # If today is on or past closing day, the cycle just closed
+            if today.day >= closing_day:
+                cycle_end = today.replace(day=closing_day)
+                cycle_start = (today - relativedelta(months=1)).replace(day=closing_day + 1) if closing_day < 28 else (today - relativedelta(months=1)).replace(day=closing_day)
+                status = "🔒 Closed"
+                # Charges appear in current month, payment next month
+                charges_month = today.strftime("%B %Y")
+                payment_due = (today + relativedelta(months=1)).replace(day=due_day)
+            else:
+                # Cycle still open — started after closing_day last month
+                cycle_start = (today - relativedelta(months=1)).replace(day=closing_day + 1) if closing_day < 28 else (today - relativedelta(months=1)).replace(day=closing_day)
+                cycle_end = today.replace(day=closing_day)
+                status = "🟢 Open"
+                charges_month = today.strftime("%B %Y")
+                payment_due = (today + relativedelta(months=1)).replace(day=due_day)
+            return {
+                "cycle_start": cycle_start.strftime("%b %d"),
+                "cycle_end": cycle_end.strftime("%b %d"),
+                "status": status,
+                "charges_appear_in": charges_month,
+                "payment_due": payment_due.strftime("%b %d, %Y"),
+            }
+
+        table_rows = []
+        for c in cards:
+            if c.get("closing_day") and c.get("due_day"):
+                try:
+                    cycle = get_current_cycle(c["closing_day"], c["due_day"])
+                    table_rows.append({
+                        "Card": c["name"],
+                        "Limit": f"{c['currency']} {fmt(c['credit_limit'], c['currency'])}",
+                        "Closes": f"day {c['closing_day']}",
+                        "Due": f"day {c['due_day']}",
+                        "Current cycle": f"{cycle['cycle_start']} → {cycle['cycle_end']}",
+                        "Status": cycle["status"],
+                        "Charges appear in": cycle["charges_appear_in"],
+                        "Payment due": cycle["payment_due"],
+                    })
+                except Exception as e:
+                    table_rows.append({"Card": c["name"], "Limit": "—", "Closes": "—", "Due": "—",
+                                       "Current cycle": "—", "Status": "—",
+                                       "Charges appear in": "—", "Payment due": f"Error: {e}"})
+        if table_rows:
+            st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
         st.divider()
     with st.form("new_card"):
         name = st.text_input("Card name")
