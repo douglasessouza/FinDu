@@ -192,18 +192,19 @@ st.title("💰 FinDu")
 st.caption("Personal multi-currency financial control")
 
 if "current_page" not in st.session_state:
-    st.session_state.current_page = "Dashboard"
+    st.session_state.current_page = "Monthly Cash Flow"
 
-MENU = [
-    ("📊", "Dashboard"),
-    ("📂", "Import Statement"),
-    ("📅", "Monthly View"),
+MENU_CONSULTAS = [
+    ("💰", "Monthly Cash Flow"),
     ("📈", "Spending Analysis"),
-    ("💳", "Card Summary"),
     ("💸", "Transactions"),
+]
+
+MENU_CADASTROS = [
+    ("📂", "Import Statement"),
     ("🏦", "Accounts"),
     ("💳", "Credit Cards"),
-    ("🔄", "Recurring Expenses"),
+    ("🔄", "Recurring Expenses & Income"),
     ("🏷️", "Categories"),
 ]
 
@@ -247,8 +248,15 @@ except:
     pass
 
 st.sidebar.divider()
+st.sidebar.markdown('<p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:4px 14px">📊 Reports</p>', unsafe_allow_html=True)
+for icon, label in MENU_CONSULTAS:
+    is_active = st.session_state.current_page == label
+    if st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}", type="primary" if is_active else "secondary", use_container_width=True):
+        st.session_state.current_page = label
+        st.rerun()
 
-for icon, label in MENU:
+st.sidebar.markdown('<p style="font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin:12px 14px 4px">⚙️ Manage</p>', unsafe_allow_html=True)
+for icon, label in MENU_CADASTROS:
     is_active = st.session_state.current_page == label
     if st.sidebar.button(f"{icon}  {label}", key=f"nav_{label}", type="primary" if is_active else "secondary", use_container_width=True):
         st.session_state.current_page = label
@@ -355,9 +363,9 @@ if page == "Dashboard":
     st.metric("Total assets", f"CAD$ {fmt(total_bruto,'CAD')}")
 
 # ─────────────────────────────────────────────────────────────────
-elif page == "Monthly View":
+elif page == "Monthly Cash Flow":
     import calendar
-    st.header("📅 Monthly View")
+    st.header("💰 Monthly Cash Flow")
     today = date.today()
     if "mv_year" not in st.session_state:
         st.session_state.mv_year = today.year
@@ -1167,7 +1175,7 @@ elif page == "Credit Cards":
                 st.error(f"Error {r.status_code if r else 'None'}: {r.text if r else 'No response'}")
 
 # ─────────────────────────────────────────────────────────────────
-elif page == "Recurring Expenses":
+elif page == "Recurring Expenses & Income":
     st.header("🔄 Recurring Expenses & Income")
     expenses = get_recurring()
     income_list = [e for e in expenses if e.get("type") == "INCOME"]
