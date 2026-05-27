@@ -453,7 +453,7 @@ elif page == "Monthly View":
         # ── 💸 EXPENSES ────────────────────────────────────────────
         st.markdown("#### 💸 Expenses")
 
-         if card_charges > 0:
+        if card_charges > 0:
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
                 f'border-bottom:1px solid rgba(128,128,128,0.1)">'
@@ -521,7 +521,7 @@ elif page == "Monthly View":
             f"+ Income ({symbol} {fmt(total_rec_income, currency)}) "
             f"− Expenses ({symbol} {fmt(total_expenses, currency)}) "
             f"= {symbol} {fmt(balance, currency)}"
-        )
+        )    
 
         if checking_expenses > 0 or checking_income > 0:
             with st.expander("🏦 Chequing transactions (already deducted from bank balance)"):
