@@ -138,23 +138,15 @@ def parse_statement(uploaded, from_date):
             df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
             bank = "Amex"
         else:
-            raw = pd.read_csv(uploaded)
-            uploaded.seek(0)
-            cols = [c.strip().lower() for c in raw.columns]
-            if "transaction date" in cols and "cad$" in cols:
-                raw.columns = [c.strip() for c in raw.columns]
-                df = raw.rename(columns={"Transaction Date": "date", "Description 1": "description", "CAD$": "amount"})
-                df = df[["date", "description", "amount"]].dropna(subset=["amount"])
-                df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-                df["date_parsed"] = pd.to_datetime(df["date"])
-                bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
-            elif "transaction amount" in cols or "item #" in cols:
-                # BMO Credit Card format:
-                # Row 1: "Following data is valid as of YYYYMMDDHHMMSS:"
-                # Row 2: blank
-                # Row 3: Item #,Card #,Transaction Date,Posting Date,Transaction Amount,Description
-                import io
-                # Find the real header row by scanning for "Transaction Date"
+            import io
+            # ── BMO detection: check raw content BEFORE read_csv ──
+            # BMO starts with "Following data is valid as of..." junk line
+            is_bmo = "Following data is valid as of" in content or (
+                "Item #" in content and "Transaction Amount" in content
+            )
+
+            if is_bmo:
+                # Find the real header row
                 lines = content.split("\n")
                 header_idx = next(
                     (i for i, l in enumerate(lines) if "Transaction Date" in l and "Transaction Amount" in l),
@@ -175,7 +167,18 @@ def parse_statement(uploaded, from_date):
                 df["date"] = df["date_parsed"].dt.strftime("%-m/%-d/%Y")
                 bank = "BMO"
             else:
-                return None, f"Unrecognized format. Columns: {list(raw.columns)}"
+                raw = pd.read_csv(io.StringIO(content))
+                uploaded.seek(0)
+                cols = [c.strip().lower() for c in raw.columns]
+                if "transaction date" in cols and "cad$" in cols:
+                    raw.columns = [c.strip() for c in raw.columns]
+                    df = raw.rename(columns={"Transaction Date": "date", "Description 1": "description", "CAD$": "amount"})
+                    df = df[["date", "description", "amount"]].dropna(subset=["amount"])
+                    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+                    df["date_parsed"] = pd.to_datetime(df["date"])
+                    bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
+                else:
+                    return None, f"Unrecognized format. Columns: {list(raw.columns)}"
 
     df = df.dropna(subset=["amount", "date_parsed"])
     df = df[df["date_parsed"] >= pd.Timestamp(from_date)]
