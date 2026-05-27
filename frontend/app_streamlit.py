@@ -453,20 +453,26 @@ elif page == "Monthly View":
         # ── 💸 EXPENSES ────────────────────────────────────────────
         st.markdown("#### 💸 Expenses")
 
-        if card_charges > 0:
+         if card_charges > 0:
             st.markdown(
                 f'<div style="display:flex;justify-content:space-between;padding:6px 0;'
                 f'border-bottom:1px solid rgba(128,128,128,0.1)">'
-                f'<span>💳 Card charges</span>'
+                f'<span style="font-weight:600">💳 Card charges</span>'
                 f'<span style="color:#e05a5a;font-weight:600">- {symbol} {fmt(card_charges, currency)}</span>'
                 f'</div>',
                 unsafe_allow_html=True
             )
-            if card_breakdown:
-                with st.expander(f"Card charges breakdown — {current_month_str}"):
-                    for card_name, amount in card_breakdown.items():
-                        st.write(f"  • {card_name}: {symbol} {fmt(amount, currency)}")
-
+            # Linha por cartão (sem expander)
+            for card_name, amount in card_breakdown.items():
+                st.markdown(
+                    f'<div style="display:flex;justify-content:space-between;padding:4px 0 4px 16px;'
+                    f'border-bottom:1px solid rgba(128,128,128,0.07)">'
+                    f'<span style="color:#888;font-size:13px">↳ {card_name}</span>'
+                    f'<span style="color:#e05a5a;font-size:13px">- {symbol} {fmt(amount, currency)}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+ 
         if expense_rec:
             for e in expense_rec:
                 valid_str = ""
@@ -484,7 +490,7 @@ elif page == "Monthly View":
                     f'</div>',
                     unsafe_allow_html=True
                 )
-
+ 
         total_expenses = card_charges + total_rec_expense
         st.markdown(
             f'<div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700">'
@@ -493,30 +499,29 @@ elif page == "Monthly View":
             f'</div>',
             unsafe_allow_html=True
         )
-
+ 
         st.markdown("<br>", unsafe_allow_html=True)
-
-        # ── 📊 BALANCE ─────────────────────────────────────────────
+ 
+        # CHANGE 2: Balance — In Bank + Income - Expenses (cálculo correto)
         st.markdown("#### 📊 Balance")
-        balance_base = account_balance - total_rec_expense - card_charges
-        balance_with_income = balance_base + total_rec_income
-
-        c1, c2, c3 = st.columns(3)
+        balance = account_balance + total_rec_income - total_expenses
+ 
+        c1, c2 = st.columns(2)
         with c1:
             st.metric("🏦 In Bank", f"{symbol} {fmt(account_balance, currency)}")
         with c2:
             st.metric(
-                "📊 After expenses",
-                f"{symbol} {fmt(balance_base, currency)}",
-                delta=f"- {symbol} {fmt(total_expenses, currency)}",
-                delta_color="inverse"
+                "📊 Balance",
+                f"{symbol} {fmt(balance, currency)}",
+                delta=f"{'+ ' if balance >= 0 else ''}{symbol} {fmt(balance, currency)}",
+                delta_color="normal" if balance >= 0 else "inverse"
             )
-        with c3:
-            st.metric(
-                "🎯 After Income",
-                f"{symbol} {fmt(balance_with_income, currency)}",
-                delta=f"+ {symbol} {fmt(total_rec_income, currency)}" if total_rec_income > 0 else None,
-            )
+        st.caption(
+            f"In Bank ({symbol} {fmt(account_balance, currency)}) "
+            f"+ Income ({symbol} {fmt(total_rec_income, currency)}) "
+            f"− Expenses ({symbol} {fmt(total_expenses, currency)}) "
+            f"= {symbol} {fmt(balance, currency)}"
+        )
 
         if checking_expenses > 0 or checking_income > 0:
             with st.expander("🏦 Chequing transactions (already deducted from bank balance)"):
