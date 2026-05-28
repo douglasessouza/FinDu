@@ -1,1 +1,20 @@
 @import "tailwindcss";
+
+@theme {
+  --color-green-page: #EDF4EE;
+  --color-green-deep: #1B4D3E;
+  --color-green-mid: #1B6B3A;
+  --color-green-light: #F4FAF5;
+  --color-green-border: #D4E4D5;
+  --color-green-muted: #8BAE90;
+  --color-gold: #E8C84A;
+  --color-gold-dark: #C9A84C;
+  --color-text-main: #2C3E2D;
+  --color-red: #B85050;
+}
+
+body {
+  background-color: #EDF4EE;
+  color: #2C3E2D;
+  font-family: Georgia, serif;
+}
