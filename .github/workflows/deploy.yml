@@ -30,6 +30,11 @@ jobs:
           docker build --no-cache -f Dockerfile.streamlit -t us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} .
           docker push us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }}
 
+      - name: Build and push React image
+        run: |
+          docker build -f Dockerfile.web -t us-east1-docker.pkg.dev/findu23/findu/findu-web:${{ github.sha }} .
+          docker push us-east1-docker.pkg.dev/findu23/findu/findu-web:${{ github.sha }}
+
       - name: Deploy API to Cloud Run
         run: |
           gcloud run deploy findu-api \
@@ -47,3 +52,12 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --set-env-vars "API_URL=https://findu-api-uwii3tfcqa-ue.a.run.app,ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
+
+      - name: Deploy React to Cloud Run
+        run: |
+          gcloud run deploy findu-web \
+            --image us-east1-docker.pkg.dev/findu23/findu/findu-web:${{ github.sha }} \
+            --region us-east1 \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080
