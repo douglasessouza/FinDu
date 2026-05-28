@@ -1104,38 +1104,49 @@ elif page == "Credit Cards":
                 cycle_start = (today - relativedelta(months=1)).replace(day=closing_day + 1) if closing_day < 28 else (today - relativedelta(months=1)).replace(day=closing_day)
                 cycle_end = today.replace(day=closing_day)
                 status = "🟢 Open"
-            charges_month = today.strftime("%B %Y")
             payment_due = (today + relativedelta(months=1)).replace(day=due_day)
+            # Charges appear in = current month (billing month)
+            charges_in = today.strftime("%b %Y")
+            # Monthly Cash Flow impact = payment month
+            cashflow_in = payment_due.strftime("%b %Y")
             return {
-                "cycle_start": cycle_start.strftime("%b %d"),
-                "cycle_end": cycle_end.strftime("%b %d"),
+                "cycle": f"{cycle_start.strftime('%b %d')} → {cycle_end.strftime('%b %d')}",
                 "status": status,
-                "charges_appear_in": charges_month,
+                "charges_in": charges_in,
+                "cashflow_in": cashflow_in,
                 "payment_due": payment_due.strftime("%b %d, %Y"),
             }
 
         st.caption(f"Based on today: {date.today().strftime('%B %d, %Y')}")
 
-        # Build table with all card info + cycle
+        # Compact table
+        table_rows = []
         for c in cards:
             try:
-                cycle = get_current_cycle(c["closing_day"], c["due_day"]) if c.get("closing_day") and c.get("due_day") else {}
-            except:
-                cycle = {}
+                cy = get_current_cycle(c["closing_day"], c["due_day"]) if c.get("closing_day") and c.get("due_day") else {}
+                table_rows.append({
+                    "Card": c["name"],
+                    "Limit": f"$ {fmt(c['credit_limit'] or 0, c['currency'])}",
+                    "Closes": f"day {c['closing_day']}",
+                    "Due": f"day {c['due_day']}",
+                    "Cycle": cy.get("cycle", "—"),
+                    "Status": cy.get("status", "—"),
+                    "Charges in": cy.get("charges_in", "—"),
+                    "Cash Flow in": cy.get("cashflow_in", "—"),
+                    "Payment due": cy.get("payment_due", "—"),
+                })
+            except Exception as e:
+                table_rows.append({"Card": c["name"], "Limit": "—", "Closes": "—", "Due": "—",
+                                   "Cycle": "—", "Status": "—", "Charges in": "—",
+                                   "Cash Flow in": "—", "Payment due": f"Error: {e}"})
 
-            with st.expander(f"**{c['name']}** — {c['currency']} | Limit: {fmt(c['credit_limit'] or 0, c['currency'])} | {cycle.get('status','—')} · Due {cycle.get('payment_due','—')}"):
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Closes", f"day {c['closing_day']}")
-                with col2:
-                    st.metric("Due", f"day {c['due_day']}")
-                with col3:
-                    st.metric("Current cycle", f"{cycle.get('cycle_start','—')} → {cycle.get('cycle_end','—')}")
-                with col4:
-                    st.metric("Charges appear in", cycle.get("charges_appear_in", "—"))
+        st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+        st.divider()
 
-                st.markdown("---")
-                st.caption("Edit card details:")
+        # Edit / delete per card
+        st.subheader("✏️ Edit or Delete")
+        for c in cards:
+            with st.expander(f"{c['name']}"):
                 e1, e2, e3, e4 = st.columns(4)
                 with e1:
                     new_limit = st.number_input("Limit", value=float(c["credit_limit"] or 0), key=f"lim_{c['id']}")
@@ -1154,13 +1165,11 @@ elif page == "Credit Cards":
                             st.rerun()
                         else:
                             st.error("Error saving.")
-
-                if st.button("🗑️ Delete this card", key=f"del_card_{c['id']}", type="secondary"):
+                if st.button("🗑️ Delete this card", key=f"del_card_{c['id']}"):
                     r = delete_data("accounts", c["id"])
                     if r is not None and r.status_code in [200, 204]:
                         st.success("Deleted!")
                         st.rerun()
-
         st.divider()
 
     with st.form("new_card"):
