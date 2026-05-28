@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -438,3 +438,302 @@ def spending_analysis(db: Session = Depends(get_db)):
         result[month_key][cat][col] += round(amount, 2)
 
     return dict(sorted(result.items()))
+
+# ── File upload imports ────────────────────────────────────────────
+from fastapi import UploadFile, File, Form
+import pandas as pd
+import io
+import uuid
+import json
+import requests as http_requests
+
+def parse_statement_file(content: bytes, filename: str, from_date: str):
+    """
+    Parse a bank statement file and return a list of transactions.
+    Supports: Amex XLS/XLSX, Amex CSV, RBC CSV, BMO CSV
+    Returns: (transactions: list[dict], bank: str, error: str | None)
+    """
+    from_dt = pd.Timestamp(from_date)
+    fname = filename.lower()
+
+    try:
+        # ── Amex XLS / XLSX ──────────────────────────────────────
+        if fname.endswith(".xls") or fname.endswith(".xlsx"):
+            engine = "xlrd" if fname.endswith(".xls") else "openpyxl"
+            raw = pd.read_excel(io.BytesIO(content), header=None, engine=engine)
+            header_idx = None
+            for i, row in raw.iterrows():
+                row_str = " ".join(str(v).lower() for v in row.values)
+                if "date" in row_str and "amount" in row_str:
+                    header_idx = i
+                    break
+            if header_idx is None:
+                return None, None, "Could not find header row in Excel file."
+            df_raw = pd.read_excel(io.BytesIO(content), header=header_idx, engine=engine)
+            df_raw.columns = [str(c).strip() for c in df_raw.columns]
+            col_map = {}
+            for c in df_raw.columns:
+                cl = c.lower()
+                if "date" in cl and "process" not in cl and "date" not in col_map:
+                    col_map["date"] = c
+                elif "description" in cl and "description" not in col_map:
+                    col_map["description"] = c
+                elif "amount" in cl and "amount" not in col_map:
+                    col_map["amount"] = c
+            if not all(k in col_map for k in ["date", "description", "amount"]):
+                return None, None, f"Could not identify columns. Found: {list(df_raw.columns)}"
+            df = df_raw[[col_map["date"], col_map["description"], col_map["amount"]]].copy()
+            df.columns = ["date", "description", "amount"]
+            df = df.dropna(subset=["description"])
+            df = df[df["description"].astype(str).str.strip() != ""]
+            df["amount"] = pd.to_numeric(
+                df["amount"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip(),
+                errors="coerce"
+            ) * -1
+            df["date_parsed"] = pd.to_datetime(df["date"].astype(str).str.strip(), format="mixed", dayfirst=True, errors="coerce")
+            bank = "Amex"
+
+        else:
+            text = content.decode("utf-8-sig", errors="ignore")
+
+            # ── BMO CSV ──────────────────────────────────────────
+            if "Following data is valid as of" in text or ("Item #" in text and "Transaction Amount" in text):
+                lines = text.split("\n")
+                header_idx = next(
+                    (i for i, l in enumerate(lines) if "Transaction Date" in l and "Transaction Amount" in l),
+                    None
+                )
+                if header_idx is None:
+                    return None, None, "Could not find BMO header row."
+                df_raw = pd.read_csv(io.StringIO(text), skiprows=header_idx)
+                df_raw.columns = [c.strip() for c in df_raw.columns]
+                df = df_raw.rename(columns={"Transaction Date": "date", "Transaction Amount": "amount", "Description": "description"})
+                df = df[["date", "description", "amount"]].dropna(subset=["amount"])
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
+                df["date_parsed"] = pd.to_datetime(df["date"].astype(str).str.strip(), format="%Y%m%d", errors="coerce")
+                bank = "BMO"
+
+            # ── Amex CSV (semicolon) ──────────────────────────────
+            elif ";" in text.split("\n")[0] or "Transaction Details" in text[:500]:
+                lines = text.split("\n")
+                header_idx = next(
+                    (i for i, l in enumerate(lines) if l.startswith("Date;") or ("Description" in l and "Amount" in l and ";" in l)),
+                    None
+                )
+                if header_idx is None:
+                    return None, None, "Could not find header row in Amex CSV file."
+                raw = pd.read_csv(io.StringIO(text), sep=";", skiprows=header_idx)
+                raw.columns = [c.strip() for c in raw.columns]
+                df = raw[["Date", "Description", "Amount"]].copy()
+                df.columns = ["date", "description", "amount"]
+                df = df.dropna(subset=["description"])
+                df = df[df["description"].str.strip() != ""]
+                df["amount"] = df["amount"].astype(str).str.replace("$", "", regex=False).str.replace(",", "", regex=False).str.strip()
+                df["amount"] = pd.to_numeric(df["amount"], errors="coerce") * -1
+                df["date_parsed"] = pd.to_datetime(df["date"].str.strip(), format="%d %b. %Y", errors="coerce")
+                bank = "Amex"
+
+            else:
+                raw = pd.read_csv(io.StringIO(text))
+                cols = [c.strip().lower() for c in raw.columns]
+
+                # ── RBC CSV ──────────────────────────────────────
+                if "transaction date" in cols and "cad$" in cols:
+                    raw.columns = [c.strip() for c in raw.columns]
+                    df = raw.rename(columns={"Transaction Date": "date", "Description 1": "description", "CAD$": "amount"})
+                    df = df[["date", "description", "amount"]].dropna(subset=["amount"])
+                    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+                    df["date_parsed"] = pd.to_datetime(df["date"])
+                    bank = f"RBC {raw['Account Type'].iloc[0]}" if "Account Type" in raw.columns else "RBC"
+                else:
+                    return None, None, f"Unrecognized format. Columns: {list(raw.columns)}"
+
+        # ── Filter by from_date and drop nulls ────────────────────
+        df = df.dropna(subset=["amount", "date_parsed"])
+        df = df[df["date_parsed"] >= from_dt]
+
+        # Format date as ISO string
+        df["date"] = df["date_parsed"].dt.strftime("%Y-%m-%d")
+        df = df.drop(columns=["date_parsed"])
+
+        txs = df[["date", "description", "amount"]].to_dict(orient="records")
+        return txs, bank, None
+
+    except Exception as e:
+        return None, None, str(e)
+
+
+@app.post("/parse-statement")
+async def parse_statement_endpoint(
+    file: UploadFile = File(...),
+    account_id: int = Form(...),
+    from_date: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Parse an uploaded bank statement file.
+    Returns parsed transactions and the last transaction date for anti-duplicate check.
+    """
+    content = await file.read()
+    txs, bank, error = parse_statement_file(content, file.filename, from_date)
+
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    if not txs:
+        return {"transactions": [], "bank": bank, "last_date": None}
+
+    # Anti-duplicate: get last transaction date for this account
+    last_tx = db.query(Transaction)\
+        .filter(Transaction.account_id == account_id)\
+        .order_by(Transaction.date.desc())\
+        .first()
+    last_date = last_tx.date.strftime("%Y-%m-%d") if last_tx else None
+
+    # Filter out already-imported transactions
+    if last_date:
+        txs = [t for t in txs if t["date"] > last_date]
+
+    return {
+        "transactions": txs,
+        "bank": bank,
+        "last_date": last_date,
+        "total_parsed": len(txs),
+    }
+
+
+@app.post("/analyze-statement")
+async def analyze_statement_endpoint(
+    account_id: int = Form(...),
+    transactions_json: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Send transactions to Claude API for categorization.
+    Returns transactions with suggested categories.
+    """
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    txs = json.loads(transactions_json)
+    is_credit = account.account_type.value == "CREDIT_CARD"
+
+    # Get categories
+    cats = db.query(Category).order_by(Category.name).all()
+    cat_names = [c.name for c in cats]
+
+    # Get recurring expenses for matching
+    recurring = db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()
+    recurring_names = [e.name for e in recurring]
+
+    # Build CSV string for AI
+    import csv
+    csv_buf = io.StringIO()
+    writer = csv.DictWriter(csv_buf, fieldnames=["date", "description", "amount"])
+    writer.writeheader()
+    writer.writerows(txs)
+    csv_str = csv_buf.getvalue()
+
+    account_type_hint = "credit card" if is_credit else "chequing/debit"
+    credit_note = (
+        "IMPORTANT: This is a credit card statement. "
+        "Payments like 'Payment - Thank You' or 'PAYMENT RECEIVED' must be categorized as 'Transfer'. "
+        "Focus on categorizing actual purchases."
+    ) if is_credit else ""
+
+    prompt = f"""You are a financial assistant analyzing a Canadian bank statement ({account.bank} {account_type_hint}).
+{credit_note}
+
+Transactions:
+{csv_str}
+
+Recurring expenses already registered: {recurring_names}
+
+Return a JSON array. Each item must have:
+- "date": original date string (keep as-is)
+- "description": clean merchant name (remove codes like "CONTACTLESS INTERAC PURCHASE - 1234")
+- "amount": numeric (negative = expense, positive = income/payment)
+- "category": one of: {", ".join(cat_names)}
+- "is_recurring": true if matches known recurring or clearly a regular bill
+- "recurring_match": matching recurring name or null
+
+Return ONLY the JSON array, no markdown, no backticks."""
+
+    try:
+        resp = http_requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01"
+            },
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 4000,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=60
+        )
+        ai_text = resp.json()["content"][0]["text"]
+        analyzed = json.loads(ai_text)
+        return {"transactions": analyzed}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
+# ── Monthly Payments (paid tracking) ──────────────────────────────
+
+class MonthlyPaymentCreate(BaseModel):
+    month: str          # "2026-06"
+    item_type: str      # "card" or "recurring"
+    item_id: int
+    item_name: str
+
+@app.get("/monthly-payments")
+def get_monthly_payments(month: str, db: Session = Depends(get_db)):
+    """Returns all paid items for a given month."""
+    payments = db.query(MonthlyPayment).filter(MonthlyPayment.month == month).all()
+    return [
+        {
+            "id": p.id,
+            "month": p.month,
+            "item_type": p.item_type,
+            "item_id": p.item_id,
+            "item_name": p.item_name,
+            "paid_at": p.paid_at.isoformat(),
+        }
+        for p in payments
+    ]
+
+@app.post("/monthly-payments")
+def create_monthly_payment(payment: MonthlyPaymentCreate, db: Session = Depends(get_db)):
+    """Mark an expense or card as paid for a given month."""
+    # Prevent duplicates
+    existing = db.query(MonthlyPayment).filter(
+        MonthlyPayment.month == payment.month,
+        MonthlyPayment.item_type == payment.item_type,
+        MonthlyPayment.item_id == payment.item_id,
+    ).first()
+    if existing:
+        return {"id": existing.id, "month": existing.month, "item_type": existing.item_type,
+                "item_id": existing.item_id, "item_name": existing.item_name,
+                "paid_at": existing.paid_at.isoformat()}
+    p = MonthlyPayment(**payment.model_dump())
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return {"id": p.id, "month": p.month, "item_type": p.item_type,
+            "item_id": p.item_id, "item_name": p.item_name, "paid_at": p.paid_at.isoformat()}
+
+@app.delete("/monthly-payments/{payment_id}")
+def delete_monthly_payment(payment_id: int, db: Session = Depends(get_db)):
+    """Unmark an expense or card as paid."""
+    p = db.query(MonthlyPayment).filter(MonthlyPayment.id == payment_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    db.delete(p)
+    db.commit()
+    return {"message": "Unmarked as paid"}

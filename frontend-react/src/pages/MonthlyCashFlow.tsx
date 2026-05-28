@@ -7,6 +7,15 @@ function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+interface MonthlyPayment {
+  id: number
+  month: string
+  item_type: string
+  item_id: number
+  item_name: string
+  paid_at: string
+}
+
 export default function MonthlyCashFlow() {
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
@@ -14,10 +23,12 @@ export default function MonthlyCashFlow() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [cardCharges, setCardCharges] = useState<Record<string, number>>({})
+  const [cardDueDates, setCardDueDates] = useState<Record<string, string>>({})
+  const [payments, setPayments] = useState<MonthlyPayment[]>([])
   const [loading, setLoading] = useState(true)
 
   const monthStr = `${year}-${String(month).padStart(2, '0')}`
-  const monthLabel = new Date(year, month - 1).toLocaleString('en', { month: 'long', year: 'numeric' })
+  const monthLabel = new Date(year, month - 1, 1).toLocaleString('en', { month: 'long', year: 'numeric' })
 
   function prevMonth() {
     if (month === 1) { setMonth(12); setYear(y => y - 1) }
@@ -32,27 +43,49 @@ export default function MonthlyCashFlow() {
     async function load() {
       setLoading(true)
       try {
-        const [accRes, recRes] = await Promise.all([
+        const [accRes, recRes, payRes] = await Promise.all([
           api.get('/accounts'),
           api.get('/recurring-expenses'),
+          api.get(`/monthly-payments?month=${monthStr}`),
         ])
         setAccounts(accRes.data)
         setRecurring(recRes.data)
+        setPayments(payRes.data)
 
+        // Card charges + due dates
         const cards = accRes.data.filter((a: Account) => a.account_type === 'CREDIT_CARD')
         const charges: Record<string, number> = {}
+        const dueDates: Record<string, string> = {}
+
         await Promise.all(cards.map(async (card: Account) => {
           try {
             const res = await api.get(`/accounts/${card.id}/statement-summary`)
             let total = 0
             for (const data of Object.values(res.data) as any[]) {
               const due = (data.payment_due_date || '').slice(0, 7)
-              if (due === monthStr) total += data.charges || 0
+              if (due === monthStr) {
+                total += data.charges || 0
+                // Get actual due date
+                const dueDate = (data.payment_due_date || '').slice(0, 10)
+                if (dueDate) dueDates[card.name] = dueDate
+              }
             }
             if (total > 0) charges[card.name] = total
           } catch {}
         }))
+
+        // For cards without statement data, calculate due date from due_day
+        cards.forEach((card: Account) => {
+          if (!dueDates[card.name] && card.due_day) {
+            const nextMonth = month === 12 ? 1 : month + 1
+            const nextYear = month === 12 ? year + 1 : year
+            const dueDate = `${nextYear}-${String(nextMonth).padStart(2, '0')}-${String(card.due_day).padStart(2, '0')}`
+            dueDates[card.name] = dueDate
+          }
+        })
+
         setCardCharges(charges)
+        setCardDueDates(dueDates)
       } finally {
         setLoading(false)
       }
@@ -60,9 +93,31 @@ export default function MonthlyCashFlow() {
     load()
   }, [monthStr])
 
+  function isPaid(itemType: string, itemId: number): MonthlyPayment | undefined {
+    return payments.find(p => p.item_type === itemType && p.item_id === itemId)
+  }
+
+  async function togglePaid(itemType: string, itemId: number, itemName: string) {
+    const existing = isPaid(itemType, itemId)
+    if (existing) {
+      await api.delete(`/monthly-payments/${existing.id}`)
+      setPayments(prev => prev.filter(p => p.id !== existing.id))
+    } else {
+      const res = await api.post('/monthly-payments', {
+        month: monthStr, item_type: itemType, item_id: itemId, item_name: itemName
+      })
+      setPayments(prev => [...prev, res.data])
+    }
+  }
+
+  function formatDueDate(dateStr: string): string {
+    if (!dateStr) return ''
+    const [y, mo, dy] = dateStr.split('-').map(Number)
+    return new Date(y, mo - 1, dy).toLocaleDateString('en', { month: 'short', day: 'numeric' })
+  }
+
   return (
     <div className="w-full max-w-7xl mx-auto px-6">
-
       {/* Month navigation */}
       <div className="flex items-center gap-4 mb-8">
         <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-[#D4E4D5] transition text-[#1B4D3E]">
@@ -74,9 +129,7 @@ export default function MonthlyCashFlow() {
         </button>
       </div>
 
-      {loading && (
-        <div className="text-center text-[#8BAE90] py-20">Loading...</div>
-      )}
+      {loading && <div className="text-center text-[#8BAE90] py-20">Loading...</div>}
 
       {!loading && (
         <div>
@@ -100,7 +153,7 @@ export default function MonthlyCashFlow() {
             if (inBank === 0 && totalIncome === 0 && totalExpenses === 0) return null
 
             return (
-              <div key={currency}>
+              <div key={currency} className="mb-10">
                 <h2 className="text-lg font-bold text-[#1B4D3E] mb-4">{flag} {currency}</h2>
 
                 {/* Income */}
@@ -135,26 +188,75 @@ export default function MonthlyCashFlow() {
                 {/* Expenses */}
                 <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest mb-2">Expenses</p>
                 <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden mb-4">
-                  {cardEntries.map(([name, amount]) => (
-                    <div key={name} className="flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE]">
-                      <span className="text-[#2C3E2D] text-base">💳 {name}</span>
-                      <span className="text-[#B85050] font-semibold text-base">- {symbol} {fmt(amount)}</span>
-                    </div>
-                  ))}
-                  {expenseList.map(r => (
-                    <div key={r.id} className="flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE]">
-                      <span className="text-[#2C3E2D] text-base">
-                        🔄 {r.name}
-                        <span className="text-[#8BAE90] text-xs ml-2">(day {r.due_day})</span>
-                        {r.valid_until && (
-                          <span className="text-amber-500 text-xs ml-2">
-                            until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+
+                  {/* Card charges */}
+                  {cardEntries.map(([name, amount]) => {
+                    const card = accounts.find(a => a.name === name)
+                    const paid = isPaid('card', card?.id ?? 0)
+                    const dueDate = cardDueDates[name]
+
+                    return (
+                      <div key={name} className={`flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE] transition ${paid ? 'bg-[#F4FAF5]' : ''}`}>
+                        <div className="flex items-center gap-3">
+                          {/* Checkbox */}
+                          <button
+                            onClick={() => card && togglePaid('card', card.id, name)}
+                            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
+                              paid
+                                ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white'
+                                : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
+                            }`}
+                          >
+                            {paid && <span className="text-xs font-bold">✓</span>}
+                          </button>
+                          <span className={`text-base transition ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>
+                            💳 {name}
+                            {dueDate && (
+                              <span className="text-[#8BAE90] text-xs ml-2">(due {formatDueDate(dueDate)})</span>
+                            )}
                           </span>
-                        )}
-                      </span>
-                      <span className="text-[#B85050] font-semibold text-base">- {symbol} {fmt(r.amount)}</span>
-                    </div>
-                  ))}
+                        </div>
+                        <span className={`font-semibold text-base transition ${paid ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
+                          - {symbol} {fmt(amount)}
+                        </span>
+                      </div>
+                    )
+                  })}
+
+                  {/* Recurring expenses */}
+                  {expenseList.map(r => {
+                    const paid = isPaid('recurring', r.id)
+                    return (
+                      <div key={r.id} className={`flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE] transition ${paid ? 'bg-[#F4FAF5]' : ''}`}>
+                        <div className="flex items-center gap-3">
+                          {/* Checkbox */}
+                          <button
+                            onClick={() => togglePaid('recurring', r.id, r.name)}
+                            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
+                              paid
+                                ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white'
+                                : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
+                            }`}
+                          >
+                            {paid && <span className="text-xs font-bold">✓</span>}
+                          </button>
+                          <span className={`text-base transition ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>
+                            🔄 {r.name}
+                            <span className="text-[#8BAE90] text-xs ml-2">(day {r.due_day})</span>
+                            {r.valid_until && (
+                              <span className="text-amber-500 text-xs ml-2">
+                                until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </span>
+                            )}
+                          </span>
+                        </div>
+                        <span className={`font-semibold text-base transition ${paid ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
+                          - {symbol} {fmt(r.amount)}
+                        </span>
+                      </div>
+                    )
+                  })}
+
                   <div className="flex justify-between items-center px-4 py-3 bg-[#FDF5F5]">
                     <span className="text-[#1B4D3E] font-bold">Total Expenses</span>
                     <span className="text-[#B85050] font-bold">- {symbol} {fmt(totalExpenses)}</span>
@@ -188,12 +290,12 @@ export default function MonthlyCashFlow() {
                   </p>
                 </div>
 
+                <hr className="border-[#D4E4D5] my-8" />
               </div>
             )
           })}
         </div>
       )}
-
     </div>
   )
 }

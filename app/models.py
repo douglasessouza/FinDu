@@ -60,7 +60,7 @@ class RecurringExpense(Base):
     type = Column(Enum(RecurringTypeEnum), nullable=False, default=RecurringTypeEnum.EXPENSE)
     category = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
-    valid_until = Column(DateTime, nullable=True)   # If set, auto-expires after this date
+    valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class CategoryTypeEnum(enum.Enum):
@@ -76,3 +76,16 @@ class Category(Base):
     type = Column(Enum(CategoryTypeEnum), nullable=False, default=CategoryTypeEnum.EXPENSE)
     is_default = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class MonthlyPayment(Base):
+    __tablename__ = "monthly_payments"
+    # Tracks which expenses/cards have been paid in a given month
+    # item_type: "card" | "recurring"
+    # item_id: account.id for cards, recurring_expense.id for recurring
+
+    id = Column(Integer, primary_key=True, index=True)
+    month = Column(String, nullable=False)          # e.g. "2026-06"
+    item_type = Column(String, nullable=False)      # "card" or "recurring"
+    item_id = Column(Integer, nullable=False)       # account.id or recurring_expense.id
+    item_name = Column(String, nullable=False)      # display name e.g. "Amex" or "Rent"
+    paid_at = Column(DateTime, default=datetime.utcnow)
