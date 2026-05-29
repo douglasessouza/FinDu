@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, func
+from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel
 from typing import Optional
@@ -563,6 +563,37 @@ def parse_statement_file(content: bytes, filename: str, from_date: str):
         return None, None, str(e)
 
 
+def find_matching_statement_account(db: Session, selected_account_id: int, bank: str | None) -> int:
+    """
+    Keep anti-duplicate checks aligned with the detected statement bank.
+    This prevents an Amex/BMO file from being filtered using the wrong selected account.
+    """
+    if not bank:
+        return selected_account_id
+
+    selected = db.query(Account).filter(Account.id == selected_account_id).first()
+    selected_text = f"{selected.name} {selected.bank}".lower() if selected else ""
+    bank_name = bank.lower()
+
+    if "amex" in bank_name or "american express" in bank_name:
+        keyword = "%amex%"
+    elif "bmo" in bank_name:
+        keyword = "%bmo%"
+    else:
+        return selected_account_id
+
+    if keyword.strip("%") in selected_text:
+        return selected_account_id
+
+    match = db.query(Account)\
+        .filter(Account.account_type == AccountTypeEnum.CREDIT_CARD)\
+        .filter(or_(Account.name.ilike(keyword), Account.bank.ilike(keyword)))\
+        .order_by(Account.id.asc())\
+        .first()
+
+    return match.id if match else selected_account_id
+
+
 @app.post("/parse-statement")
 async def parse_statement_endpoint(
     file: UploadFile = File(...),
@@ -583,9 +614,11 @@ async def parse_statement_endpoint(
     if not txs:
         return {"transactions": [], "bank": bank, "last_date": None}
 
+    matched_account_id = find_matching_statement_account(db, account_id, bank)
+
     # Anti-duplicate: get last transaction date for this account
     last_tx = db.query(Transaction)\
-        .filter(Transaction.account_id == account_id)\
+        .filter(Transaction.account_id == matched_account_id)\
         .order_by(Transaction.date.desc())\
         .first()
     last_date = last_tx.date.strftime("%Y-%m-%d") if last_tx else None
@@ -599,6 +632,7 @@ async def parse_statement_endpoint(
         "bank": bank,
         "last_date": last_date,
         "total_parsed": len(txs),
+        "account_id": matched_account_id,
     }
 
 

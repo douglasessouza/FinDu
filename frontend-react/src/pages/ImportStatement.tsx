@@ -96,7 +96,10 @@ export default function ImportStatement() {
       const res = await api.post('/parse-statement', form, {
         headers: { 'Content-Type': 'multipart/form-data' }
       })
-      const { transactions, bank: detectedBank, last_date } = res.data
+      const { transactions, bank: detectedBank, last_date, account_id: matchedAccountId } = res.data
+      if (matchedAccountId && matchedAccountId !== selectedAccId) {
+        setSelectedAccId(matchedAccountId)
+      }
       setBank(detectedBank)
       setLastDate(last_date)
       setParsedTxs(transactions)
