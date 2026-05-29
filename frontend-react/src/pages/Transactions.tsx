@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Save } from 'lucide-react'
 import api from '../services/api'
-import type { Account } from '../services/api'
+import type { Account, Category } from '../services/api'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -44,7 +44,7 @@ export default function Transactions() {
         api.get('/categories'),
       ])
       setAccounts(accRes.data)
-      setCategories(catRes.data.map((c: any) => c.name).sort())
+      setCategories((catRes.data as Category[]).map(c => c.name).sort())
       if (accRes.data.length > 0) setSelectedAccId(accRes.data[0].id)
     }
     load()
@@ -92,7 +92,9 @@ export default function Transactions() {
       try {
         await api.patch(`/transactions/${id}`, { category })
         updated++
-      } catch {}
+      } catch (error) {
+        console.error(`Failed to update transaction ${id}`, error)
+      }
     }
     setSaving(false)
     setEditedCats({})

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
-import { Upload, Trash2, Eye, Bot, CheckCircle, RefreshCw } from 'lucide-react'
+import { Upload, Trash2, Bot, CheckCircle, RefreshCw } from 'lucide-react'
 import api from '../services/api'
-import type { Account } from '../services/api'
+import type { Account, Category } from '../services/api'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -27,6 +27,14 @@ interface ParsedTransaction {
 }
 
 type Step = 'upload' | 'preview' | 'review' | 'balance' | 'done'
+
+function errorDetail(error: unknown, fallback: string): string {
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (error as { response?: { data?: { detail?: string } } }).response
+    return response?.data?.detail || fallback
+  }
+  return fallback
+}
 
 export default function ImportStatement() {
   const today = new Date()
@@ -69,7 +77,7 @@ export default function ImportStatement() {
         api.get('/imports'),
       ])
       setAccounts(accRes.data)
-      setCategories(catRes.data.map((c: any) => c.name).sort())
+      setCategories((catRes.data as Category[]).map(c => c.name).sort())
       setImports(impRes.data)
       if (accRes.data.length > 0) setSelectedAccId(accRes.data[0].id)
     }
@@ -93,8 +101,8 @@ export default function ImportStatement() {
       setLastDate(last_date)
       setParsedTxs(transactions)
       setStep('preview')
-    } catch (e: any) {
-      setError(e.response?.data?.detail || 'Error parsing file.')
+    } catch (e: unknown) {
+      setError(errorDetail(e, 'Error parsing file.'))
     } finally {
       setLoading(false)
     }
@@ -113,8 +121,8 @@ export default function ImportStatement() {
       })
       setReviewedTxs(res.data.transactions)
       setStep('review')
-    } catch (e: any) {
-      setError(e.response?.data?.detail || 'AI analysis failed.')
+    } catch (e: unknown) {
+      setError(errorDetail(e, 'AI analysis failed.'))
     } finally {
       setAnalyzing(false)
     }
@@ -125,9 +133,6 @@ export default function ImportStatement() {
     setImporting(true)
     setError('')
     const batchId = crypto.randomUUID()
-    let success = 0
-    let errors = 0
-
     for (const t of reviewedTxs) {
       try {
         await api.post('/transactions', {
@@ -139,8 +144,9 @@ export default function ImportStatement() {
           category: t.category || 'Other',
           import_batch_id: batchId,
         })
-        success++
-      } catch { errors++ }
+      } catch (e) {
+        console.error('Failed to import transaction', e)
+      }
     }
 
     // For debit accounts: calculate new balance

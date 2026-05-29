@@ -16,6 +16,11 @@ interface MonthlyPayment {
   paid_at: string
 }
 
+interface StatementSummaryItem {
+  payment_due_date?: string | null
+  charges?: number | null
+}
+
 export default function MonthlyCashFlow() {
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
@@ -61,7 +66,7 @@ export default function MonthlyCashFlow() {
           try {
             const res = await api.get(`/accounts/${card.id}/statement-summary`)
             let total = 0
-            for (const data of Object.values(res.data) as any[]) {
+            for (const data of Object.values(res.data as Record<string, StatementSummaryItem>)) {
               const due = (data.payment_due_date || '').slice(0, 7)
               if (due === monthStr) {
                 total += data.charges || 0
@@ -71,7 +76,9 @@ export default function MonthlyCashFlow() {
               }
             }
             if (total > 0) charges[card.name] = total
-          } catch {}
+          } catch (error) {
+            console.error(`Failed to load statement summary for ${card.name}`, error)
+          }
         }))
 
         // For cards without statement data, calculate due date from due_day
@@ -91,7 +98,7 @@ export default function MonthlyCashFlow() {
       }
     }
     load()
-  }, [monthStr])
+  }, [monthStr, month, year])
 
   function isPaid(itemType: string, itemId: number): MonthlyPayment | undefined {
     return payments.find(p => p.item_type === itemType && p.item_id === itemId)

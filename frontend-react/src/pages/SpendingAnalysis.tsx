@@ -5,11 +5,16 @@ import {
 } from 'recharts'
 import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
 import api from '../services/api'
-import type { Account } from '../services/api'
+import type { Account, Category } from '../services/api'
 
 // ── Helpers ─────────────────────────────────────────────────────
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function formatChartValue(value: unknown): string {
+  const numericValue = typeof value === 'number' ? value : Number(value ?? 0)
+  return `CAD$ ${fmt(Number.isFinite(numericValue) ? numericValue : 0)}`
 }
 
 // Parse "YYYY-MM" safely without timezone issues
@@ -48,6 +53,17 @@ interface Transaction {
   _is_card?: boolean
 }
 
+interface StatementSummaryItem {
+  payment_due_date?: string | null
+  charges?: number | null
+}
+
+type ChartRow = { category: string } & Record<string, string | number | null>
+
+function chartNumber(value: string | number | null | undefined): number {
+  return typeof value === 'number' ? value : Number(value || 0)
+}
+
 // ── Card Summary ─────────────────────────────────────────────────
 function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selectedMonth: string }) {
   const [rows, setRows] = useState<{ name: string; amount: number }[]>([])
@@ -61,7 +77,7 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
         try {
           const res = await api.get(`/accounts/${card.id}/statement-summary`)
           let total = 0
-          for (const d of Object.values(res.data) as any[]) {
+          for (const d of Object.values(res.data as Record<string, StatementSummaryItem>)) {
             const due = (d.payment_due_date || '').slice(0, 7)
             if (due) {
               const [y, mo] = due.split('-').map(Number)
@@ -71,7 +87,9 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
             }
           }
           if (total > 0) result.push({ name: card.name, amount: Math.round(total * 100) / 100 })
-        } catch {}
+        } catch (error) {
+          console.error(`Failed to load statement summary for ${card.name}`, error)
+        }
       }))
       setRows(result)
     }
@@ -124,7 +142,7 @@ export default function SpendingAnalysis() {
         ])
         setData(dataRes.data)
         setAccounts(accRes.data)
-        setCategories(catRes.data.map((c: any) => c.name).sort())
+        setCategories((catRes.data as Category[]).map(c => c.name).sort())
         const months = Object.keys(dataRes.data).sort().reverse()
         if (months.length > 0) setSelectedMonth(months[0])
         setNMonths(Math.min(2, months.length))
@@ -150,7 +168,7 @@ export default function SpendingAnalysis() {
   const monthsToShow = allMonths.slice(-nMonths)
   const allCatsBar = Array.from(new Set(monthsToShow.flatMap(m => Object.keys(data[m] || {})))).sort()
   const barData = allCatsBar.map(cat => {
-    const row: Record<string, any> = { category: cat }
+    const row: ChartRow = { category: cat }
     for (const m of monthsToShow) {
       const vals = data[m]?.[cat]
       const total = vals ? Math.round((vals.cards + vals.debit) * 100) / 100 : 0
@@ -160,8 +178,8 @@ export default function SpendingAnalysis() {
   }).filter(row => Object.keys(row).length > 1)
 
   barData.sort((a, b) => {
-    const aT = monthsToShow.reduce((s, m) => s + (a[monthShort(m)] || 0), 0)
-    const bT = monthsToShow.reduce((s, m) => s + (b[monthShort(m)] || 0), 0)
+    const aT = monthsToShow.reduce((s, m) => s + Number(a[monthShort(m)] || 0), 0)
+    const bT = monthsToShow.reduce((s, m) => s + Number(b[monthShort(m)] || 0), 0)
     return bT - aT
   })
 
@@ -170,7 +188,7 @@ export default function SpendingAnalysis() {
   // Breakdown table
   const allCatsTable = Array.from(new Set(allMonths.flatMap(m => Object.keys(data[m] || {})))).sort()
   const tableRows = allCatsTable.map(cat => {
-    const row: Record<string, any> = { category: cat }
+    const row: ChartRow = { category: cat }
     let catTotal = 0
     for (const m of allMonths) {
       const vals = data[m]?.[cat]
@@ -182,16 +200,16 @@ export default function SpendingAnalysis() {
     return row
   })
 
-  const tableTotals: Record<string, any> = { category: '💰 TOTAL', total: 0 }
+  const tableTotals: ChartRow = { category: '💰 TOTAL', total: 0 }
   for (const m of allMonths) {
     const mTotal = allCatsTable.reduce((s, cat) => {
       const vals = data[m]?.[cat]
       return s + (vals ? vals.cards + vals.debit : 0)
     }, 0)
     tableTotals[m] = Math.round(mTotal * 100) / 100
-    tableTotals.total += mTotal
+    tableTotals.total = Number(tableTotals.total || 0) + mTotal
   }
-  tableTotals.total = Math.round(tableTotals.total * 100) / 100
+  tableTotals.total = Math.round(chartNumber(tableTotals.total) * 100) / 100
 
   // Transactions
   async function loadTxsForCategory(category: string) {
@@ -204,7 +222,10 @@ export default function SpendingAnalysis() {
       try {
         const res = await api.get(`/accounts/${acc.id}/transactions`)
         cache[acc.id] = res.data
-      } catch { cache[acc.id] = [] }
+      } catch (error) {
+        console.error(`Failed to load transactions for ${acc.name}`, error)
+        cache[acc.id] = []
+      }
     }))
     setTxCache(cache)
     const results: Transaction[] = []
@@ -237,7 +258,9 @@ export default function SpendingAnalysis() {
       if (tx) setTxCache(prev => { const n = { ...prev }; delete n[tx.account_id]; return n })
       setEditingTx(null)
       if (openCategory) loadTxsForCategory(openCategory)
-    } catch {}
+    } catch (error) {
+      console.error(`Failed to update transaction ${txId}`, error)
+    }
   }
 
   function refresh() { setTxCache({}); setCategoryTxs([]); setOpenCategory(null) }
@@ -292,7 +315,7 @@ export default function SpendingAnalysis() {
                         outerRadius="80%"
                         dataKey="value"
                         paddingAngle={2}
-                        label={({ percent }) => percent > 0.04 ? `${(percent * 100).toFixed(1)}%` : ''}
+                        label={({ percent = 0 }) => percent > 0.04 ? `${(percent * 100).toFixed(1)}%` : ''}
                         labelLine={false}
                       >
                         {pieData.map((_, i) => (
@@ -300,7 +323,7 @@ export default function SpendingAnalysis() {
                         ))}
                       </Pie>
                       <Tooltip
-                        formatter={(value: number, name: string) => [`CAD$ ${fmt(value)}`, name]}
+                        formatter={(value, name) => [formatChartValue(value), String(name)]}
                         contentStyle={{ borderRadius: '8px', border: '1px solid #D4E4D5', fontSize: '13px', backgroundColor: 'white' }}
                       />
                     </PieChart>
@@ -423,7 +446,7 @@ export default function SpendingAnalysis() {
                     <XAxis dataKey="category" angle={-35} textAnchor="end" tick={{ fontSize: 11, fill: '#8BAE90' }} interval={0} />
                     <YAxis tick={{ fontSize: 11, fill: '#8BAE90' }} tickFormatter={v => `$${v}`} />
                     <Tooltip
-                      formatter={(value: number, name: string) => [`CAD$ ${fmt(value)}`, name]}
+                      formatter={(value, name) => [formatChartValue(value), String(name)]}
                       contentStyle={{ borderRadius: '8px', border: '1px solid #D4E4D5', fontSize: '12px' }}
                     />
                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '12px' }} />
@@ -454,18 +477,18 @@ export default function SpendingAnalysis() {
                           <td className="py-2 px-3 text-[#2C3E2D] font-medium">{row.category}</td>
                           {allMonths.map(m => (
                             <td key={m} className="text-right py-2 px-3 text-[#8BAE90]">
-                              {row[m] ? `$ ${fmt(row[m])}` : '—'}
+                              {chartNumber(row[m]) ? `$ ${fmt(chartNumber(row[m]))}` : '—'}
                             </td>
                           ))}
-                          <td className="text-right py-2 px-3 font-semibold text-[#1B4D3E]">$ {fmt(row.total)}</td>
+                          <td className="text-right py-2 px-3 font-semibold text-[#1B4D3E]">$ {fmt(chartNumber(row.total))}</td>
                         </tr>
                       ))}
                       <tr className="bg-[#1B4D3E] text-white font-bold">
                         <td className="py-3 px-3 rounded-bl-lg">💰 TOTAL</td>
                         {allMonths.map(m => (
-                          <td key={m} className="text-right py-3 px-3">$ {fmt(tableTotals[m] || 0)}</td>
+                          <td key={m} className="text-right py-3 px-3">$ {fmt(chartNumber(tableTotals[m]))}</td>
                         ))}
-                        <td className="text-right py-3 px-3 text-[#E8C84A] rounded-br-lg">$ {fmt(tableTotals.total)}</td>
+                        <td className="text-right py-3 px-3 text-[#E8C84A] rounded-br-lg">$ {fmt(chartNumber(tableTotals.total))}</td>
                       </tr>
                     </tbody>
                   </table>

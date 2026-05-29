@@ -39,7 +39,9 @@ function Sidebar() {
           usd_cad: r1.data.rates.CAD,
           cad_brl: r2.data.rates.BRL,
         })
-      } catch {}
+      } catch {
+        setFx(null)
+      }
     }
     loadFx()
   }, [])
