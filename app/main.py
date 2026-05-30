@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -748,6 +748,44 @@ class MonthlyPaymentCreate(BaseModel):
     item_id: int
     item_name: str
 
+class RecurringMatchCreate(BaseModel):
+    month: str
+    recurring_id: int
+    transaction_id: int
+    planned_amount: float
+    actual_amount: float
+    variance: float
+    confidence: str
+    score: float
+    source: str = "auto"
+
+def serialize_recurring_match(match: RecurringMatch, transaction: Optional[Transaction] = None):
+    tx = transaction
+    return {
+        "id": match.id,
+        "month": match.month,
+        "recurring_id": match.recurring_id,
+        "transaction_id": match.transaction_id,
+        "planned_amount": match.planned_amount,
+        "actual_amount": match.actual_amount,
+        "variance": match.variance,
+        "confidence": match.confidence,
+        "score": match.score,
+        "source": match.source,
+        "created_at": match.created_at.isoformat() if match.created_at else None,
+        "transaction": {
+            "id": tx.id,
+            "account_id": tx.account_id,
+            "description": tx.description,
+            "amount": tx.amount,
+            "currency": tx.currency.value if hasattr(tx.currency, "value") else tx.currency,
+            "date": tx.date.isoformat(),
+            "category": tx.category,
+            "statement_month": tx.statement_month,
+            "payment_due_date": tx.payment_due_date.isoformat() if tx.payment_due_date else None,
+        } if tx else None,
+    }
+
 @app.get("/monthly-payments")
 def get_monthly_payments(month: str, db: Session = Depends(get_db)):
     """Returns all paid items for a given month."""
@@ -793,3 +831,50 @@ def delete_monthly_payment(payment_id: int, db: Session = Depends(get_db)):
     db.delete(p)
     db.commit()
     return {"message": "Unmarked as paid"}
+
+@app.get("/recurring-matches")
+def get_recurring_matches(month: str, db: Session = Depends(get_db)):
+    """Returns saved recurring-to-transaction matches for a month."""
+    matches = db.query(RecurringMatch).filter(RecurringMatch.month == month).all()
+    tx_ids = [m.transaction_id for m in matches]
+    transactions = {
+        t.id: t for t in db.query(Transaction).filter(Transaction.id.in_(tx_ids)).all()
+    } if tx_ids else {}
+    return [serialize_recurring_match(match, transactions.get(match.transaction_id)) for match in matches]
+
+@app.post("/recurring-matches")
+def upsert_recurring_match(match: RecurringMatchCreate, db: Session = Depends(get_db)):
+    """Save or update a recurring expense/income match for a specific month."""
+    recurring = db.query(RecurringExpense).filter(RecurringExpense.id == match.recurring_id).first()
+    if not recurring:
+        raise HTTPException(status_code=404, detail="Recurring item not found")
+    transaction = db.query(Transaction).filter(Transaction.id == match.transaction_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    existing = db.query(RecurringMatch).filter(
+        RecurringMatch.month == match.month,
+        RecurringMatch.recurring_id == match.recurring_id,
+    ).first()
+    if existing:
+        for key, value in match.model_dump().items():
+            setattr(existing, key, value)
+        db.commit()
+        db.refresh(existing)
+        return serialize_recurring_match(existing, transaction)
+
+    db_match = RecurringMatch(**match.model_dump())
+    db.add(db_match)
+    db.commit()
+    db.refresh(db_match)
+    return serialize_recurring_match(db_match, transaction)
+
+@app.delete("/recurring-matches/{match_id}")
+def delete_recurring_match(match_id: int, db: Session = Depends(get_db)):
+    """Delete a saved recurring match."""
+    match = db.query(RecurringMatch).filter(RecurringMatch.id == match_id).first()
+    if not match:
+        raise HTTPException(status_code=404, detail="Recurring match not found")
+    db.delete(match)
+    db.commit()
+    return {"message": "Recurring match deleted"}

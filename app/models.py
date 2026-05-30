@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Boolean, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 from datetime import datetime
 import enum
@@ -89,3 +89,21 @@ class MonthlyPayment(Base):
     item_id = Column(Integer, nullable=False)       # account.id or recurring_expense.id
     item_name = Column(String, nullable=False)      # display name e.g. "Amex" or "Rent"
     paid_at = Column(DateTime, default=datetime.utcnow)
+
+class RecurringMatch(Base):
+    __tablename__ = "recurring_matches"
+    __table_args__ = (
+        UniqueConstraint("month", "recurring_id", name="uq_recurring_match_month_item"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    month = Column(String, nullable=False)
+    recurring_id = Column(Integer, ForeignKey("recurring_expenses.id"), nullable=False)
+    transaction_id = Column(Integer, ForeignKey("transactions.id"), nullable=False)
+    planned_amount = Column(Float, nullable=False)
+    actual_amount = Column(Float, nullable=False)
+    variance = Column(Float, nullable=False)
+    confidence = Column(String, nullable=False)
+    score = Column(Float, nullable=False)
+    source = Column(String, nullable=False, default="auto")
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,7 +1,8 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote } from 'lucide-react'
+import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import MonthlyCashFlow from './pages/MonthlyCashFlow'
+import PlannedVsReal from './pages/PlannedVsReal'
 import SpendingAnalysis from './pages/SpendingAnalysis'
 import Transactions from './pages/Transactions'
 import ImportStatement from './pages/ImportStatement'
@@ -13,6 +14,7 @@ import axios from 'axios'
 
 const navReports = [
   { to: '/', icon: Banknote, label: 'Monthly Cash Flow' },
+  { to: '/planned-vs-real', icon: Target, label: 'Planned vs Real' },
   { to: '/spending', icon: TrendingUp, label: 'Spending Analysis' },
   { to: '/transactions', icon: Receipt, label: 'Transactions' },
 ]
@@ -116,6 +118,7 @@ export default function App() {
         <main className="flex-1 overflow-y-auto p-8">
           <Routes>
             <Route path="/" element={<MonthlyCashFlow />} />
+            <Route path="/planned-vs-real" element={<PlannedVsReal />} />
             <Route path="/spending" element={<SpendingAnalysis />} />
             <Route path="/transactions" element={<Transactions />} />
             <Route path="/import" element={<ImportStatement />} />

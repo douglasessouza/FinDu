@@ -48,3 +48,18 @@ export interface Category {
   type: 'EXPENSE' | 'INCOME' | 'TRANSFER'
   is_default: boolean
 }
+
+export interface RecurringMatch {
+  id: number
+  month: string
+  recurring_id: number
+  transaction_id: number
+  planned_amount: number
+  actual_amount: number
+  variance: number
+  confidence: 'High' | 'Medium'
+  score: number
+  source: string
+  created_at?: string | null
+  transaction: Transaction | null
+}
