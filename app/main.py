@@ -594,6 +594,21 @@ def find_matching_statement_account(db: Session, selected_account_id: int, bank:
     return match.id if match else selected_account_id
 
 
+def parse_ai_json_array(text: str):
+    """Parse a JSON array even if the model wraps it in a markdown code fence."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.removeprefix("```json").removeprefix("```").strip()
+        cleaned = cleaned.removesuffix("```").strip()
+
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("AI response did not contain a JSON array")
+
+    return json.loads(cleaned[start:end + 1])
+
+
 @app.post("/parse-statement")
 async def parse_statement_endpoint(
     file: UploadFile = File(...),
@@ -707,15 +722,22 @@ Return ONLY the JSON array, no markdown, no backticks."""
                 "anthropic-version": "2023-06-01"
             },
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-6",
                 "max_tokens": 4000,
                 "messages": [{"role": "user", "content": prompt}]
             },
             timeout=60
         )
-        ai_text = resp.json()["content"][0]["text"]
-        analyzed = json.loads(ai_text)
+        resp_body = resp.json()
+        if resp.status_code >= 400:
+            error_message = resp_body.get("error", {}).get("message", resp.text)
+            raise HTTPException(status_code=500, detail=f"AI error: {error_message}")
+
+        ai_text = resp_body["content"][0]["text"]
+        analyzed = parse_ai_json_array(ai_text)
         return {"transactions": analyzed}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
 # ── Monthly Payments (paid tracking) ──────────────────────────────
