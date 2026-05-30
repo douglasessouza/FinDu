@@ -286,6 +286,26 @@ def list_transactions(account_id: Optional[int] = None, db: Session = Depends(ge
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
 
+@app.get("/other-income-transactions")
+def list_other_income_transactions(month: str, db: Session = Depends(get_db)):
+    try:
+        start = datetime.fromisoformat(f"{month}-01T00:00:00")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Month must be in YYYY-MM format")
+
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+
+    return db.query(Transaction)\
+        .filter(Transaction.amount > 0)\
+        .filter(Transaction.date >= start)\
+        .filter(Transaction.date < end)\
+        .filter(func.lower(func.trim(Transaction.category)) == "other income")\
+        .order_by(Transaction.date.desc())\
+        .all()
+
 @app.get("/accounts/{account_id}/last-transaction")
 def get_last_transaction(account_id: int, db: Session = Depends(get_db)):
     transaction = db.query(Transaction)\
