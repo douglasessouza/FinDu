@@ -42,26 +42,49 @@ function addMonths(date: Date, months: number): Date {
   return new Date(date.getFullYear(), date.getMonth() + months, date.getDate())
 }
 
-function getCurrentCycle(card: Account) {
+function cycleStartForEnd(endDate: Date, closingDay: number): Date {
+  const previousMonth = addMonths(endDate, -1)
+  return safeDate(previousMonth.getFullYear(), previousMonth.getMonth(), closingDay + 1)
+}
+
+function statementDueForEnd(endDate: Date, dueDay: number): Date {
+  const paymentMonth = addMonths(endDate, 1)
+  return safeDate(paymentMonth.getFullYear(), paymentMonth.getMonth(), dueDay)
+}
+
+function formatCycle(start: Date, end: Date): string {
+  return `${shortDateLabel(start)} -> ${shortDateLabel(end)}`
+}
+
+function getCardCycles(card: Account) {
   const closingDay = card.closing_day
   const dueDay = card.due_day
   if (!closingDay || !dueDay) return null
 
   const today = new Date()
-  const cycleStartDay = closingDay < 28 ? closingDay + 1 : closingDay
-  const previousMonth = addMonths(today, -1)
-  const paymentMonth = addMonths(today, 1)
-  const cycleStart = safeDate(previousMonth.getFullYear(), previousMonth.getMonth(), cycleStartDay)
-  const cycleEnd = safeDate(today.getFullYear(), today.getMonth(), closingDay)
-  const paymentDue = safeDate(paymentMonth.getFullYear(), paymentMonth.getMonth(), dueDay)
-  const isClosed = today.getDate() >= closingDay
+  const thisMonthClose = safeDate(today.getFullYear(), today.getMonth(), closingDay)
+  const lastClosedEnd = today.getDate() >= closingDay
+    ? thisMonthClose
+    : safeDate(addMonths(today, -1).getFullYear(), addMonths(today, -1).getMonth(), closingDay)
+  const lastClosedStart = cycleStartForEnd(lastClosedEnd, closingDay)
+  const lastClosedDue = statementDueForEnd(lastClosedEnd, dueDay)
+  const currentOpenStart = safeDate(lastClosedEnd.getFullYear(), lastClosedEnd.getMonth(), closingDay + 1)
+  const currentOpenEnd = safeDate(addMonths(lastClosedEnd, 1).getFullYear(), addMonths(lastClosedEnd, 1).getMonth(), closingDay)
+  const currentOpenDue = statementDueForEnd(currentOpenEnd, dueDay)
 
   return {
-    cycle: `${shortDateLabel(cycleStart)} -> ${shortDateLabel(cycleEnd)}`,
-    status: isClosed ? 'Closed' : 'Open',
-    chargesIn: monthLabel(today),
-    cashFlowIn: monthLabel(paymentDue),
-    paymentDue: dateLabel(paymentDue),
+    lastClosed: {
+      cycle: formatCycle(lastClosedStart, lastClosedEnd),
+      chargesIn: monthLabel(lastClosedEnd),
+      cashFlowIn: monthLabel(lastClosedDue),
+      paymentDue: dateLabel(lastClosedDue),
+    },
+    currentOpen: {
+      cycle: formatCycle(currentOpenStart, currentOpenEnd),
+      chargesIn: monthLabel(currentOpenEnd),
+      cashFlowIn: monthLabel(currentOpenDue),
+      paymentDue: dateLabel(currentOpenDue),
+    },
   }
 }
 
@@ -343,16 +366,15 @@ export default function CreditCards() {
                   <tr className="border-b border-[#EDF4EE] bg-[#F9FCF9]">
                     <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Card</th>
                     <th className="text-right py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Limit</th>
-                    <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Cycle</th>
-                    <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Status</th>
-                    <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Cash Flow In</th>
+                    <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Last Closed Statement</th>
+                    <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Current Open Cycle</th>
                     <th className="text-left py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Payment Due</th>
                     <th className="text-right py-3 px-4 text-[#8BAE90] font-semibold uppercase tracking-widest text-xs">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {cards.map(card => {
-                    const cycle = getCurrentCycle(card)
+                    const cycles = getCardCycles(card)
                     const isEditing = editingId === card.id
 
                     return (
@@ -402,22 +424,22 @@ export default function CreditCards() {
                             </div>
                           ) : (
                             <>
-                              <p className="font-semibold text-[#1B4D3E]">{cycle?.cycle || '-'}</p>
-                              <p className="text-xs text-[#8BAE90] mt-1">Charges in {cycle?.chargesIn || '-'}</p>
+                              <p className="font-semibold text-[#1B4D3E]">{cycles?.lastClosed.cycle || '-'}</p>
+                              <p className="text-xs text-[#8BAE90] mt-1">Cash flow in {cycles?.lastClosed.cashFlowIn || '-'}</p>
                             </>
                           )}
                         </td>
-                        <td className="py-4 px-4 min-w-24">
-                          <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-bold ${
-                            cycle?.status === 'Open'
-                              ? 'bg-[#EDF4EE] text-[#1B6B3A]'
-                              : 'bg-[#F5EFE0] text-[#8A6D1D]'
-                          }`}>
-                            {cycle?.status || '-'}
-                          </span>
+                        <td className="py-4 px-4 min-w-40">
+                          <p className="font-semibold text-[#1B4D3E]">{cycles?.currentOpen.cycle || '-'}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="inline-flex px-2 py-0.5 rounded-full bg-[#EDF4EE] text-[#1B6B3A] text-[11px] font-bold">Open</span>
+                            <span className="text-xs text-[#8BAE90]">Charges in {cycles?.currentOpen.chargesIn || '-'}</span>
+                          </div>
                         </td>
-                        <td className="py-4 px-4 text-[#1B4D3E] font-semibold min-w-28">{cycle?.cashFlowIn || '-'}</td>
-                        <td className="py-4 px-4 text-[#1B4D3E] font-semibold min-w-36">{cycle?.paymentDue || '-'}</td>
+                        <td className="py-4 px-4 min-w-36">
+                          <p className="text-[#1B4D3E] font-semibold">{cycles?.lastClosed.paymentDue || '-'}</p>
+                          <p className="text-xs text-[#8BAE90] mt-1">Current cycle due {cycles?.currentOpen.paymentDue || '-'}</p>
+                        </td>
                         <td className="py-4 px-4">
                           <div className="flex items-center justify-end gap-2">
                             {isEditing ? (
