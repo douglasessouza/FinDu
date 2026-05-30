@@ -101,7 +101,7 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
 
   return (
     <div className="border-t border-[#EDF4EE] pt-3 mt-4">
-      <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest mb-2">💳 Card charges this month</p>
+      <p className="section-title mb-2">💳 Card charges this month</p>
       {rows.map(r => (
         <div key={r.name} className="flex justify-between text-sm py-1">
           <span className="text-[#8BAE90]">↳ {r.name}</span>
@@ -302,7 +302,7 @@ export default function SpendingAnalysis() {
 
                 {/* Left: donut */}
                 <div className="bg-white rounded-xl border border-[#D4E4D5] p-6">
-                  <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest mb-2">
+                  <p className="section-title mb-2">
                     Spending by Category — {monthLabel(selectedMonth)}
                   </p>
                   <ResponsiveContainer width="100%" height={300}>
@@ -429,7 +429,7 @@ export default function SpendingAnalysis() {
               {/* ── Category Trends ── */}
               <div className="bg-white rounded-xl border border-[#D4E4D5] p-6 mb-10">
                 <div className="flex items-center justify-between mb-4">
-                  <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">📊 Category Trends</p>
+                  <p className="section-title">📊 Category Trends</p>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-[#8BAE90]">Months:</span>
                     <input
@@ -459,7 +459,7 @@ export default function SpendingAnalysis() {
 
               {/* ── Category Breakdown table ── */}
               <div className="bg-white rounded-xl border border-[#D4E4D5] p-6 mb-10">
-                <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest mb-4">📋 Category Breakdown by Month</p>
+                <p className="section-title mb-4">📋 Category Breakdown by Month</p>
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>

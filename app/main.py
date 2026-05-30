@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -71,6 +71,13 @@ class CategoryCreate(BaseModel):
     name: str
     type: str = "EXPENSE"
 
+class CategoryBudgetCreate(BaseModel):
+    category: str
+    amount: float
+    currency: CurrencyEnum = CurrencyEnum.CAD
+    start_month: str
+    valid_until: Optional[datetime] = None
+
 @app.post("/categories")
 def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
     """Creates a new user-defined category."""
@@ -94,6 +101,79 @@ def delete_category(category_id: int, db: Session = Depends(get_db)):
     db.delete(cat)
     db.commit()
     return {"message": f"Category {cat.name} deleted"}
+
+def category_budget_is_active_for_month(budget: CategoryBudget, month: Optional[str]) -> bool:
+    if not budget.is_active:
+        return False
+    if not month:
+        return True
+    if budget.start_month and budget.start_month > month:
+        return False
+    if budget.valid_until:
+        try:
+            year, month_number = [int(part) for part in month.split("-")]
+            month_start = datetime(year, month_number, 1)
+            if budget.valid_until < month_start:
+                return False
+        except Exception:
+            return True
+    return True
+
+def serialize_category_budget(budget: CategoryBudget):
+    return {
+        "id": budget.id,
+        "category": budget.category,
+        "amount": budget.amount,
+        "currency": budget.currency.value if hasattr(budget.currency, "value") else budget.currency,
+        "start_month": budget.start_month,
+        "valid_until": budget.valid_until.isoformat() if budget.valid_until else None,
+        "is_active": budget.is_active,
+        "created_at": budget.created_at.isoformat() if budget.created_at else None,
+    }
+
+@app.get("/category-budgets")
+def list_category_budgets(month: Optional[str] = None, db: Session = Depends(get_db)):
+    """Returns active category budgets, optionally filtered for a month."""
+    budgets = db.query(CategoryBudget).order_by(CategoryBudget.category).all()
+    return [serialize_category_budget(budget) for budget in budgets if category_budget_is_active_for_month(budget, month)]
+
+@app.post("/category-budgets")
+def create_category_budget(budget: CategoryBudgetCreate, db: Session = Depends(get_db)):
+    """Creates a monthly budget for variable spending by category."""
+    if budget.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be greater than zero")
+    db_budget = CategoryBudget(**budget.model_dump())
+    db.add(db_budget)
+    db.commit()
+    db.refresh(db_budget)
+    return serialize_category_budget(db_budget)
+
+@app.patch("/category-budgets/{budget_id}")
+def update_category_budget(budget_id: int, updates: dict, db: Session = Depends(get_db)):
+    budget = db.query(CategoryBudget).filter(CategoryBudget.id == budget_id).first()
+    if not budget:
+        raise HTTPException(status_code=404, detail="Category budget not found")
+    allowed = {"category", "amount", "currency", "start_month", "valid_until", "is_active"}
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        if key == "currency" and isinstance(value, str):
+            value = CurrencyEnum[value]
+        if key == "valid_until" and isinstance(value, str):
+            value = datetime.fromisoformat(value)
+        setattr(budget, key, value)
+    db.commit()
+    db.refresh(budget)
+    return serialize_category_budget(budget)
+
+@app.delete("/category-budgets/{budget_id}")
+def delete_category_budget(budget_id: int, db: Session = Depends(get_db)):
+    budget = db.query(CategoryBudget).filter(CategoryBudget.id == budget_id).first()
+    if not budget:
+        raise HTTPException(status_code=404, detail="Category budget not found")
+    db.delete(budget)
+    db.commit()
+    return {"message": "Category budget deleted"}
 
 class AccountCreate(BaseModel):
     name: str

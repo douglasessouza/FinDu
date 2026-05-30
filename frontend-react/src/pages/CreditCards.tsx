@@ -351,7 +351,7 @@ export default function CreditCards() {
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 items-start">
         <section className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-[#EDF4EE]">
-            <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Cards</p>
+            <p className="section-title">Cards</p>
             <p className="text-sm text-[#7BAE8A] mt-1">{cards.length} active credit card{cards.length === 1 ? '' : 's'}</p>
           </div>
 

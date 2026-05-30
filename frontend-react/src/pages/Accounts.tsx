@@ -236,7 +236,7 @@ export default function Accounts() {
         <section className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-[#EDF4EE] flex items-center justify-between">
             <div>
-              <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Accounts</p>
+              <p className="section-title">Accounts</p>
               <p className="text-sm text-[#7BAE8A] mt-1">{accounts.length} active bank account{accounts.length === 1 ? '' : 's'}</p>
             </div>
           </div>

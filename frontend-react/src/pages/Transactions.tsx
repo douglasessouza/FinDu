@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Save } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { ArrowDownUp, Save } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category } from '../services/api'
 
@@ -23,6 +23,9 @@ interface Transaction {
   account_id: number
 }
 
+type SortKey = 'date' | 'description' | 'amount' | 'category' | 'statement'
+type SortDirection = 'asc' | 'desc'
+
 export default function Transactions() {
   const today = new Date()
   const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
@@ -36,6 +39,8 @@ export default function Transactions() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
+  const [sortKey, setSortKey] = useState<SortKey>('date')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
   useEffect(() => {
     async function load() {
@@ -74,7 +79,6 @@ export default function Transactions() {
           data = data.filter(t => t.date?.slice(0, 7) === monthFilter)
         }
 
-        data.sort((a, b) => b.date.localeCompare(a.date))
         setTxs(data)
       } finally {
         setLoading(false)
@@ -108,13 +112,64 @@ export default function Transactions() {
     } else if (!isCard && monthFilter) {
       data = data.filter(t => t.date?.slice(0, 7) === monthFilter)
     }
-    data.sort((a, b) => b.date.localeCompare(a.date))
     setTxs(data)
   }
+
+  function changeSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDirection(direction => direction === 'asc' ? 'desc' : 'asc')
+      return
+    }
+    setSortKey(key)
+    setSortDirection(key === 'date' ? 'desc' : 'asc')
+  }
+
+  const sortedTxs = useMemo(() => {
+    function sortValue(tx: Transaction, key: SortKey): string | number {
+      if (key === 'date') return tx.date || ''
+      if (key === 'description') return tx.description || ''
+      if (key === 'amount') return tx.amount
+      if (key === 'category') return editedCats[tx.id] ?? tx.category ?? 'Other'
+      return tx.statement_month || ''
+    }
+
+    return [...txs].sort((a, b) => {
+      const aValue = sortValue(a, sortKey)
+      const bValue = sortValue(b, sortKey)
+      const direction = sortDirection === 'asc' ? 1 : -1
+
+      if (typeof aValue === 'number' && typeof bValue === 'number') {
+        return (aValue - bValue) * direction
+      }
+
+      return String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: 'base' }) * direction
+    })
+  }, [editedCats, sortDirection, sortKey, txs])
 
   const totalExpenses = txs.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
   const totalIncome = txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)
   const pendingChanges = Object.keys(editedCats).length
+  const sortLabel = {
+    date: 'Date',
+    description: 'Description',
+    amount: 'Amount',
+    category: 'Category',
+    statement: 'Statement',
+  }[sortKey]
+
+  function renderSortButton(label: string, value: SortKey, align: 'left' | 'right' = 'left') {
+    const active = sortKey === value
+    return (
+      <button
+        type="button"
+        onClick={() => changeSort(value)}
+        className={`flex items-center gap-1 ${align === 'right' ? 'justify-end text-right' : ''} ${active ? 'text-[#1B4D3E]' : 'text-[#8BAE90]'}`}
+      >
+        <span>{label}</span>
+        <ArrowDownUp size={12} className={active ? 'opacity-100' : 'opacity-45'} />
+      </button>
+    )
+  }
 
   return (
     <div className="w-full max-w-7xl mx-auto px-6">
@@ -156,6 +211,36 @@ export default function Transactions() {
             onChange={e => setMonthFilter(e.target.value)}
             className="px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
           />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Sort</label>
+          <div className="flex gap-2">
+            <select
+              value={sortKey}
+              onChange={e => {
+                const nextKey = e.target.value as SortKey
+                setSortKey(nextKey)
+                setSortDirection(nextKey === 'date' ? 'desc' : 'asc')
+              }}
+              className="px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+            >
+              <option value="date">Date</option>
+              <option value="description">Description</option>
+              <option value="amount">Amount</option>
+              <option value="category">Category</option>
+              {isCard && <option value="statement">Statement</option>}
+            </select>
+            <button
+              type="button"
+              onClick={() => setSortDirection(direction => direction === 'asc' ? 'desc' : 'asc')}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition"
+              title="Toggle sort direction"
+            >
+              <ArrowDownUp size={14} />
+              {sortDirection === 'asc' ? 'Asc' : 'Desc'}
+            </button>
+          </div>
         </div>
       </div>
 
@@ -211,18 +296,18 @@ export default function Transactions() {
       ) : (
         <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden">
           {/* Header */}
-          <div className="grid text-xs font-semibold text-[#8BAE90] uppercase tracking-widest px-4 py-3 border-b-2 border-[#D4E4D5] bg-[#F9FCF9]"
+          <div className="grid text-xs font-semibold uppercase tracking-widest px-4 py-3 border-b-2 border-[#D4E4D5] bg-[#F9FCF9]"
             style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px' : '90px 1fr 130px 160px' }}
           >
-            <span>Date</span>
-            <span>Description</span>
-            <span className="text-right">Amount</span>
-            <span className="pl-2">Category</span>
-            {isCard && <span className="pl-2">Statement</span>}
+            {renderSortButton('Date', 'date')}
+            {renderSortButton('Description', 'description')}
+            {renderSortButton('Amount', 'amount', 'right')}
+            <span className="pl-2">{renderSortButton('Category', 'category')}</span>
+            {isCard && <span className="pl-2">{renderSortButton('Statement', 'statement')}</span>}
           </div>
 
           {/* Rows */}
-          {txs.map((t, idx) => {
+          {sortedTxs.map((t, idx) => {
             const [y, mo, dy] = t.date.slice(0, 10).split('-').map(Number)
             const dateStr = new Date(y, mo - 1, dy).toLocaleDateString('en', { month: 'short', day: 'numeric' })
             const currentCat = editedCats[t.id] ?? t.category ?? 'Other'
@@ -265,7 +350,9 @@ export default function Transactions() {
 
           {/* Footer */}
           <div className="px-4 py-3 bg-[#F4FAF5] flex items-center justify-between border-t-2 border-[#D4E4D5]">
-            <span className="text-sm text-[#8BAE90]">{txs.length} transactions</span>
+            <span className="text-sm text-[#8BAE90]">
+              {txs.length} transactions · sorted by {sortLabel} {sortDirection === 'asc' ? 'ascending' : 'descending'}
+            </span>
             {pendingChanges > 0 ? (
               <button
                 onClick={saveChanges}

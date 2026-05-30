@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, Target } from 'lucide-react'
 import api from '../services/api'
-import type { RecurringExpense } from '../services/api'
+import type { CategoryBudget } from '../services/api'
 
 interface SpendingData {
   [month: string]: { [category: string]: { cards: number; debit: number } }
@@ -29,17 +29,9 @@ function addMonths(month: string, delta: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
-function isValidThisMonth(item: RecurringExpense, month: string): boolean {
-  if (!item.valid_until) return true
-  const [year, mo] = month.split('-').map(Number)
-  const monthStart = new Date(year, mo - 1, 1)
-  const validUntil = new Date(item.valid_until)
-  return Number.isNaN(validUntil.getTime()) || validUntil >= monthStart
-}
-
 export default function PlannedVsReal() {
   const [spending, setSpending] = useState<SpendingData>({})
-  const [recurring, setRecurring] = useState<RecurringExpense[]>([])
+  const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -47,13 +39,13 @@ export default function PlannedVsReal() {
     async function load() {
       setLoading(true)
       try {
-        const [spendingRes, recurringRes] = await Promise.all([
+        const [spendingRes, budgetRes] = await Promise.all([
           api.get('/spending-analysis'),
-          api.get('/recurring-expenses'),
+          api.get('/category-budgets'),
         ])
         const nextSpending = spendingRes.data as SpendingData
         setSpending(nextSpending)
-        setRecurring(recurringRes.data as RecurringExpense[])
+        setBudgets(budgetRes.data as CategoryBudget[])
 
         const months = Object.keys(nextSpending).sort()
         const today = new Date()
@@ -69,13 +61,13 @@ export default function PlannedVsReal() {
   const rows = useMemo<Row[]>(() => {
     if (!selectedMonth) return []
 
-    const plannedByCategory = recurring
-      .filter(item => item.type !== 'INCOME')
-      .filter(item => item.currency === 'CAD')
-      .filter(item => isValidThisMonth(item, selectedMonth))
-      .reduce<Record<string, number>>((totals, item) => {
-        const category = item.category || 'Other'
-        totals[category] = (totals[category] || 0) + item.amount
+    const plannedByCategory = budgets
+      .filter(budget => budget.currency === 'CAD')
+      .filter(budget => budget.is_active)
+      .filter(budget => budget.start_month <= selectedMonth)
+      .filter(budget => !budget.valid_until || new Date(budget.valid_until) >= new Date(`${selectedMonth}-01T00:00:00`))
+      .reduce<Record<string, number>>((totals, budget) => {
+        totals[budget.category] = (totals[budget.category] || 0) + budget.amount
         return totals
       }, {})
 
@@ -97,7 +89,7 @@ export default function PlannedVsReal() {
       })
       .filter(row => row.planned > 0 || row.real > 0)
       .sort((a, b) => Math.max(b.real, b.planned) - Math.max(a.real, a.planned))
-  }, [recurring, selectedMonth, spending])
+  }, [budgets, selectedMonth, spending])
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -107,8 +99,6 @@ export default function PlannedVsReal() {
     }),
     { planned: 0, real: 0, variance: 0 },
   )
-
-  const maxAmount = Math.max(1, ...rows.map(row => Math.max(row.planned, row.real)))
 
   function prevMonth() {
     setSelectedMonth(month => addMonths(month, -1))
@@ -126,7 +116,7 @@ export default function PlannedVsReal() {
             <Target size={24} />
             Planned vs Real
           </h1>
-          <p className="text-sm text-[#7BAE8A] mt-1">Compare planned recurring expenses against imported real spending by category.</p>
+          <p className="text-sm text-[#7BAE8A] mt-1">Compare monthly category budgets against imported real spending by category.</p>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-[#D4E4D5] transition text-[#1B4D3E]">
@@ -160,45 +150,78 @@ export default function PlannedVsReal() {
             </div>
           </div>
 
-          <div className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
-            <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr] gap-3 px-5 py-3 border-b border-[#EDF4EE] text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">
-              <span>Category</span>
-              <span className="text-right">Planned</span>
-              <span className="text-right">Real</span>
-              <span className="text-right">Variance</span>
+          <div className="bg-white border border-[#D4E4D5] rounded-lg px-4 py-3 mb-4">
+            <p className="section-title mb-3">Color Legend</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2 text-sm">
+              <div className="flex items-center gap-2 text-[#1B4D3E]">
+                <span className="w-4 h-4 rounded border border-[#D4E4D5] bg-[#F4FAF5]" />
+                <span>On track</span>
+              </div>
+              <div className="flex items-center gap-2 text-[#1B4D3E]">
+                <span className="w-4 h-4 rounded border border-[#CFE0F5] bg-[#F3F7FD]" />
+                <span>Close to budget</span>
+              </div>
+              <div className="flex items-center gap-2 text-[#1B4D3E]">
+                <span className="w-4 h-4 rounded border border-[#F0CCCC] bg-[#FDF5F5]" />
+                <span>Over budget</span>
+              </div>
+              <div className="flex items-center gap-2 text-[#1B4D3E]">
+                <span className="w-4 h-4 rounded border border-[#D7DED9] bg-[#F3F5F3]" />
+                <span>Not planned yet</span>
+              </div>
             </div>
+          </div>
 
-            {rows.length === 0 ? (
-              <div className="px-5 py-12 text-center text-[#8BAE90]">No planned or real spending for this month.</div>
-            ) : (
-              rows.map(row => {
-                const plannedWidth = `${Math.max(3, (row.planned / maxAmount) * 100)}%`
-                const realWidth = `${Math.max(3, (row.real / maxAmount) * 100)}%`
-                const over = row.variance > 0
+          {rows.length === 0 ? (
+            <div className="bg-white border border-[#D4E4D5] rounded-lg px-5 py-12 text-center text-[#8BAE90]">
+              No planned or real spending for this month.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {rows.map(row => {
+                const isUnplanned = row.planned <= 0
+                const over = !isUnplanned && row.variance > 0
+                const ratio = row.planned > 0 ? row.real / row.planned : 0
+                const cardClass = isUnplanned
+                  ? 'bg-[#F3F5F3] border-[#D7DED9]'
+                  : over
+                    ? 'bg-[#FDF5F5] border-[#F0CCCC]'
+                    : ratio >= 0.75
+                      ? 'bg-[#F3F7FD] border-[#CFE0F5]'
+                      : 'bg-[#F4FAF5] border-[#D4E4D5]'
+                const statusClass = isUnplanned ? 'text-[#6F7D73]' : over ? 'text-[#B85050]' : ratio >= 0.75 ? 'text-[#3F6EA8]' : 'text-[#1B6B3A]'
+                const statusLabel = isUnplanned
+                  ? `Not planned yet · real CAD$ ${fmt(row.real)}`
+                  : over
+                    ? `Over by CAD$ ${fmt(Math.abs(row.variance))}`
+                    : `Remaining CAD$ ${fmt(Math.abs(row.variance))}`
+                const percentLabel = isUnplanned ? 'No plan' : `${Math.round(ratio * 100)}%`
 
                 return (
-                  <div key={row.category} className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr_1fr_1fr] gap-3 px-5 py-4 border-b border-[#EDF4EE] last:border-0">
-                    <div>
-                      <p className="font-bold text-[#1B4D3E]">{row.category}</p>
-                      <div className="mt-2 space-y-1">
-                        <div className="h-2 bg-[#EDF4EE] rounded-full overflow-hidden">
-                          <div className="h-full bg-[#7BAE8A]" style={{ width: plannedWidth }} />
-                        </div>
-                        <div className="h-2 bg-[#EDF4EE] rounded-full overflow-hidden">
-                          <div className={`h-full ${over ? 'bg-[#B85050]' : 'bg-[#1B6B3A]'}`} style={{ width: realWidth }} />
-                        </div>
+                  <div key={row.category} className={`rounded-lg border px-4 py-3 ${cardClass}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-bold text-[#1B4D3E] truncate">{row.category}</p>
+                        <p className={`text-xs font-semibold mt-1 ${statusClass}`}>{statusLabel}</p>
+                      </div>
+                      <p className={`text-xs font-bold ${statusClass}`}>{percentLabel}</p>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-3">
+                      <div>
+                        <p className="text-xs text-[#7BAE8A]">Planned</p>
+                        <p className="font-bold text-[#1B4D3E]">CAD$ {fmt(row.planned)}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs text-[#7BAE8A]">Real</p>
+                        <p className={`font-bold ${isUnplanned ? 'text-[#6F7D73]' : over ? 'text-[#B85050]' : 'text-[#1B6B3A]'}`}>CAD$ {fmt(row.real)}</p>
                       </div>
                     </div>
-                    <p className="lg:text-right font-semibold text-[#1B4D3E]">CAD$ {fmt(row.planned)}</p>
-                    <p className="lg:text-right font-semibold text-[#B85050]">CAD$ {fmt(row.real)}</p>
-                    <p className={`lg:text-right font-bold ${over ? 'text-[#B85050]' : 'text-[#1B6B3A]'}`}>
-                      {row.variance >= 0 ? '+' : '-'} CAD$ {fmt(Math.abs(row.variance))}
-                    </p>
                   </div>
                 )
-              })
-            )}
-          </div>
+              })}
+            </div>
+          )}
         </>
       )}
     </div>

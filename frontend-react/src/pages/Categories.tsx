@@ -268,7 +268,7 @@ export default function Categories() {
                 <section key={type} className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
                   <div className="px-5 py-4 border-b border-[#EDF4EE] flex flex-col md:flex-row md:items-center md:justify-between gap-2">
                     <div>
-                      <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">{TYPE_LABELS[type]}</p>
+                      <p className="section-title">{TYPE_LABELS[type]}</p>
                       <p className="text-sm text-[#7BAE8A] mt-1">{TYPE_DESCRIPTIONS[type]}</p>
                     </div>
                     <span className={`self-start md:self-auto text-xs font-bold px-3 py-1 rounded-full border ${typeClasses(type)}`}>

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react'
 import api from '../services/api'
-import type { Account, RecurringExpense, RecurringMatch as SavedRecurringMatch, Transaction } from '../services/api'
+import type {
+  Account,
+  CategoryBudget,
+  RecurringExpense,
+  RecurringMatch as SavedRecurringMatch,
+  Transaction,
+} from '../services/api'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -19,6 +25,10 @@ interface MonthlyPayment {
 interface StatementSummaryItem {
   payment_due_date?: string | null
   charges?: number | null
+}
+
+interface SpendingData {
+  [month: string]: { [category: string]: { cards: number; debit: number } }
 }
 
 interface RecurringMatchCandidate {
@@ -79,7 +89,6 @@ function findRecurringMatches(
   const matches: Record<number, RecurringMatchCandidate> = {}
   const usedTransactions = new Set<number>()
   const monthlyTransactions = transactions.filter(tx => tx.date.slice(0, 7) === monthStr)
-
   const sortedItems = [...items].sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name))
 
   for (const item of sortedItems) {
@@ -134,6 +143,13 @@ function isValidThisMonth(item: RecurringExpense, year: number, month: number): 
   return Number.isNaN(end.getTime()) || end >= startOfMonth
 }
 
+function daysLeftInMonth(year: number, month: number): number {
+  const today = new Date()
+  if (today.getFullYear() !== year || today.getMonth() + 1 !== month) return 0
+  const end = new Date(year, month, 0)
+  return Math.max(0, end.getDate() - today.getDate())
+}
+
 export default function MonthlyCashFlow() {
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
@@ -141,6 +157,8 @@ export default function MonthlyCashFlow() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [statementTransactions, setStatementTransactions] = useState<Transaction[]>([])
+  const [spending, setSpending] = useState<SpendingData>({})
+  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([])
   const [cardCharges, setCardCharges] = useState<Record<string, number>>({})
   const [cardDueDates, setCardDueDates] = useState<Record<string, string>>({})
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
@@ -160,79 +178,80 @@ export default function MonthlyCashFlow() {
     else setMonth(m => m + 1)
   }
 
-  useEffect(() => {
-    let active = true
+  async function load() {
+    setLoading(true)
+    try {
+      const [accRes, recRes, payRes, matchRes, spendingRes, budgetRes] = await Promise.all([
+        api.get('/accounts'),
+        api.get('/recurring-expenses'),
+        api.get(`/monthly-payments?month=${monthStr}`),
+        api.get(`/recurring-matches?month=${monthStr}`).catch(() => ({ data: [] })),
+        api.get('/spending-analysis').catch(() => ({ data: {} })),
+        api.get(`/category-budgets?month=${monthStr}`).catch(() => ({ data: [] })),
+      ])
 
-    async function load() {
-      setLoading(true)
-      try {
-        const [accRes, recRes, payRes, matchRes] = await Promise.all([
-          api.get('/accounts'),
-          api.get('/recurring-expenses'),
-          api.get(`/monthly-payments?month=${monthStr}`),
-          api.get(`/recurring-matches?month=${monthStr}`).catch(() => ({ data: [] })),
-        ])
-        if (!active) return
+      const loadedAccounts = accRes.data as Account[]
+      setAccounts(loadedAccounts)
+      setRecurring(recRes.data as RecurringExpense[])
+      setPayments(payRes.data as MonthlyPayment[])
+      setSavedMatches(matchRes.data as SavedRecurringMatch[])
+      setSpending(spendingRes.data as SpendingData)
+      setCategoryBudgets(budgetRes.data as CategoryBudget[])
 
-        const loadedAccounts = accRes.data as Account[]
-        setAccounts(loadedAccounts)
-        setRecurring(recRes.data as RecurringExpense[])
-        setPayments(payRes.data as MonthlyPayment[])
-        setSavedMatches(matchRes.data as SavedRecurringMatch[])
+      const cards = loadedAccounts.filter(a => a.account_type === 'CREDIT_CARD')
+      const checking = loadedAccounts.filter(a => a.account_type !== 'CREDIT_CARD')
+      const charges: Record<string, number> = {}
+      const dueDates: Record<string, string> = {}
 
-        const cards = loadedAccounts.filter(a => a.account_type === 'CREDIT_CARD')
-        const checking = loadedAccounts.filter(a => a.account_type !== 'CREDIT_CARD')
-        const charges: Record<string, number> = {}
-        const dueDates: Record<string, string> = {}
+      const txResults = await Promise.all(checking.map(async account => {
+        try {
+          const res = await api.get(`/accounts/${account.id}/transactions`)
+          return res.data as Transaction[]
+        } catch (error) {
+          console.error(`Failed to load transactions for ${account.name}`, error)
+          return []
+        }
+      }))
 
-        const txResults = await Promise.all(checking.map(async account => {
-          try {
-            const res = await api.get(`/accounts/${account.id}/transactions`)
-            return res.data as Transaction[]
-          } catch (error) {
-            console.error(`Failed to load transactions for ${account.name}`, error)
-            return []
-          }
-        }))
-
-        await Promise.all(cards.map(async card => {
-          try {
-            const res = await api.get(`/accounts/${card.id}/statement-summary`)
-            let total = 0
-            for (const data of Object.values(res.data as Record<string, StatementSummaryItem>)) {
-              const due = (data.payment_due_date || '').slice(0, 7)
-              if (due === monthStr) {
-                total += data.charges || 0
-                const dueDate = (data.payment_due_date || '').slice(0, 10)
-                if (dueDate) dueDates[card.name] = dueDate
-              }
+      await Promise.all(cards.map(async card => {
+        try {
+          const res = await api.get(`/accounts/${card.id}/statement-summary`)
+          let total = 0
+          for (const data of Object.values(res.data as Record<string, StatementSummaryItem>)) {
+            const due = (data.payment_due_date || '').slice(0, 7)
+            if (due === monthStr) {
+              total += data.charges || 0
+              const dueDate = (data.payment_due_date || '').slice(0, 10)
+              if (dueDate) dueDates[card.name] = dueDate
             }
-            if (total > 0) charges[card.name] = total
-          } catch (error) {
-            console.error(`Failed to load statement summary for ${card.name}`, error)
           }
-        }))
+          if (total > 0) charges[card.name] = total
+        } catch (error) {
+          console.error(`Failed to load statement summary for ${card.name}`, error)
+        }
+      }))
 
-        cards.forEach(card => {
-          if (!dueDates[card.name] && card.due_day) {
-            const nextDueMonth = month === 12 ? 1 : month + 1
-            const nextDueYear = month === 12 ? year + 1 : year
-            dueDates[card.name] = `${nextDueYear}-${String(nextDueMonth).padStart(2, '0')}-${String(card.due_day).padStart(2, '0')}`
-          }
-        })
+      cards.forEach(card => {
+        if (!dueDates[card.name] && card.due_day) {
+          const nextDueMonth = month === 12 ? 1 : month + 1
+          const nextDueYear = month === 12 ? year + 1 : year
+          dueDates[card.name] = `${nextDueYear}-${String(nextDueMonth).padStart(2, '0')}-${String(card.due_day).padStart(2, '0')}`
+        }
+      })
 
-        if (!active) return
-        setStatementTransactions(txResults.flat())
-        setCardCharges(charges)
-        setCardDueDates(dueDates)
-      } finally {
-        if (active) setLoading(false)
-      }
+      setStatementTransactions(txResults.flat())
+      setCardCharges(charges)
+      setCardDueDates(dueDates)
+    } finally {
+      setLoading(false)
     }
+  }
 
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  useEffect(() => {
     load()
-    return () => { active = false }
   }, [monthStr, month, year])
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   const autoRecurringMatches = useMemo(
     () => findRecurringMatches(recurring, statementTransactions, monthStr),
@@ -350,10 +369,10 @@ export default function MonthlyCashFlow() {
             const monthRecurring = recurring.filter(r => r.currency === currency && isValidThisMonth(r, year, month))
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
+            const budgetList = categoryBudgets.filter(budget => budget.currency === currency)
             const totalIncomePlanned = incomeList.reduce((s, r) => s + r.amount, 0)
             const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
             const matchedExpenseActual = expenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
-            const futureIncome = totalIncomePlanned
             const remainingRecurringExpenses = expenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
             const cardEntries = Object.entries(cardCharges).filter(([name]) => {
               const card = accounts.find(a => a.name === name)
@@ -364,13 +383,23 @@ export default function MonthlyCashFlow() {
               const card = accounts.find(a => a.name === name)
               return s + (card && isPaid('card', card.id) ? 0 : v)
             }, 0)
-            const plannedExpenses = totalRecurringExpensesPlanned + totalCardsPlanned
-            const remainingExpenses = remainingRecurringExpenses + remainingCards
-            const clearedOrMatched = matchedExpenseActual + (plannedExpenses - remainingExpenses - matchedExpenseActual)
-            const afterExpenses = inBank - remainingExpenses
-            const balance = inBank + futureIncome - remainingExpenses
+            const totalCategoryBudget = budgetList.reduce((s, budget) => s + budget.amount, 0)
+            const plannedFixedExpenses = totalRecurringExpensesPlanned + totalCardsPlanned
+            const plannedOutflow = plannedFixedExpenses + totalCategoryBudget
+            const openFixedExpenses = remainingRecurringExpenses + remainingCards
+            const projectedBalance = inBank + totalIncomePlanned - plannedOutflow
+            const currentCashAfterOpenItems = inBank - openFixedExpenses
+            const payrollIncome = incomeList.filter(item => {
+              const text = `${item.name} ${item.category || ''}`.toLowerCase()
+              return text.includes('payroll') || text.includes('salary')
+            })
+            const otherIncome = incomeList.filter(item => !payrollIncome.some(payroll => payroll.id === item.id))
+            const budgetRealTotal = budgetList.reduce((s, budget) => {
+              const real = spending[monthStr]?.[budget.category]
+              return s + (real ? (real.cards || 0) + (real.debit || 0) : 0)
+            }, 0)
 
-            if (inBank === 0 && totalIncomePlanned === 0 && plannedExpenses === 0) return null
+            if (inBank === 0 && totalIncomePlanned === 0 && plannedOutflow === 0) return null
 
             return (
               <div key={currency} className="mb-10">
@@ -382,150 +411,278 @@ export default function MonthlyCashFlow() {
                     <p className="text-xl font-bold text-[#1B6B3A] mt-1">+ {symbol} {fmt(totalIncomePlanned)}</p>
                   </div>
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Planned Expenses</p>
-                    <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(plannedExpenses)}</p>
+                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Fixed Expenses</p>
+                    <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(plannedFixedExpenses)}</p>
                   </div>
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Matched Actual</p>
-                    <p className="text-xl font-bold text-[#1B4D3E] mt-1">{symbol} {fmt(matchedExpenseActual)}</p>
+                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Category Budgets</p>
+                    <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(totalCategoryBudget)}</p>
                   </div>
-                  <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Still Open</p>
-                    <p className="text-xl font-bold text-[#B85050] mt-1">{symbol} {fmt(remainingExpenses)}</p>
+                  <div className="bg-[#2D6A4F] rounded-xl border border-[#2D6A4F] p-4">
+                    <p className="text-[10px] font-semibold text-white uppercase tracking-widest">Projected Balance</p>
+                    <p className="text-xl font-bold text-[#E8C84A] mt-1">{symbol} {fmt(projectedBalance)}</p>
                   </div>
                 </div>
 
-                <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest mb-2">Income</p>
-                <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden mb-4">
+                <section className="mb-5">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="section-title">Income</p>
+                    <p className="text-xs text-[#8BAE90]">Planned {symbol} {fmt(totalIncomePlanned)}</p>
+                  </div>
                   {incomeList.length === 0 ? (
-                    <p className="px-4 py-3 text-sm text-[#8BAE90]">No recurring income registered.</p>
+                    <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 text-sm text-[#8BAE90]">
+                      No recurring income registered.
+                    </div>
                   ) : (
                     <>
-                      {incomeList.map(r => (
-                          <div key={r.id} className="flex flex-col md:flex-row md:justify-between md:items-center gap-2 px-4 py-3 border-b border-[#EDF4EE]">
-                            <div>
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className="text-[#2C3E2D]">{r.name}</span>
-                                <span className="text-[#8BAE90] text-xs">(day {r.due_day})</span>
-                                {r.valid_until && (
-                                  <span className="text-amber-500 text-xs">
-                                    until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                  </span>
-                                )}
+                      {payrollIncome.length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                          {payrollIncome.map(r => (
+                            <div key={r.id} className="rounded-lg border border-[#D4E4D5] bg-[#F4FAF5] px-4 py-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="font-bold text-[#1B4D3E] truncate">{r.name}</p>
+                                  <p className="text-xs text-[#7BAE8A] mt-1">
+                                    day {r.due_day}
+                                    {r.valid_until && (
+                                      <span className="text-amber-500 ml-2">
+                                        until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                      </span>
+                                    )}
+                                  </p>
+                                </div>
+                                <p className="text-[#1B6B3A] font-bold whitespace-nowrap">+ {symbol} {fmt(r.amount)}</p>
                               </div>
                             </div>
-                            <div className="text-right">
-                              <span className="text-[#1B6B3A] font-semibold text-base">
-                                + {symbol} {fmt(r.amount)}
-                              </span>
-                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {otherIncome.length > 0 && (
+                        <div className="mt-3">
+                          <p className="section-title mb-2">Other Incomes</p>
+                          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                            {otherIncome.map(r => (
+                              <div key={r.id} className="rounded-lg border border-[#CFE0F5] bg-[#F3F7FD] px-4 py-3">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="font-bold text-[#1B4D3E] truncate">{r.name}</p>
+                                    <p className="text-xs text-[#3F6EA8] mt-1">
+                                      day {r.due_day} · {r.category || 'Other Income'}
+                                      {r.valid_until && (
+                                        <span className="text-amber-500 ml-2">
+                                          until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                        </span>
+                                      )}
+                                    </p>
+                                  </div>
+                                  <p className="text-[#1B6B3A] font-bold whitespace-nowrap">+ {symbol} {fmt(r.amount)}</p>
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      <div className="flex justify-between items-center px-4 py-3 bg-[#F4FAF5]">
-                        <span className="text-[#1B4D3E] font-bold">Future Income</span>
-                        <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(futureIncome)}</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between items-center px-4 py-3 mt-3 bg-white rounded-lg border border-[#D4E4D5]">
+                        <span className="text-[#1B4D3E] font-bold">Planned Income</span>
+                        <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(totalIncomePlanned)}</span>
                       </div>
                     </>
                   )}
-                </div>
+                </section>
 
-                <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest mb-2">Expenses</p>
-                <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden mb-4">
-                  {cardEntries.map(([name, amount]) => {
-                    const card = accounts.find(a => a.name === name)
-                    const paid = isPaid('card', card?.id ?? 0)
-                    const dueDate = cardDueDates[name]
-
-                    return (
-                      <div key={name} className={`flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE] transition ${paid ? 'bg-[#F4FAF5]' : ''}`}>
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => card && togglePaid('card', card.id, name)}
-                            className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
-                              paid
-                                ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white'
-                                : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
-                            }`}
-                            title={paid ? 'Marked as paid' : 'Mark as paid'}
-                          >
-                            {paid && <Check size={13} />}
-                          </button>
-                          <span className={`text-base transition ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>
-                            💳 {name}
-                            {dueDate && (
-                              <span className="text-[#8BAE90] text-xs ml-2">(due {formatDueDate(dueDate)})</span>
-                            )}
-                          </span>
-                        </div>
-                        <span className={`font-semibold text-base transition ${paid ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
-                          - {symbol} {fmt(amount)}
-                        </span>
-                      </div>
-                    )
-                  })}
-
-                  {expenseList.map(r => {
-                    const paid = isPaid('recurring', r.id)
-                    const match = recurringMatches[r.id]
-                    const done = Boolean(paid || match)
-                    return (
-                      <div key={r.id} className={`flex flex-col md:flex-row md:justify-between md:items-center gap-2 px-4 py-3 border-b border-[#EDF4EE] transition ${done ? 'bg-[#F4FAF5]' : ''}`}>
-                        <div className="flex items-start gap-3">
-                          <button
-                            onClick={() => !match && togglePaid('recurring', r.id, r.name)}
-                            disabled={Boolean(match)}
-                            className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
-                              done
-                                ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white'
-                                : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
-                            }`}
-                            title={match ? 'Auto matched from statement' : paid ? 'Marked as paid' : 'Mark as paid'}
-                          >
-                            {done && <Check size={13} />}
-                          </button>
-                          <div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={`text-base transition ${done ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>🔄 {r.name}</span>
-                              <span className="text-[#8BAE90] text-xs">(day {r.due_day})</span>
-                              {r.valid_until && (
-                                <span className="text-amber-500 text-xs">
-                                  until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                </span>
-                              )}
-                            </div>
-                            {match && (
-                              <p className="text-xs text-[#1B6B3A] mt-1 flex items-center gap-1">
-                                <Sparkles size={12} />
-                                Auto matched to statement: {match.transaction.description} · {formatDueDate(match.transaction.date.slice(0, 10))} · {match.confidence} confidence
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <span className={`font-semibold text-base transition ${done ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
-                            - {symbol} {fmt(match?.actualAmount || r.amount)}
-                          </span>
-                          {match && Math.abs(match.variance) > 0.005 && (
-                            <p className="text-xs text-[#8BAE90]">planned {symbol} {fmt(r.amount)}</p>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })}
-
-                  <div className="px-4 py-3 bg-[#FDF5F5]">
-                    <div className="flex justify-between items-center">
-                      <span className="text-[#1B4D3E] font-bold">Remaining Expenses</span>
-                      <span className="text-[#B85050] font-bold">- {symbol} {fmt(remainingExpenses)}</span>
-                    </div>
-                    <p className="text-xs text-[#8BAE90] mt-1">
-                      Planned {symbol} {fmt(plannedExpenses)} · paid or matched {symbol} {fmt(Math.max(0, clearedOrMatched))}
-                    </p>
+                <section className="mb-5">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="section-title">Credit Cards</p>
+                    {cardEntries.length > 0 && (
+                      <p className="text-xs text-[#8BAE90]">Planned due: {symbol} {fmt(totalCardsPlanned)}</p>
+                    )}
                   </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {cardEntries.length === 0 ? (
+                      <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 text-sm text-[#8BAE90]">
+                        No credit card payments due this month.
+                      </div>
+                    ) : (
+                      cardEntries.map(([name, amount]) => {
+                        const card = accounts.find(a => a.name === name)
+                        const paid = isPaid('card', card?.id ?? 0)
+                        const dueDate = cardDueDates[name]
+
+                        return (
+                          <div key={name} className={`rounded-lg border px-4 py-3 transition ${
+                            paid ? 'bg-[#F4FAF5] border-[#D4E4D5]' : 'bg-white border-[#D4E4D5]'
+                          }`}>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-3 min-w-0">
+                                <button
+                                  onClick={() => card && togglePaid('card', card.id, name)}
+                                  className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
+                                    paid ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white' : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
+                                  }`}
+                                  title={paid ? 'Marked as paid' : 'Mark as paid'}
+                                >
+                                  {paid && <Check size={13} />}
+                                </button>
+                                <div className="min-w-0">
+                                  <p className={`text-sm font-semibold transition truncate ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>{name}</p>
+                                  {dueDate && <p className="text-xs text-[#8BAE90] mt-1">due {formatDueDate(dueDate)}</p>}
+                                </div>
+                              </div>
+                              <span className={`font-bold text-sm transition whitespace-nowrap ${paid ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
+                                - {symbol} {fmt(amount)}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      })
+                    )}
+                  </div>
+                </section>
+
+                <div className="grid grid-cols-1 xl:grid-cols-[0.98fr_1.02fr] gap-5 mb-4 items-start">
+                  <section>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="section-title">Recurring Expenses</p>
+                      <p className="text-xs text-[#8BAE90]">Open {symbol} {fmt(remainingRecurringExpenses)}</p>
+                    </div>
+                    <div className="bg-white rounded-lg border border-[#D4E4D5] overflow-hidden">
+                        {expenseList.length === 0 ? (
+                          <p className="px-4 py-4 text-sm text-[#8BAE90]">No recurring fixed expenses.</p>
+                        ) : (
+                          expenseList.map(r => {
+                            const paid = isPaid('recurring', r.id)
+                            const match = recurringMatches[r.id]
+                            const done = Boolean(paid || match)
+                            return (
+                              <div key={r.id} className={`flex flex-col md:flex-row md:justify-between md:items-center gap-2 px-4 py-3 border-b border-[#EDF4EE] last:border-0 transition ${done ? 'bg-[#F4FAF5]' : ''}`}>
+                                <div className="flex items-start gap-3 min-w-0">
+                                  <button
+                                    onClick={() => !match && togglePaid('recurring', r.id, r.name)}
+                                    disabled={Boolean(match)}
+                                    className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
+                                      done ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white' : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
+                                    }`}
+                                    title={match ? 'Auto matched from statement' : paid ? 'Marked as paid' : 'Mark as paid'}
+                                  >
+                                    {done && <Check size={13} />}
+                                  </button>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className={`text-sm transition ${done ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>{r.name}</span>
+                                      <span className="text-[#8BAE90] text-xs">(day {r.due_day})</span>
+                                      {r.valid_until && (
+                                        <span className="text-amber-500 text-xs">
+                                          until {new Date(r.valid_until).toLocaleDateString('en', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                        </span>
+                                      )}
+                                    </div>
+                                    {match && (
+                                      <p className="text-xs text-[#1B6B3A] mt-1 flex items-center gap-1">
+                                        <Sparkles size={12} />
+                                        Matched: {match.transaction.description} · {formatDueDate(match.transaction.date.slice(0, 10))}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-right">
+                                  <span className={`font-semibold text-sm transition ${done ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
+                                    - {symbol} {fmt(match?.actualAmount || r.amount)}
+                                  </span>
+                                  {match && Math.abs(match.variance) > 0.005 && (
+                                    <p className="text-xs text-[#8BAE90]">planned {symbol} {fmt(r.amount)}</p>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })
+                        )}
+                          <div className="px-4 py-3 bg-[#FDF5F5]">
+                          <div className="flex justify-between items-center">
+                            <span className="text-[#1B4D3E] font-bold text-sm">Planned Recurring</span>
+                            <span className="text-[#B85050] font-bold text-sm">- {symbol} {fmt(totalRecurringExpensesPlanned)}</span>
+                          </div>
+                          <p className="text-xs text-[#8BAE90] mt-1">
+                            Open {symbol} {fmt(remainingRecurringExpenses)} · matched {symbol} {fmt(matchedExpenseActual)}
+                          </p>
+                        </div>
+                      </div>
+                  </section>
+
+                  <section>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="section-title">Monthly Budget by Category</p>
+                      <p className="text-xs text-[#8BAE90]">Spent {symbol} {fmt(budgetRealTotal)}</p>
+                    </div>
+                    <div>
+                      {budgetList.length === 0 ? (
+                        <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 text-sm text-[#8BAE90]">
+                          No category budgets for this month.
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {budgetList.map(budget => {
+                            const real = spending[monthStr]?.[budget.category]
+                            const spent = real ? (real.cards || 0) + (real.debit || 0) : 0
+                            const remaining = budget.amount - spent
+                            const over = spent > budget.amount
+                            const ratio = spent / budget.amount
+                            const daysLeft = daysLeftInMonth(year, month)
+                            const cardClass = over
+                              ? 'bg-[#FDF5F5] border-[#F0CCCC]'
+                              : ratio >= 0.75
+                                ? 'bg-[#F3F7FD] border-[#CFE0F5]'
+                                : 'bg-[#F4FAF5] border-[#D4E4D5]'
+                            const statusText = over
+                              ? `Over by ${symbol} ${fmt(Math.abs(remaining))}`
+                              : ratio >= 0.75
+                                ? `${symbol} ${fmt(Math.max(0, remaining))} left`
+                                : `${symbol} ${fmt(Math.max(0, remaining))} available`
+                            const statusClass = over ? 'text-[#B85050]' : ratio >= 0.75 ? 'text-[#3F6EA8]' : 'text-[#1B6B3A]'
+
+                            return (
+                              <div key={budget.id} className={`rounded-lg border px-4 py-3 ${cardClass}`}>
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <p className="font-bold text-[#1B4D3E] truncate">{budget.category}</p>
+                                    <p className="text-xs text-[#7BAE8A] mt-1">
+                                      {daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? '' : 's'} left` : 'Month view'}
+                                    </p>
+                                  </div>
+                                  <p className={`text-xs font-bold ${statusClass}`}>{Math.round(ratio * 100)}%</p>
+                                </div>
+                                <div className="mt-3 flex items-end justify-between gap-3">
+                                  <div>
+                                    <p className="text-lg font-bold text-[#1B4D3E]">{symbol} {fmt(spent)}</p>
+                                    <p className="text-xs text-[#7BAE8A]">spent</p>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="text-sm font-semibold text-[#1B4D3E]">{symbol} {fmt(budget.amount)}</p>
+                                    <p className="text-xs text-[#7BAE8A]">budget</p>
+                                  </div>
+                                </div>
+                                <p className={`text-xs font-semibold mt-2 ${statusClass}`}>{statusText}</p>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                      <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 mt-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[#1B4D3E] font-bold text-sm">Planned Budgets</span>
+                          <span className="text-[#B85050] font-bold text-sm">- {symbol} {fmt(totalCategoryBudget)}</span>
+                        </div>
+                        <p className="text-xs text-[#8BAE90] mt-1">
+                          Spent so far {symbol} {fmt(budgetRealTotal)} · projection uses the full planned budget.
+                        </p>
+                      </div>
+                    </div>
+                  </section>
                 </div>
 
                 <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden">
-                  <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest px-4 pt-3 mb-3">Balance</p>
+                  <p className="section-title px-4 pt-3 mb-3">Balance</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#EDF4EE]">
                     <div className="text-center px-4 pb-4">
                       <p className="text-xs text-[#8BAE90] mb-1">🏦 In Bank</p>
@@ -533,20 +690,20 @@ export default function MonthlyCashFlow() {
                       <p className="text-xs text-[#8BAE90]">{symbol}</p>
                     </div>
                     <div className="text-center px-4 py-4 md:pt-0">
-                      <p className="text-xs text-[#8BAE90] mb-1">💸 After Open Expenses</p>
-                      <p className={`text-xl font-bold ${afterExpenses >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
-                        {fmt(afterExpenses)}
+                      <p className="text-xs text-[#8BAE90] mb-1">Open Fixed Items</p>
+                      <p className={`text-xl font-bold ${currentCashAfterOpenItems >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                        {fmt(currentCashAfterOpenItems)}
                       </p>
                       <p className="text-xs text-[#8BAE90]">{symbol}</p>
                     </div>
                     <div className="text-center px-4 py-4 md:pt-0 bg-[#2D6A4F] md:rounded-br-xl">
                       <p className="text-xs text-white mb-1">🎯 Projected Balance</p>
-                      <p className="text-xl font-bold text-[#E8C84A]">{fmt(balance)}</p>
+                      <p className="text-xl font-bold text-[#E8C84A]">{fmt(projectedBalance)}</p>
                       <p className="text-xs text-white">{symbol}</p>
                     </div>
                   </div>
                   <p className="text-xs text-[#8BAE90] text-center py-2 border-t border-[#EDF4EE]">
-                    {fmt(inBank)} + future income {fmt(futureIncome)} - open expenses {fmt(remainingExpenses)} = {symbol} {fmt(balance)}
+                    {fmt(inBank)} + income {fmt(totalIncomePlanned)} - fixed {fmt(plannedFixedExpenses)} - budgets {fmt(totalCategoryBudget)} = {symbol} {fmt(projectedBalance)}
                   </p>
                 </div>
 

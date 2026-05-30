@@ -63,3 +63,14 @@ export interface RecurringMatch {
   created_at?: string | null
   transaction: Transaction | null
 }
+
+export interface CategoryBudget {
+  id: number
+  category: string
+  amount: number
+  currency: 'BRL' | 'CAD' | 'USD' | 'EUR'
+  start_month: string
+  valid_until?: string | null
+  is_active: boolean
+  created_at?: string | null
+}

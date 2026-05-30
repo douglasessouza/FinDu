@@ -107,3 +107,15 @@ class RecurringMatch(Base):
     score = Column(Float, nullable=False)
     source = Column(String, nullable=False, default="auto")
     created_at = Column(DateTime, default=datetime.utcnow)
+
+class CategoryBudget(Base):
+    __tablename__ = "category_budgets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    category = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    currency = Column(Enum(CurrencyEnum), nullable=False)
+    start_month = Column(String, nullable=False)
+    valid_until = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
