@@ -166,7 +166,7 @@ export default function PlannedVsReal() {
                 <span>Over budget</span>
               </div>
               <div className="flex items-center gap-2 text-[#1B4D3E]">
-                <span className="w-4 h-4 rounded border border-[#D7DED9] bg-[#F3F5F3]" />
+                <span className="w-4 h-4 rounded border border-[#B8C0BA] bg-[#E3E7E4]" />
                 <span>Not planned yet</span>
               </div>
             </div>
@@ -183,7 +183,7 @@ export default function PlannedVsReal() {
                 const over = !isUnplanned && row.variance > 0
                 const ratio = row.planned > 0 ? row.real / row.planned : 0
                 const cardClass = isUnplanned
-                  ? 'bg-[#F3F5F3] border-[#D7DED9]'
+                  ? 'bg-[#E3E7E4] border-[#B8C0BA]'
                   : over
                     ? 'bg-[#FDF5F5] border-[#F0CCCC]'
                     : ratio >= 0.75
