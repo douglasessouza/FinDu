@@ -25,6 +25,7 @@ interface MonthlyPayment {
 interface StatementSummaryItem {
   payment_due_date?: string | null
   charges?: number | null
+  amount_due?: number | null
 }
 
 interface SpendingData {
@@ -221,7 +222,7 @@ export default function MonthlyCashFlow() {
           for (const data of Object.values(res.data as Record<string, StatementSummaryItem>)) {
             const due = (data.payment_due_date || '').slice(0, 7)
             if (due === monthStr) {
-              total += data.charges || 0
+              total += data.amount_due ?? data.charges ?? 0
               const dueDate = (data.payment_due_date || '').slice(0, 10)
               if (dueDate) dueDates[card.name] = dueDate
             }

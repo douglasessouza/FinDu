@@ -364,14 +364,25 @@ def get_statement_summary(account_id: int, db: Session = Depends(get_db)):
     for t in transactions:
         month = t.statement_month
         if month not in summary:
-            summary[month] = {"charges": 0, "payments": 0, "count": 0, "payment_due_date": None}
+            summary[month] = {
+                "charges": 0,
+                "credits": 0,
+                "payments": 0,
+                "amount_due": 0,
+                "count": 0,
+                "payment_due_date": None,
+            }
         if t.amount < 0:
             summary[month]["charges"] += abs(t.amount)
             summary[month]["count"] += 1
-        else:
+        elif (t.category or "").strip().lower() == "transfer":
             summary[month]["payments"] += t.amount
+        else:
+            summary[month]["credits"] += t.amount
         if t.payment_due_date:
             summary[month]["payment_due_date"] = t.payment_due_date.isoformat()
+    for item in summary.values():
+        item["amount_due"] = max(0, item["charges"] - item["credits"])
     return dict(sorted(summary.items()))
 
 @app.patch("/transactions/{transaction_id}")
@@ -381,6 +392,8 @@ def update_transaction(transaction_id: int, updates: dict, db: Session = Depends
         raise HTTPException(status_code=404, detail="Transaction not found")
     for key, value in updates.items():
         if hasattr(transaction, key):
+            if key in {"date", "payment_due_date"} and isinstance(value, str):
+                value = datetime.fromisoformat(value)
             setattr(transaction, key, value)
     db.commit()
     db.refresh(transaction)

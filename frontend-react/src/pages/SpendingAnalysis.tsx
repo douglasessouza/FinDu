@@ -56,6 +56,7 @@ interface Transaction {
 interface StatementSummaryItem {
   payment_due_date?: string | null
   charges?: number | null
+  amount_due?: number | null
 }
 
 type ChartRow = { category: string } & Record<string, string | number | null>
@@ -83,7 +84,7 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
               const [y, mo] = due.split('-').map(Number)
               const bm = new Date(y, mo - 2, 1)
               const bmStr = `${bm.getFullYear()}-${String(bm.getMonth() + 1).padStart(2, '0')}`
-              if (bmStr === selectedMonth) total += d.charges || 0
+              if (bmStr === selectedMonth) total += d.amount_due ?? d.charges ?? 0
             }
           }
           if (total > 0) result.push({ name: card.name, amount: Math.round(total * 100) / 100 })
@@ -380,7 +381,9 @@ export default function SpendingAnalysis() {
                                         <div className="flex items-center gap-2 min-w-0 flex-1">
                                           <span className="text-xs text-[#8BAE90] shrink-0">{dateStr}</span>
                                           <span className="text-sm text-[#2C3E2D] truncate">{t.description}</span>
-                                          <span className="text-xs text-[#8BAE90] shrink-0">{t._is_card ? '💳' : '🏦'}</span>
+                                          <span className="text-xs text-[#8BAE90] shrink-0">
+                                            {t._is_card ? '💳' : '🏦'} {t._account_name}
+                                          </span>
                                         </div>
                                         <span className="text-sm font-semibold text-[#B85050] shrink-0">$ {fmt(amt)}</span>
                                       </div>

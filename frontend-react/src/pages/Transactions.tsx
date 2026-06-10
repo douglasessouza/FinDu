@@ -20,6 +20,7 @@ interface Transaction {
   currency: string
   category: string
   statement_month?: string
+  payment_due_date?: string
   account_id: number
 }
 
@@ -36,6 +37,7 @@ export default function Transactions() {
   const [monthFilter, setMonthFilter] = useState(currentMonth)
   const [txs, setTxs] = useState<Transaction[]>([])
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
+  const [editedStatements, setEditedStatements] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
@@ -67,6 +69,7 @@ export default function Transactions() {
     async function loadTxs() {
       setLoading(true)
       setEditedCats({})
+      setEditedStatements({})
       try {
         const res = await api.get(`/accounts/${selectedAccId}/transactions`)
         let data: Transaction[] = res.data
@@ -88,13 +91,33 @@ export default function Transactions() {
   }, [selectedAccId, monthFilter, isCard])
 
   async function saveChanges() {
-    const toUpdate = Object.entries(editedCats)
-    if (toUpdate.length === 0) return
+    const ids = new Set([
+      ...Object.keys(editedCats),
+      ...Object.keys(editedStatements),
+    ])
+    if (ids.size === 0) return
     setSaving(true)
     let updated = 0
-    for (const [id, category] of toUpdate) {
+    for (const id of ids) {
       try {
-        await api.patch(`/transactions/${id}`, { category })
+        const changes: Record<string, string> = {}
+        if (editedCats[Number(id)] !== undefined) {
+          changes.category = editedCats[Number(id)]
+        }
+        if (editedStatements[Number(id)] !== undefined) {
+          const statementMonth = editedStatements[Number(id)]
+          changes.statement_month = statementMonth
+          if (selectedAcc?.due_day) {
+            const [year, month] = statementMonth.split('-').map(Number)
+            const dueDate = new Date(year, month, selectedAcc.due_day)
+            changes.payment_due_date = [
+              dueDate.getFullYear(),
+              String(dueDate.getMonth() + 1).padStart(2, '0'),
+              String(dueDate.getDate()).padStart(2, '0'),
+            ].join('-')
+          }
+        }
+        await api.patch(`/transactions/${id}`, changes)
         updated++
       } catch (error) {
         console.error(`Failed to update transaction ${id}`, error)
@@ -102,6 +125,7 @@ export default function Transactions() {
     }
     setSaving(false)
     setEditedCats({})
+    setEditedStatements({})
     setSaveMsg(`✅ ${updated} transaction${updated !== 1 ? 's' : ''} updated!`)
     setTimeout(() => setSaveMsg(''), 3000)
     // Refresh
@@ -148,7 +172,10 @@ export default function Transactions() {
 
   const totalExpenses = txs.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
   const totalIncome = txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)
-  const pendingChanges = Object.keys(editedCats).length
+  const pendingChanges = new Set([
+    ...Object.keys(editedCats),
+    ...Object.keys(editedStatements),
+  ]).size
   const sortLabel = {
     date: 'Date',
     description: 'Description',
@@ -312,6 +339,8 @@ export default function Transactions() {
             const dateStr = new Date(y, mo - 1, dy).toLocaleDateString('en', { month: 'short', day: 'numeric' })
             const currentCat = editedCats[t.id] ?? t.category ?? 'Other'
             const isEdited = editedCats[t.id] !== undefined && editedCats[t.id] !== t.category
+            const currentStatement = editedStatements[t.id] ?? t.statement_month ?? ''
+            const isStatementEdited = editedStatements[t.id] !== undefined && editedStatements[t.id] !== t.statement_month
 
             return (
               <div
@@ -342,7 +371,18 @@ export default function Transactions() {
                 </div>
 
                 {isCard && (
-                  <span className="pl-2 text-xs text-[#8BAE90]">{t.statement_month || '—'}</span>
+                  <div className="pl-2">
+                    <input
+                      type="month"
+                      value={currentStatement}
+                      onChange={e => setEditedStatements(prev => ({ ...prev, [t.id]: e.target.value }))}
+                      className={`w-full text-xs px-2 py-1.5 rounded-lg border focus:outline-none ${
+                        isStatementEdited
+                          ? 'border-[#C9A84C] bg-[#FDF6E3] text-[#7A5C0A] font-semibold'
+                          : 'border-[#D4E4D5] bg-transparent text-[#2C3E2D]'
+                      }`}
+                    />
+                  </div>
                 )}
               </div>
             )
