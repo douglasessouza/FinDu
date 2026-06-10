@@ -508,13 +508,11 @@ def spending_by_category(currency: Optional[str] = None, db: Session = Depends(g
 @app.get("/spending-analysis")
 def spending_analysis(db: Session = Depends(get_db)):
     """
-    Returns spending by category grouped by billing month.
-    - Credit cards: grouped by payment_due_date month minus 1 (the month you consider the expense)
+    Returns spending by category grouped by cash-flow month.
+    - Credit cards: grouped by payment due month
     - Checking accounts: grouped by transaction date month
     Separates card vs debit spending per category per month.
     """
-    from datetime import timedelta
-
     # Fetch all accounts to classify them
     all_accounts = db.query(Account).all()
     card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
@@ -533,15 +531,8 @@ def spending_analysis(db: Session = Depends(get_db)):
         amount = abs(t.amount)
 
         if t.account_id in card_ids:
-            # For credit cards: billing month = payment_due_date month - 1
             if t.payment_due_date:
-                due = t.payment_due_date
-                # Go back one month
-                if due.month == 1:
-                    billing_month = due.replace(year=due.year - 1, month=12, day=1)
-                else:
-                    billing_month = due.replace(month=due.month - 1, day=1)
-                month_key = billing_month.strftime("%Y-%m")
+                month_key = t.payment_due_date.strftime("%Y-%m")
             else:
                 month_key = t.date.strftime("%Y-%m")
             col = "cards"

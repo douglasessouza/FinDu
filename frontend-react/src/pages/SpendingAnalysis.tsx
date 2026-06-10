@@ -49,6 +49,7 @@ interface Transaction {
   category: string
   account_id: number
   statement_month?: string
+  payment_due_date?: string
   _account_name?: string
   _is_card?: boolean
 }
@@ -80,12 +81,7 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
           let total = 0
           for (const d of Object.values(res.data as Record<string, StatementSummaryItem>)) {
             const due = (d.payment_due_date || '').slice(0, 7)
-            if (due) {
-              const [y, mo] = due.split('-').map(Number)
-              const bm = new Date(y, mo - 2, 1)
-              const bmStr = `${bm.getFullYear()}-${String(bm.getMonth() + 1).padStart(2, '0')}`
-              if (bmStr === selectedMonth) total += d.amount_due ?? d.charges ?? 0
-            }
+            if (due === selectedMonth) total += d.amount_due ?? d.charges ?? 0
           }
           if (total > 0) result.push({ name: card.name, amount: Math.round(total * 100) / 100 })
         } catch (error) {
@@ -102,7 +98,7 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
 
   return (
     <div className="border-t border-[#EDF4EE] pt-3 mt-4">
-      <p className="section-title mb-2">💳 Card charges this month</p>
+      <p className="section-title mb-2">💳 Card payments due this month</p>
       {rows.map(r => (
         <div key={r.name} className="flex justify-between text-sm py-1">
           <span className="text-[#8BAE90]">↳ {r.name}</span>
@@ -236,7 +232,7 @@ export default function SpendingAnalysis() {
       for (const t of txs) {
         if (t.amount >= 0) continue
         if ((t.category || 'Other') !== category) continue
-        if (isCard && t.statement_month === selectedMonth)
+        if (isCard && t.payment_due_date?.slice(0, 7) === selectedMonth)
           results.push({ ...t, _account_name: acc.name, _is_card: true })
         else if (!isCard && t.date?.slice(0, 7) === selectedMonth)
           results.push({ ...t, _account_name: acc.name, _is_card: false })
