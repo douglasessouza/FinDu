@@ -3,7 +3,6 @@ import { Check, ChevronLeft, ChevronRight, Sparkles } from 'lucide-react'
 import api from '../services/api'
 import type {
   Account,
-  CategoryBudget,
   RecurringExpense,
   RecurringMatch as SavedRecurringMatch,
   Transaction,
@@ -26,10 +25,6 @@ interface StatementSummaryItem {
   payment_due_date?: string | null
   charges?: number | null
   amount_due?: number | null
-}
-
-interface SpendingData {
-  [month: string]: { [category: string]: { cards: number; debit: number } }
 }
 
 interface RecurringMatchCandidate {
@@ -144,13 +139,6 @@ function isValidThisMonth(item: RecurringExpense, year: number, month: number): 
   return Number.isNaN(end.getTime()) || end >= startOfMonth
 }
 
-function daysLeftInMonth(year: number, month: number): number {
-  const today = new Date()
-  if (today.getFullYear() !== year || today.getMonth() + 1 !== month) return 0
-  const end = new Date(year, month, 0)
-  return Math.max(0, end.getDate() - today.getDate())
-}
-
 export default function MonthlyCashFlow() {
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
@@ -159,8 +147,6 @@ export default function MonthlyCashFlow() {
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [statementTransactions, setStatementTransactions] = useState<Transaction[]>([])
   const [actualOtherIncomeTransactions, setActualOtherIncomeTransactions] = useState<Transaction[]>([])
-  const [spending, setSpending] = useState<SpendingData>({})
-  const [categoryBudgets, setCategoryBudgets] = useState<CategoryBudget[]>([])
   const [cardCharges, setCardCharges] = useState<Record<string, number>>({})
   const [cardDueDates, setCardDueDates] = useState<Record<string, string>>({})
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
@@ -183,13 +169,11 @@ export default function MonthlyCashFlow() {
   async function load() {
     setLoading(true)
     try {
-      const [accRes, recRes, payRes, matchRes, spendingRes, budgetRes] = await Promise.all([
+      const [accRes, recRes, payRes, matchRes] = await Promise.all([
         api.get('/accounts'),
         api.get('/recurring-expenses'),
         api.get(`/monthly-payments?month=${monthStr}`),
         api.get(`/recurring-matches?month=${monthStr}`).catch(() => ({ data: [] })),
-        api.get('/spending-analysis').catch(() => ({ data: {} })),
-        api.get(`/category-budgets?month=${monthStr}`).catch(() => ({ data: [] })),
       ])
 
       const loadedAccounts = accRes.data as Account[]
@@ -197,8 +181,6 @@ export default function MonthlyCashFlow() {
       setRecurring(recRes.data as RecurringExpense[])
       setPayments(payRes.data as MonthlyPayment[])
       setSavedMatches(matchRes.data as SavedRecurringMatch[])
-      setSpending(spendingRes.data as SpendingData)
-      setCategoryBudgets(budgetRes.data as CategoryBudget[])
 
       const cards = loadedAccounts.filter(a => a.account_type === 'CREDIT_CARD')
       const checking = loadedAccounts.filter(a => a.account_type !== 'CREDIT_CARD')
@@ -389,7 +371,6 @@ export default function MonthlyCashFlow() {
             const monthRecurring = recurring.filter(r => r.currency === currency && isValidThisMonth(r, year, month))
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
-            const budgetList = categoryBudgets.filter(budget => budget.currency === currency)
             const totalIncomePlanned = incomeList.reduce((s, r) => s + r.amount, 0)
             const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
             const matchedExpenseActual = expenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
@@ -405,9 +386,7 @@ export default function MonthlyCashFlow() {
               const card = accounts.find(a => a.name === name)
               return s + (card && isPaid('card', card.id) ? 0 : v)
             }, 0)
-            const totalCategoryBudget = budgetList.reduce((s, budget) => s + budget.amount, 0)
             const plannedFixedExpenses = totalRecurringExpensesPlanned + totalCardsPlanned
-            const plannedOutflow = plannedFixedExpenses + totalCategoryBudget
             const openFixedExpenses = remainingRecurringExpenses + remainingCards
             const payrollIncome = incomeList.filter(item => {
               const text = `${item.name} ${item.category || ''}`.toLowerCase()
@@ -418,31 +397,23 @@ export default function MonthlyCashFlow() {
             const plannedOtherIncomeTotal = otherIncome.reduce((s, r) => s + r.amount, 0)
             const otherIncomeTotal = plannedOtherIncomeTotal + actualOtherIncomeTotal
             const totalIncomeForCashFlow = totalIncomePlanned + actualOtherIncomeTotal
-            const projectedBalance = inBank + totalIncomeForCashFlow - plannedOutflow
-            const currentCashAfterOpenItems = inBank - openFixedExpenses
-            const budgetRealTotal = budgetList.reduce((s, budget) => {
-              const real = spending[monthStr]?.[budget.category]
-              return s + (real ? (real.cards || 0) + (real.debit || 0) : 0)
-            }, 0)
+            const projectedBalance = inBank + totalIncomeForCashFlow - plannedFixedExpenses
 
-            if (inBank === 0 && totalIncomePlanned === 0 && plannedOutflow === 0) return null
+            if (inBank === 0 && totalIncomePlanned === 0 && plannedFixedExpenses === 0) return null
 
             return (
               <div key={currency} className="mb-10">
                 <h2 className="text-lg font-bold text-[#1B4D3E] mb-4">{flag} {currency}</h2>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
                     <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Income</p>
                     <p className="text-xl font-bold text-[#1B6B3A] mt-1">+ {symbol} {fmt(totalIncomeForCashFlow)}</p>
                   </div>
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Fixed Expenses</p>
+                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Planned Expenses</p>
                     <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(plannedFixedExpenses)}</p>
-                  </div>
-                  <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Category Budgets</p>
-                    <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(totalCategoryBudget)}</p>
+                    <p className="text-xs text-[#8BAE90] mt-1">Recurring bills + cards due</p>
                   </div>
                   <div className="bg-[#2D6A4F] rounded-xl border border-[#2D6A4F] p-4">
                     <p className="text-[10px] font-semibold text-white uppercase tracking-widest">Projected Balance</p>
@@ -551,7 +522,7 @@ export default function MonthlyCashFlow() {
                   <div className="flex items-center justify-between mb-4">
                     <p className="section-title">Expenses</p>
                     <p className="text-xs text-[#8BAE90]">
-                      Planned {symbol} {fmt(plannedOutflow)} · open fixed {symbol} {fmt(openFixedExpenses)}
+                      Planned {symbol} {fmt(plannedFixedExpenses)} · still open {symbol} {fmt(openFixedExpenses)}
                     </p>
                   </div>
 
@@ -606,8 +577,8 @@ export default function MonthlyCashFlow() {
                   </div>
                   </div>
 
-                <div className="grid grid-cols-1 xl:grid-cols-[0.98fr_1.02fr] gap-5 mb-4 items-start">
-                  <section>
+                <div className="mb-4">
+                  <section className="max-w-4xl">
                     <div className="flex items-center justify-between mb-2">
                       <p className="section-title">Recurring Expenses</p>
                       <p className="text-xs text-[#8BAE90]">Open {symbol} {fmt(remainingRecurringExpenses)}</p>
@@ -674,89 +645,6 @@ export default function MonthlyCashFlow() {
                         </div>
                       </div>
                   </section>
-
-                  <section>
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="section-title">Monthly Budget by Category</p>
-                      <p className="text-xs text-[#8BAE90]">Spent {symbol} {fmt(budgetRealTotal)}</p>
-                    </div>
-                    <div>
-                      {budgetList.length === 0 ? (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div className="rounded-lg border border-[#D4E4D5] bg-[#F4FAF5] px-4 py-3">
-                            <p className="font-bold text-[#1B4D3E]">No category budget</p>
-                            <p className="text-xs text-[#7BAE8A] mt-1">No category budgets for this month.</p>
-                            <div className="mt-3 flex items-end justify-between gap-3">
-                              <div>
-                                <p className="text-lg font-bold text-[#1B4D3E]">{symbol} {fmt(0)}</p>
-                                <p className="text-xs text-[#7BAE8A]">spent</p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-sm font-semibold text-[#1B4D3E]">{symbol} {fmt(0)}</p>
-                                <p className="text-xs text-[#7BAE8A]">budget</p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {budgetList.map(budget => {
-                            const real = spending[monthStr]?.[budget.category]
-                            const spent = real ? (real.cards || 0) + (real.debit || 0) : 0
-                            const remaining = budget.amount - spent
-                            const over = spent > budget.amount
-                            const ratio = spent / budget.amount
-                            const daysLeft = daysLeftInMonth(year, month)
-                            const cardClass = over
-                              ? 'bg-[#FDF5F5] border-[#F0CCCC]'
-                              : ratio >= 0.75
-                                ? 'bg-[#F3F7FD] border-[#CFE0F5]'
-                                : 'bg-[#F4FAF5] border-[#D4E4D5]'
-                            const statusText = over
-                              ? `Over by ${symbol} ${fmt(Math.abs(remaining))}`
-                              : ratio >= 0.75
-                                ? `${symbol} ${fmt(Math.max(0, remaining))} left`
-                                : `${symbol} ${fmt(Math.max(0, remaining))} available`
-                            const statusClass = over ? 'text-[#B85050]' : ratio >= 0.75 ? 'text-[#3F6EA8]' : 'text-[#1B6B3A]'
-
-                            return (
-                              <div key={budget.id} className={`rounded-lg border px-4 py-3 ${cardClass}`}>
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="min-w-0">
-                                    <p className="font-bold text-[#1B4D3E] truncate">{budget.category}</p>
-                                    <p className="text-xs text-[#7BAE8A] mt-1">
-                                      {daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? '' : 's'} left` : 'Month view'}
-                                    </p>
-                                  </div>
-                                  <p className={`text-xs font-bold ${statusClass}`}>{Math.round(ratio * 100)}%</p>
-                                </div>
-                                <div className="mt-3 flex items-end justify-between gap-3">
-                                  <div>
-                                    <p className="text-lg font-bold text-[#1B4D3E]">{symbol} {fmt(spent)}</p>
-                                    <p className="text-xs text-[#7BAE8A]">spent</p>
-                                  </div>
-                                  <div className="text-right">
-                                    <p className="text-sm font-semibold text-[#1B4D3E]">{symbol} {fmt(budget.amount)}</p>
-                                    <p className="text-xs text-[#7BAE8A]">budget</p>
-                                  </div>
-                                </div>
-                                <p className={`text-xs font-semibold mt-2 ${statusClass}`}>{statusText}</p>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                      <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 mt-3">
-                        <div className="flex justify-between items-center">
-                          <span className="text-[#1B4D3E] font-bold text-sm">Planned Budgets</span>
-                          <span className="text-[#B85050] font-bold text-sm">- {symbol} {fmt(totalCategoryBudget)}</span>
-                        </div>
-                        <p className="text-xs text-[#8BAE90] mt-1">
-                          Spent so far {symbol} {fmt(budgetRealTotal)} · projection uses the full planned budget.
-                        </p>
-                      </div>
-                    </div>
-                  </section>
                 </div>
                 </section>
 
@@ -769,10 +657,8 @@ export default function MonthlyCashFlow() {
                       <p className="text-xs text-[#8BAE90]">{symbol}</p>
                     </div>
                     <div className="text-center px-4 py-4 md:pt-0">
-                      <p className="text-xs text-[#8BAE90] mb-1">Open Fixed Items</p>
-                      <p className={`text-xl font-bold ${currentCashAfterOpenItems >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
-                        {fmt(currentCashAfterOpenItems)}
-                      </p>
+                      <p className="text-xs text-[#8BAE90] mb-1">Still To Pay</p>
+                      <p className="text-xl font-bold text-[#B85050]">- {fmt(openFixedExpenses)}</p>
                       <p className="text-xs text-[#8BAE90]">{symbol}</p>
                     </div>
                     <div className="text-center px-4 py-4 md:pt-0 bg-[#2D6A4F] md:rounded-br-xl">
@@ -782,7 +668,7 @@ export default function MonthlyCashFlow() {
                     </div>
                   </div>
                   <p className="text-xs text-[#8BAE90] text-center py-2 border-t border-[#EDF4EE]">
-                    {fmt(inBank)} + income {fmt(totalIncomeForCashFlow)} - fixed {fmt(plannedFixedExpenses)} - budgets {fmt(totalCategoryBudget)} = {symbol} {fmt(projectedBalance)}
+                    {fmt(inBank)} + income {fmt(totalIncomeForCashFlow)} - planned expenses {fmt(plannedFixedExpenses)} = {symbol} {fmt(projectedBalance)}
                   </p>
                 </div>
 

@@ -191,13 +191,6 @@ export default function RecurringExpenses() {
     }, {})
   }, [items])
 
-  const budgetTotalsByCurrency = useMemo(() => {
-    return budgets.reduce<Record<string, number>>((totals, budget) => {
-      totals[budget.currency] = (totals[budget.currency] || 0) + budget.amount
-      return totals
-    }, {})
-  }, [budgets])
-
   async function deleteItem(item: RecurringExpense) {
     const confirmed = window.confirm(`Delete ${item.name}? This cannot be undone.`)
     if (!confirmed) return
@@ -427,8 +420,7 @@ export default function RecurringExpenses() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {CURRENCIES.map(currency => {
           const total = totalsByCurrency[currency] || { income: 0, expenses: 0 }
-          const budgetTotal = budgetTotalsByCurrency[currency] || 0
-          const net = total.income - total.expenses - budgetTotal
+          const net = total.income - total.expenses
 
           return (
             <div key={currency} className="bg-white border border-[#D4E4D5] rounded-xl p-4">
@@ -438,7 +430,7 @@ export default function RecurringExpenses() {
               </p>
               <div className="flex justify-between text-xs text-[#7BAE8A] mt-2">
                 <span>Income {symbol(currency)} {fmt(total.income, currency)}</span>
-                <span>Outflow {symbol(currency)} {fmt(total.expenses + budgetTotal, currency)}</span>
+                <span>Recurring expenses {symbol(currency)} {fmt(total.expenses, currency)}</span>
               </div>
             </div>
           )
