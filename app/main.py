@@ -14,7 +14,14 @@ from fastapi.responses import FileResponse
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL)
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=3,
+    max_overflow=0,
+    pool_timeout=30,
+    pool_recycle=300,
+    pool_pre_ping=True,
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 app = FastAPI(
