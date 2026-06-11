@@ -79,9 +79,8 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
         try {
           const res = await api.get(`/accounts/${card.id}/statement-summary`)
           let total = 0
-          for (const d of Object.values(res.data as Record<string, StatementSummaryItem>)) {
-            const due = (d.payment_due_date || '').slice(0, 7)
-            if (due === selectedMonth) total += d.amount_due ?? d.charges ?? 0
+          for (const [statementMonth, d] of Object.entries(res.data as Record<string, StatementSummaryItem>)) {
+            if (statementMonth === selectedMonth) total += d.amount_due ?? d.charges ?? 0
           }
           if (total > 0) result.push({ name: card.name, amount: Math.round(total * 100) / 100 })
         } catch (error) {
@@ -98,7 +97,7 @@ function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selecte
 
   return (
     <div className="border-t border-[#EDF4EE] pt-3 mt-4">
-      <p className="section-title mb-2">💳 Card payments due this month</p>
+      <p className="section-title mb-2">💳 Card spending in this cycle</p>
       {rows.map(r => (
         <div key={r.name} className="flex justify-between text-sm py-1">
           <span className="text-[#8BAE90]">↳ {r.name}</span>
@@ -232,7 +231,7 @@ export default function SpendingAnalysis() {
       for (const t of txs) {
         if (t.amount >= 0) continue
         if ((t.category || 'Other') !== category) continue
-        if (isCard && t.payment_due_date?.slice(0, 7) === selectedMonth)
+        if (isCard && (t.statement_month || t.date?.slice(0, 7)) === selectedMonth)
           results.push({ ...t, _account_name: acc.name, _is_card: true })
         else if (!isCard && t.date?.slice(0, 7) === selectedMonth)
           results.push({ ...t, _account_name: acc.name, _is_card: false })
@@ -267,7 +266,10 @@ export default function SpendingAnalysis() {
     <div className="w-full max-w-7xl mx-auto px-6">
 
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-[#1B4D3E]">📈 Spending Analysis</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-[#1B4D3E]">📈 Spending Analysis</h1>
+          <p className="text-sm text-[#7BAE8A] mt-1">Card purchases follow each statement cycle; bank spending follows the transaction month.</p>
+        </div>
         <button onClick={refresh} className="flex items-center gap-2 text-sm text-[#8BAE90] hover:text-[#1B4D3E] transition">
           <RefreshCw size={14} /> Refresh
         </button>

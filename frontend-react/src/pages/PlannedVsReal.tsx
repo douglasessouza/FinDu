@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, ChevronRight, Target } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CreditCard, Target } from 'lucide-react'
 import api from '../services/api'
-import type { CategoryBudget } from '../services/api'
+import type { Account, CategoryBudget } from '../services/api'
 
 interface SpendingData {
   [month: string]: { [category: string]: { cards: number; debit: number } }
@@ -29,23 +29,36 @@ function addMonths(month: string, delta: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
+function cycleDate(month: string, day: number): Date {
+  const [year, monthNumber] = month.split('-').map(Number)
+  return new Date(year, monthNumber - 1, Math.min(day, new Date(year, monthNumber, 0).getDate()))
+}
+
+function shortDate(date: Date): string {
+  return date.toLocaleDateString('en', { month: 'short', day: 'numeric' })
+}
+
 export default function PlannedVsReal() {
   const [spending, setSpending] = useState<SpendingData>({})
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
+  const [showAllCycles, setShowAllCycles] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     async function load() {
       setLoading(true)
       try {
-        const [spendingRes, budgetRes] = await Promise.all([
+        const [spendingRes, budgetRes, accountRes] = await Promise.all([
           api.get('/spending-analysis'),
           api.get('/category-budgets'),
+          api.get('/accounts'),
         ])
         const nextSpending = spendingRes.data as SpendingData
         setSpending(nextSpending)
         setBudgets(budgetRes.data as CategoryBudget[])
+        setAccounts(accountRes.data as Account[])
 
         const months = Object.keys(nextSpending).sort()
         const today = new Date()
@@ -99,6 +112,24 @@ export default function PlannedVsReal() {
     }),
     { planned: 0, real: 0, variance: 0 },
   )
+  const cards = accounts
+    .filter(account => account.account_type === 'CREDIT_CARD' && account.closing_day && account.due_day)
+    .sort((a, b) => (a.closing_day || 0) - (b.closing_day || 0))
+  const now = new Date()
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const cycleStatus = selectedMonth < currentMonth
+    ? 'Closed'
+    : selectedMonth > currentMonth
+      ? 'Upcoming'
+      : cards.some(card => cycleDate(selectedMonth, card.closing_day || 1) >= new Date(now.getFullYear(), now.getMonth(), now.getDate()))
+        ? 'Open'
+        : 'Closed'
+  const nextClosing = selectedMonth === currentMonth
+    ? cards
+      .map(card => ({ card, date: cycleDate(selectedMonth, card.closing_day || 1) }))
+      .filter(item => item.date >= new Date(now.getFullYear(), now.getMonth(), now.getDate()))
+      .sort((a, b) => a.date.getTime() - b.date.getTime())[0]
+    : undefined
 
   function prevMonth() {
     setSelectedMonth(month => addMonths(month, -1))
@@ -114,9 +145,9 @@ export default function PlannedVsReal() {
         <div>
           <h1 className="text-2xl font-bold text-[#1B4D3E] flex items-center gap-2">
             <Target size={24} />
-            Planned vs Real
+            Budget & Card Cycles
           </h1>
-          <p className="text-sm text-[#7BAE8A] mt-1">Compare monthly category budgets against imported real spending by category.</p>
+          <p className="text-sm text-[#7BAE8A] mt-1">See how much of each category budget remains in the selected card cycle.</p>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-[#D4E4D5] transition text-[#1B4D3E]">
@@ -133,6 +164,46 @@ export default function PlannedVsReal() {
         <div className="text-center text-[#8BAE90] py-20">Loading planned vs real...</div>
       ) : (
         <>
+          <div className="bg-[#1B4D3E] text-white rounded-xl p-4 mb-5">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <div className="flex items-start gap-3">
+                <span className="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
+                  <CreditCard size={18} />
+                </span>
+                <div>
+                  <p className="text-sm font-bold">{monthLabel(selectedMonth)} spending cycle · {cycleStatus}</p>
+                  <p className="text-xs text-white/75 mt-1">
+                    {nextClosing
+                      ? `Next closing: ${nextClosing.card.name}, ${shortDate(nextClosing.date)} · paid ${shortDate(cycleDate(addMonths(selectedMonth, 1), nextClosing.card.due_day || 1))}`
+                      : 'Closing dates define the spending cycle. Due dates define when the bill enters Monthly Cash Flow.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAllCycles(value => !value)}
+                className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-semibold transition"
+              >
+                {showAllCycles ? 'Hide card cycles' : 'View all card cycles'}
+                {showAllCycles ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </button>
+            </div>
+            {showAllCycles && (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 mt-4 pt-4 border-t border-white/15">
+                {cards.map(card => {
+                  const closing = cycleDate(selectedMonth, card.closing_day || 1)
+                  const payment = cycleDate(addMonths(selectedMonth, 1), card.due_day || 1)
+                  return (
+                    <div key={card.id} className="rounded-lg bg-white/10 px-3 py-2">
+                      <p className="text-sm font-bold truncate">{card.name}</p>
+                      <p className="text-xs text-white/75 mt-1">Closes {shortDate(closing)}</p>
+                      <p className="text-xs text-[#E8C84A]">Paid {shortDate(payment)}</p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
             <div className="bg-white border border-[#D4E4D5] rounded-xl p-4">
               <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Planned</p>

@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target } from 'lucide-react'
+import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import MonthlyCashFlow from './pages/MonthlyCashFlow'
 import PlannedVsReal from './pages/PlannedVsReal'
@@ -10,20 +10,21 @@ import Accounts from './pages/Accounts'
 import CreditCards from './pages/CreditCards'
 import RecurringExpenses from './pages/RecurringExpenses'
 import Categories from './pages/Categories'
+import HowItWorks from './pages/HowItWorks'
 import axios from 'axios'
 
 const navReports = [
   { to: '/', icon: Banknote, label: 'Monthly Cash Flow' },
-  { to: '/planned-vs-real', icon: Target, label: 'Planned vs Real' },
+  { to: '/planned-vs-real', icon: Target, label: 'Budget & Card Cycles' },
   { to: '/spending', icon: TrendingUp, label: 'Spending Analysis' },
   { to: '/transactions', icon: Receipt, label: 'Transactions' },
 ]
 
 const navManage = [
   { to: '/import', icon: Upload, label: 'Import Statement' },
-  { to: '/accounts', icon: Building2, label: 'Accounts' },
-  { to: '/cards', icon: CreditCard, label: 'Credit Cards' },
   { to: '/recurring', icon: RefreshCw, label: 'Recurring Expenses & Income' },
+  { to: '/cards', icon: CreditCard, label: 'Credit Cards' },
+  { to: '/accounts', icon: Building2, label: 'Accounts' },
   { to: '/categories', icon: Tag, label: 'Categories' },
 ]
 
@@ -106,6 +107,21 @@ function Sidebar() {
           {label}
         </NavLink>
       ))}
+
+      <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest px-2 mt-4 mb-1">Help</p>
+      <NavLink
+        to="/how-it-works"
+        className={({ isActive }) =>
+          `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors mb-0.5 ${
+            isActive
+              ? 'bg-[#EDF4EE] text-[#1B4D3E] font-semibold border-l-[3px] border-[#E8C84A]'
+              : 'text-[#8BAE90] hover:bg-[#F4FAF5] hover:text-[#1B4D3E]'
+          }`
+        }
+      >
+        <CircleHelp size={15} />
+        How FinDu Works
+      </NavLink>
     </aside>
   )
 }
@@ -126,6 +142,7 @@ export default function App() {
             <Route path="/cards" element={<CreditCards />} />
             <Route path="/recurring" element={<RecurringExpenses />} />
             <Route path="/categories" element={<Categories />} />
+            <Route path="/how-it-works" element={<HowItWorks />} />
           </Routes>
         </main>
       </div>

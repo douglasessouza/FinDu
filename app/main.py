@@ -508,8 +508,8 @@ def spending_by_category(currency: Optional[str] = None, db: Session = Depends(g
 @app.get("/spending-analysis")
 def spending_analysis(db: Session = Depends(get_db)):
     """
-    Returns spending by category grouped by cash-flow month.
-    - Credit cards: grouped by payment due month
+    Returns spending by category grouped by spending cycle.
+    - Credit cards: grouped by statement month (defined by closing day)
     - Checking accounts: grouped by transaction date month
     Separates card vs debit spending per category per month.
     """
@@ -531,10 +531,7 @@ def spending_analysis(db: Session = Depends(get_db)):
         amount = abs(t.amount)
 
         if t.account_id in card_ids:
-            if t.payment_due_date:
-                month_key = t.payment_due_date.strftime("%Y-%m")
-            else:
-                month_key = t.date.strftime("%Y-%m")
+            month_key = t.statement_month or t.date.strftime("%Y-%m")
             col = "cards"
         elif t.account_id in debit_ids:
             month_key = t.date.strftime("%Y-%m")
