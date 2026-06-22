@@ -118,7 +118,7 @@ export default function PlannedVsReal() {
       .filter(tx => {
         const account = accountById[tx.account_id]
         if (account?.account_type === 'CREDIT_CARD') {
-          return (tx.payment_due_date || tx.date)?.slice(0, 7) === selectedMonth
+          return (tx.statement_month || tx.date)?.slice(0, 7) === selectedMonth
         }
         return tx.date?.slice(0, 7) === selectedMonth
       })
@@ -184,7 +184,7 @@ export default function PlannedVsReal() {
       .filter(tx => {
         const account = accountById[tx.account_id]
         if (account?.account_type === 'CREDIT_CARD') {
-          return (tx.payment_due_date || tx.date)?.slice(0, 7) === selectedMonth
+          return (tx.statement_month || tx.date)?.slice(0, 7) === selectedMonth
         }
         return tx.date?.slice(0, 7) === selectedMonth
       })
