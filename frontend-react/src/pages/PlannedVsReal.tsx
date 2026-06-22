@@ -91,6 +91,13 @@ export default function PlannedVsReal() {
     loadTransactionContext()
   }, [])
 
+  const accountById = useMemo(() => {
+    return accounts.reduce<Record<number, Account>>((lookup, account) => {
+      lookup[account.id] = account
+      return lookup
+    }, {})
+  }, [accounts])
+
   const rows = useMemo<Row[]>(() => {
     if (!selectedMonth) return []
 
@@ -104,10 +111,27 @@ export default function PlannedVsReal() {
         return totals
       }, {})
 
-    const realByCategory = Object.entries(spending[selectedMonth] || {}).reduce<Record<string, number>>((totals, [category, value]) => {
-      totals[category] = Math.round(((value.cards || 0) + (value.debit || 0)) * 100) / 100
-      return totals
-    }, {})
+    const excludedCategories = new Set(['Salary', 'Other Income', 'Transfer'])
+    const realByCategory = transactions
+      .filter(tx => tx.amount < 0)
+      .filter(tx => !excludedCategories.has(tx.category || 'Other'))
+      .filter(tx => {
+        const account = accountById[tx.account_id]
+        if (account?.account_type === 'CREDIT_CARD') {
+          return (tx.payment_due_date || tx.date)?.slice(0, 7) === selectedMonth
+        }
+        return tx.date?.slice(0, 7) === selectedMonth
+      })
+      .reduce<Record<string, number>>((totals, tx) => {
+        const category = tx.category || 'Other'
+        totals[category] = Math.round(((totals[category] || 0) + Math.abs(tx.amount)) * 100) / 100
+        return totals
+      }, {})
+
+    Object.entries(spending[selectedMonth] || {}).forEach(([category, value]) => {
+      if (realByCategory[category] !== undefined) return
+      realByCategory[category] = Math.round(((value.cards || 0) + (value.debit || 0)) * 100) / 100
+    })
 
     return Array.from(new Set([...Object.keys(plannedByCategory), ...Object.keys(realByCategory)]))
       .map(category => {
@@ -122,7 +146,7 @@ export default function PlannedVsReal() {
       })
       .filter(row => row.planned > 0 || row.real > 0)
       .sort((a, b) => Math.max(b.real, b.planned) - Math.max(a.real, a.planned))
-  }, [budgets, selectedMonth, spending])
+  }, [accountById, budgets, selectedMonth, spending, transactions])
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -150,13 +174,6 @@ export default function PlannedVsReal() {
       .filter(item => item.date >= new Date(now.getFullYear(), now.getMonth(), now.getDate()))
       .sort((a, b) => a.date.getTime() - b.date.getTime())[0]
     : undefined
-
-  const accountById = useMemo(() => {
-    return accounts.reduce<Record<number, Account>>((lookup, account) => {
-      lookup[account.id] = account
-      return lookup
-    }, {})
-  }, [accounts])
 
   const categoryTransactions = useMemo(() => {
     if (!selectedCategory || !selectedMonth) return []
