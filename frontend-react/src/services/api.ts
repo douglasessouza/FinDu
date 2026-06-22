@@ -72,5 +72,13 @@ export interface CategoryBudget {
   start_month: string
   valid_until?: string | null
   is_active: boolean
+  items?: CategoryBudgetItem[]
+  created_at?: string | null
+}
+
+export interface CategoryBudgetItem {
+  id?: number
+  name: string
+  amount: number
   created_at?: string | null
 }

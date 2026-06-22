@@ -2,11 +2,11 @@ from fastapi import FastAPI, HTTPException, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import sessionmaker
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 import os
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from datetime import datetime
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -56,14 +56,25 @@ DEFAULT_CATEGORIES = [
 ]
 
 @app.on_event("startup")
-def seed_default_categories():
-    """Seed default categories on startup if they don't exist yet."""
+def initialize_reference_data():
+    """Create missing tables and seed reference data on startup."""
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         for name, cat_type in DEFAULT_CATEGORIES:
             exists = db.query(Category).filter(Category.name == name).first()
             if not exists:
                 db.add(Category(name=name, type=CategoryTypeEnum[cat_type], is_default=True))
+
+        budgets_without_items = (
+            db.query(CategoryBudget)
+            .outerjoin(CategoryBudgetItem, CategoryBudgetItem.budget_id == CategoryBudget.id)
+            .filter(CategoryBudgetItem.id == None)
+            .all()
+        )
+        for budget in budgets_without_items:
+            if budget.amount > 0:
+                db.add(CategoryBudgetItem(budget_id=budget.id, name="General", amount=budget.amount))
         db.commit()
     finally:
         db.close()
@@ -78,12 +89,17 @@ class CategoryCreate(BaseModel):
     name: str
     type: str = "EXPENSE"
 
+class CategoryBudgetItemPayload(BaseModel):
+    name: str
+    amount: float
+
 class CategoryBudgetCreate(BaseModel):
     category: str
-    amount: float
+    amount: float = 0
     currency: CurrencyEnum = CurrencyEnum.CAD
     start_month: str
     valid_until: Optional[datetime] = None
+    items: list[CategoryBudgetItemPayload] = Field(default_factory=list)
 
 @app.post("/categories")
 def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
@@ -127,14 +143,25 @@ def category_budget_is_active_for_month(budget: CategoryBudget, month: Optional[
     return True
 
 def serialize_category_budget(budget: CategoryBudget):
+    items = [
+        {
+            "id": item.id,
+            "name": item.name,
+            "amount": item.amount,
+            "created_at": item.created_at.isoformat() if item.created_at else None,
+        }
+        for item in sorted(budget.items, key=lambda item: item.id)
+    ]
+    amount = round(sum(item["amount"] for item in items), 2) if items else budget.amount
     return {
         "id": budget.id,
         "category": budget.category,
-        "amount": budget.amount,
+        "amount": amount,
         "currency": budget.currency.value if hasattr(budget.currency, "value") else budget.currency,
         "start_month": budget.start_month,
         "valid_until": budget.valid_until.isoformat() if budget.valid_until else None,
         "is_active": budget.is_active,
+        "items": items,
         "created_at": budget.created_at.isoformat() if budget.created_at else None,
     }
 
@@ -147,9 +174,24 @@ def list_category_budgets(month: Optional[str] = None, db: Session = Depends(get
 @app.post("/category-budgets")
 def create_category_budget(budget: CategoryBudgetCreate, db: Session = Depends(get_db)):
     """Creates a monthly budget for variable spending by category."""
-    if budget.amount <= 0:
+    clean_items = [
+        item for item in budget.items
+        if item.name.strip() and item.amount > 0
+    ]
+    amount = round(sum(item.amount for item in clean_items), 2) if clean_items else budget.amount
+    if amount <= 0:
         raise HTTPException(status_code=400, detail="Amount must be greater than zero")
-    db_budget = CategoryBudget(**budget.model_dump())
+    db_budget = CategoryBudget(
+        category=budget.category,
+        amount=amount,
+        currency=budget.currency,
+        start_month=budget.start_month,
+        valid_until=budget.valid_until,
+    )
+    db_budget.items = [
+        CategoryBudgetItem(name=item.name.strip(), amount=item.amount)
+        for item in clean_items
+    ] or [CategoryBudgetItem(name=budget.category, amount=amount)]
     db.add(db_budget)
     db.commit()
     db.refresh(db_budget)
@@ -160,15 +202,28 @@ def update_category_budget(budget_id: int, updates: dict, db: Session = Depends(
     budget = db.query(CategoryBudget).filter(CategoryBudget.id == budget_id).first()
     if not budget:
         raise HTTPException(status_code=404, detail="Category budget not found")
-    allowed = {"category", "amount", "currency", "start_month", "valid_until", "is_active"}
+    allowed = {"category", "amount", "currency", "start_month", "valid_until", "is_active", "items"}
     for key, value in updates.items():
         if key not in allowed:
+            continue
+        if key == "items" and isinstance(value, list):
+            clean_items = [
+                item for item in value
+                if str(item.get("name", "")).strip() and float(item.get("amount", 0) or 0) > 0
+            ]
+            budget.items = [
+                CategoryBudgetItem(name=str(item["name"]).strip(), amount=float(item["amount"]))
+                for item in clean_items
+            ]
+            budget.amount = round(sum(item.amount for item in budget.items), 2)
             continue
         if key == "currency" and isinstance(value, str):
             value = CurrencyEnum[value]
         if key == "valid_until" and isinstance(value, str):
             value = datetime.fromisoformat(value)
         setattr(budget, key, value)
+    if "amount" in updates and "items" not in updates:
+        budget.items = [CategoryBudgetItem(name=budget.category, amount=budget.amount)]
     db.commit()
     db.refresh(budget)
     return serialize_category_budget(budget)

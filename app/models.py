@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Boolean, UniqueConstraint
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 import enum
 
@@ -119,3 +119,14 @@ class CategoryBudget(Base):
     valid_until = Column(DateTime, nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    items = relationship("CategoryBudgetItem", back_populates="budget", cascade="all, delete-orphan")
+
+class CategoryBudgetItem(Base):
+    __tablename__ = "category_budget_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    budget_id = Column(Integer, ForeignKey("category_budgets.id"), nullable=False)
+    name = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    budget = relationship("CategoryBudget", back_populates="items")

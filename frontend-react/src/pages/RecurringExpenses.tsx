@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { CalendarDays, ChevronDown, ChevronUp, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import api from '../services/api'
 import type { Category, CategoryBudget, RecurringExpense } from '../services/api'
 
@@ -49,10 +49,10 @@ interface RecurringForm {
 
 interface BudgetForm {
   category: string
-  amount: string
   currency: Currency
   start_month: string
   valid_until: string
+  items: { name: string; amount: string }[]
 }
 
 const EXPENSE_FORM: RecurringForm = {
@@ -75,10 +75,10 @@ const INCOME_FORM: RecurringForm = {
 
 const EMPTY_BUDGET_FORM: BudgetForm = {
   category: '',
-  amount: '0',
   currency: 'CAD',
   start_month: new Date().toISOString().slice(0, 7),
   valid_until: '',
+  items: [{ name: '', amount: '0' }],
 }
 
 function validDay(value: number): boolean {
@@ -94,6 +94,9 @@ export default function RecurringExpenses() {
   const [expenseForm, setExpenseForm] = useState<RecurringForm>(EXPENSE_FORM)
   const [incomeForm, setIncomeForm] = useState<RecurringForm>(INCOME_FORM)
   const [budgetForm, setBudgetForm] = useState<BudgetForm>(EMPTY_BUDGET_FORM)
+  const [expandedBudgetId, setExpandedBudgetId] = useState<number | null>(null)
+  const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null)
+  const [editingBudgetItems, setEditingBudgetItems] = useState<{ name: string; amount: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -102,6 +105,10 @@ export default function RecurringExpenses() {
   const incomeItems = items.filter(item => item.type === 'INCOME')
   const expenseItems = items.filter(item => item.type !== 'INCOME')
   const expenseCategories = categories.length > 0 ? categories : ['Housing', 'Food', 'Transport', 'Other']
+  const budgetFormTotal = budgetForm.items.reduce((sum, item) => {
+    const amount = Number(item.amount || 0)
+    return sum + (Number.isFinite(amount) ? amount : 0)
+  }, 0)
 
   async function loadRecurring() {
     setLoading(true)
@@ -256,14 +263,16 @@ export default function RecurringExpenses() {
 
   async function createBudget(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const amount = Number(budgetForm.amount)
+    const budgetItems = budgetForm.items
+      .map(item => ({ name: item.name.trim(), amount: Number(item.amount || 0) }))
+      .filter(item => item.name && Number.isFinite(item.amount) && item.amount > 0)
 
     if (!budgetForm.category) {
       setError('Budget category is required.')
       return
     }
-    if (!Number.isFinite(amount) || amount <= 0) {
-      setError('Budget amount must be greater than zero.')
+    if (budgetItems.length === 0) {
+      setError('Add at least one budget item with a name and amount greater than zero.')
       return
     }
     if (!budgetForm.start_month) {
@@ -277,13 +286,14 @@ export default function RecurringExpenses() {
     try {
       const res = await api.post('/category-budgets', {
         category: budgetForm.category,
-        amount,
+        amount: budgetItems.reduce((sum, item) => sum + item.amount, 0),
+        items: budgetItems,
         currency: budgetForm.currency,
         start_month: budgetForm.start_month,
         valid_until: budgetForm.valid_until ? `${budgetForm.valid_until}T00:00:00` : null,
       })
       setBudgets(prev => [...prev, res.data as CategoryBudget].sort((a, b) => a.category.localeCompare(b.category)))
-      setBudgetForm(prev => ({ ...prev, amount: '0', valid_until: '' }))
+      setBudgetForm(prev => ({ ...prev, valid_until: '', items: [{ name: '', amount: '0' }] }))
       setMessage(`${budgetForm.category} budget added.`)
     } catch (e) {
       console.error('Failed to create category budget', e)
@@ -317,33 +327,203 @@ export default function RecurringExpenses() {
     else setExpenseForm(prev => ({ ...prev, ...update }))
   }
 
+  function updateBudgetItem(index: number, update: Partial<{ name: string; amount: string }>) {
+    setBudgetForm(prev => ({
+      ...prev,
+      items: prev.items.map((item, currentIndex) => currentIndex === index ? { ...item, ...update } : item),
+    }))
+  }
+
+  function addBudgetItem() {
+    setBudgetForm(prev => ({
+      ...prev,
+      items: [...prev.items, { name: '', amount: '0' }],
+    }))
+  }
+
+  function removeBudgetItem(index: number) {
+    setBudgetForm(prev => ({
+      ...prev,
+      items: prev.items.length === 1
+        ? [{ name: '', amount: '0' }]
+        : prev.items.filter((_, currentIndex) => currentIndex !== index),
+    }))
+  }
+
+  function startEditingBudget(budget: CategoryBudget) {
+    const items = budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]
+    setEditingBudgetId(budget.id)
+    setEditingBudgetItems(items.map(item => ({ name: item.name, amount: String(item.amount) })))
+  }
+
+  function updateEditingBudgetItem(index: number, update: Partial<{ name: string; amount: string }>) {
+    setEditingBudgetItems(prev => prev.map((item, currentIndex) => currentIndex === index ? { ...item, ...update } : item))
+  }
+
+  function addEditingBudgetItem() {
+    setEditingBudgetItems(prev => [...prev, { name: '', amount: '0' }])
+  }
+
+  function removeEditingBudgetItem(index: number) {
+    setEditingBudgetItems(prev => prev.length === 1 ? [{ name: '', amount: '0' }] : prev.filter((_, currentIndex) => currentIndex !== index))
+  }
+
+  async function saveBudgetItems(budget: CategoryBudget) {
+    const items = editingBudgetItems
+      .map(item => ({ name: item.name.trim(), amount: Number(item.amount || 0) }))
+      .filter(item => item.name && Number.isFinite(item.amount) && item.amount > 0)
+
+    if (items.length === 0) {
+      setError('Add at least one budget item with a name and amount greater than zero.')
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await api.patch(`/category-budgets/${budget.id}`, { items })
+      setBudgets(prev => prev.map(existing => existing.id === budget.id ? res.data as CategoryBudget : existing))
+      setEditingBudgetId(null)
+      setEditingBudgetItems([])
+      setMessage(`${budget.category} budget items updated.`)
+    } catch (e) {
+      console.error(`Failed to update category budget ${budget.id}`, e)
+      setError('Could not update category budget items.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   function renderBudget(budget: CategoryBudget) {
+    const items = budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]
+    const expanded = expandedBudgetId === budget.id
+    const editing = editingBudgetId === budget.id
+
     return (
-      <div key={budget.id} className="px-5 py-4 flex flex-col md:flex-row md:items-center gap-3 border-b border-[#EDF4EE] last:border-0">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-bold text-[#1B4D3E] truncate">{budget.category}</h3>
-            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#FDF5F5] text-[#B85050]">
-              Budget
-            </span>
-          </div>
-          <p className="text-sm text-[#7BAE8A] mt-1">
-            Starts {budget.start_month} · {validUntilLabel(budget.valid_until || undefined)}
-          </p>
-        </div>
-        <div className="flex items-center justify-between md:justify-end gap-4">
-          <p className="text-lg font-bold tabular-nums text-[#B85050]">
-            - {symbol(budget.currency)} {fmt(budget.amount, budget.currency)}
-          </p>
+      <div key={budget.id} className="border-b border-[#EDF4EE] last:border-0">
+        <div className="px-5 py-4 flex flex-col md:flex-row md:items-center gap-3">
           <button
-            onClick={() => deleteBudget(budget)}
-            disabled={saving}
-            className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
-            title="Delete category budget"
+            type="button"
+            onClick={() => setExpandedBudgetId(current => current === budget.id ? null : budget.id)}
+            className="flex-1 min-w-0 text-left"
           >
-            <Trash2 size={16} />
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-[#1B4D3E] truncate">{budget.category}</h3>
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#FDF5F5] text-[#B85050]">
+                Budget
+              </span>
+              <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-[#EDF4EE] text-[#1B4D3E]">
+                {items.length} item{items.length !== 1 ? 's' : ''}
+              </span>
+              {expanded ? <ChevronUp size={15} className="text-[#8BAE90]" /> : <ChevronDown size={15} className="text-[#8BAE90]" />}
+            </div>
+            <p className="text-sm text-[#7BAE8A] mt-1">
+              Starts {budget.start_month} · {validUntilLabel(budget.valid_until || undefined)}
+            </p>
           </button>
+          <div className="flex items-center justify-between md:justify-end gap-4">
+            <p className="text-lg font-bold tabular-nums text-[#B85050]">
+              - {symbol(budget.currency)} {fmt(budget.amount, budget.currency)}
+            </p>
+            <button
+              onClick={() => deleteBudget(budget)}
+              disabled={saving}
+              className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
+              title="Delete category budget"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
+
+        {expanded && (
+          <div className="mx-5 mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] overflow-hidden">
+            {editing ? (
+              <div className="p-3">
+                <div className="space-y-2">
+                  {editingBudgetItems.map((item, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_120px_34px] gap-2">
+                      <input
+                        type="text"
+                        value={item.name}
+                        onChange={e => updateEditingBudgetItem(index, { name: e.target.value })}
+                        className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                      />
+                      <input
+                        type="number"
+                        step="0.01"
+                        min={0}
+                        value={item.amount}
+                        onChange={e => updateEditingBudgetItem(index, { amount: e.target.value })}
+                        className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeEditingBudgetItem(index)}
+                        className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition"
+                        title="Remove budget item"
+                      >
+                        <Trash2 size={14} className="mx-auto" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 mt-3">
+                  <button
+                    type="button"
+                    onClick={addEditingBudgetItem}
+                    className="px-3 py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition flex items-center gap-2"
+                  >
+                    <Plus size={14} />
+                    Add Item
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingBudgetId(null)
+                        setEditingBudgetItems([])
+                      }}
+                      className="px-3 py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-white transition"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => saveBudgetItems(budget)}
+                      disabled={saving}
+                      className="px-3 py-2 rounded-lg bg-[#1B4D3E] text-white text-sm font-semibold hover:bg-[#2D6A4F] transition disabled:opacity-50"
+                    >
+                      Save Items
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                {items.map((item, index) => (
+                  <div key={`${budget.id}-${item.name}-${index}`} className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-[#EDF4EE] last:border-0">
+                    <p className="text-sm font-semibold text-[#1B4D3E] truncate">{item.name}</p>
+                    <p className="text-sm font-bold tabular-nums text-[#B85050]">
+                      - {symbol(budget.currency)} {fmt(item.amount, budget.currency)}
+                    </p>
+                  </div>
+                ))}
+                <div className="px-4 py-3 bg-white">
+                  <button
+                    type="button"
+                    onClick={() => startEditingBudget(budget)}
+                    className="w-full py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition"
+                  >
+                    Edit Items
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     )
   }
@@ -604,28 +784,63 @@ export default function RecurringExpenses() {
               {expenseOnlyCategories.map(category => <option key={category} value={category}>{category}</option>)}
             </select>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Amount</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min={0}
-                  value={budgetForm.amount}
-                  onChange={e => setBudgetForm(prev => ({ ...prev, amount: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none mb-4"
-                />
+            <div className="mb-4">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Budget items</label>
+                <p className="text-sm font-bold text-[#1B4D3E]">
+                  Total {symbol(budgetForm.currency)} {fmt(budgetFormTotal, budgetForm.currency)}
+                </p>
               </div>
-              <div>
-                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Currency</label>
-                <select
-                  value={budgetForm.currency}
-                  onChange={e => setBudgetForm(prev => ({ ...prev, currency: e.target.value as Currency }))}
-                  className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none mb-4"
-                >
-                  {CURRENCIES.map(currency => <option key={currency} value={currency}>{currency}</option>)}
-                </select>
+
+              <div className="space-y-2">
+                {budgetForm.items.map((item, index) => (
+                  <div key={index} className="grid grid-cols-[1fr_110px_34px] gap-2">
+                    <input
+                      type="text"
+                      value={item.name}
+                      onChange={e => updateBudgetItem(index, { name: e.target.value })}
+                      placeholder={index === 0 ? 'Academia' : 'Item name'}
+                      className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={item.amount}
+                      onChange={e => updateBudgetItem(index, { amount: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeBudgetItem(index)}
+                      className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition"
+                      title="Remove budget item"
+                    >
+                      <Trash2 size={14} className="mx-auto" />
+                    </button>
+                  </div>
+                ))}
               </div>
+
+              <button
+                type="button"
+                onClick={addBudgetItem}
+                className="mt-2 w-full py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition flex items-center justify-center gap-2"
+              >
+                <Plus size={14} />
+                Add Item
+              </button>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Currency</label>
+              <select
+                value={budgetForm.currency}
+                onChange={e => setBudgetForm(prev => ({ ...prev, currency: e.target.value as Currency }))}
+                className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none mb-4"
+              >
+                {CURRENCIES.map(currency => <option key={currency} value={currency}>{currency}</option>)}
+              </select>
             </div>
 
             <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Start month</label>

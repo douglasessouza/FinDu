@@ -399,7 +399,7 @@ export default function PlannedVsReal() {
 
           {selectedCategory && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F241C]/45 px-4 py-6">
-              <div className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-lg bg-white border border-[#D4E4D5] shadow-xl">
+              <div className="w-full max-w-6xl max-h-[88vh] overflow-hidden rounded-lg bg-white border border-[#D4E4D5] shadow-xl">
                 <div className="flex items-start justify-between gap-4 border-b border-[#D4E4D5] px-5 py-4">
                   <div>
                     <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Category details</p>
@@ -426,7 +426,7 @@ export default function PlannedVsReal() {
                 )}
 
                 <div className="max-h-[58vh] overflow-auto">
-                  <div className="min-w-[860px] grid grid-cols-[280px_1fr] gap-4 p-5">
+                  <div className="min-w-[1040px] grid grid-cols-[280px_1fr] gap-4 p-5">
                     <div className="rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] overflow-hidden">
                       <div className="border-b border-[#D4E4D5] px-4 py-3">
                         <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Planned list</p>
@@ -452,6 +452,14 @@ export default function PlannedVsReal() {
                                 CAD$ {fmt(budget.amount)}
                               </p>
                             </div>
+                            <div className="mt-3 rounded-lg border border-[#EDF4EE] bg-white overflow-hidden">
+                              {(budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]).map((item, index) => (
+                                <div key={`${budget.id}-${item.name}-${index}`} className="flex items-center justify-between gap-3 px-3 py-2 border-b border-[#EDF4EE] last:border-0">
+                                  <p className="text-xs font-semibold text-[#2C3E2D] truncate">{item.name}</p>
+                                  <p className="text-xs font-bold tabular-nums text-[#1B4D3E]">CAD$ {fmt(item.amount)}</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         ))
                       )}
@@ -472,8 +480,9 @@ export default function PlannedVsReal() {
                         </div>
                       ) : (
                         <div>
-                          <div className="grid grid-cols-[90px_1fr_120px_180px] gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
+                          <div className="grid grid-cols-[80px_150px_1fr_120px_180px] gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
                             <span>Date</span>
+                            <span>Source</span>
                             <span>Description</span>
                             <span className="text-right">Amount</span>
                             <span>Move to</span>
@@ -483,13 +492,20 @@ export default function PlannedVsReal() {
                             const dateStr = new Date(year, month - 1, day).toLocaleDateString('en', { month: 'short', day: 'numeric' })
                             const currentCat = editedCats[tx.id] ?? tx.category ?? 'Other'
                             const isEdited = editedCats[tx.id] !== undefined && editedCats[tx.id] !== tx.category
+                            const account = accountById[tx.account_id]
+                            const sourceLabel = account ? account.name : 'Unknown'
+                            const sourceMeta = account?.account_type === 'CREDIT_CARD' ? 'Card' : 'Account'
 
                             return (
                               <div
                                 key={tx.id}
-                                className={`grid grid-cols-[90px_1fr_120px_180px] gap-3 items-center border-b border-[#EDF4EE] px-5 py-3 last:border-0 ${index % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
+                                className={`grid grid-cols-[80px_150px_1fr_120px_180px] gap-3 items-center border-b border-[#EDF4EE] px-5 py-3 last:border-0 ${index % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
                               >
                                 <span className="text-xs text-[#8BAE90]">{dateStr}</span>
+                                <div className="min-w-0">
+                                  <p className="truncate text-xs font-bold text-[#1B4D3E]">{sourceLabel}</p>
+                                  <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-widest text-[#8BAE90]">{sourceMeta}</p>
+                                </div>
                                 <span className="min-w-0 truncate text-sm text-[#2C3E2D]">{tx.description}</span>
                                 <span className="text-right text-sm font-semibold tabular-nums text-[#B85050]">
                                   CAD$ {fmt(Math.abs(tx.amount))}
