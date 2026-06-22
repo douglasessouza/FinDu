@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CreditCard, Target } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CreditCard, Save, Target, X } from 'lucide-react'
 import api from '../services/api'
-import type { Account, CategoryBudget } from '../services/api'
+import type { Account, Category, CategoryBudget, Transaction } from '../services/api'
 
 interface SpendingData {
   [month: string]: { [category: string]: { cards: number; debit: number } }
@@ -42,9 +42,15 @@ export default function PlannedVsReal() {
   const [spending, setSpending] = useState<SpendingData>({})
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [categories, setCategories] = useState<string[]>([])
+  const [transactions, setTransactions] = useState<Transaction[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [showAllCycles, setShowAllCycles] = useState(false)
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+  const [editedCats, setEditedCats] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saveMsg, setSaveMsg] = useState('')
 
   useEffect(() => {
     async function load() {
@@ -69,6 +75,20 @@ export default function PlannedVsReal() {
       }
     }
     load()
+  }, [])
+
+  useEffect(() => {
+    async function loadTransactionContext() {
+      const [accountRes, categoryRes, transactionRes] = await Promise.all([
+        api.get('/accounts'),
+        api.get('/categories'),
+        api.get('/transactions'),
+      ])
+      setAccounts(accountRes.data as Account[])
+      setCategories((categoryRes.data as Category[]).map(category => category.name).sort())
+      setTransactions(transactionRes.data as Transaction[])
+    }
+    loadTransactionContext()
   }, [])
 
   const rows = useMemo<Row[]>(() => {
@@ -131,12 +151,86 @@ export default function PlannedVsReal() {
       .sort((a, b) => a.date.getTime() - b.date.getTime())[0]
     : undefined
 
+  const accountById = useMemo(() => {
+    return accounts.reduce<Record<number, Account>>((lookup, account) => {
+      lookup[account.id] = account
+      return lookup
+    }, {})
+  }, [accounts])
+
+  const categoryTransactions = useMemo(() => {
+    if (!selectedCategory || !selectedMonth) return []
+
+    return transactions
+      .filter(tx => tx.amount < 0)
+      .filter(tx => (tx.category || 'Other') === selectedCategory)
+      .filter(tx => {
+        const account = accountById[tx.account_id]
+        if (account?.account_type === 'CREDIT_CARD') {
+          return (tx.payment_due_date || tx.date)?.slice(0, 7) === selectedMonth
+        }
+        return tx.date?.slice(0, 7) === selectedMonth
+      })
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+  }, [accountById, selectedCategory, selectedMonth, transactions])
+
+  const selectedRow = rows.find(row => row.category === selectedCategory)
+  const plannedBudgetItems = useMemo(() => {
+    if (!selectedCategory || !selectedMonth) return []
+
+    return budgets
+      .filter(budget => budget.currency === 'CAD')
+      .filter(budget => budget.is_active)
+      .filter(budget => budget.category === selectedCategory)
+      .filter(budget => budget.start_month <= selectedMonth)
+      .filter(budget => !budget.valid_until || new Date(budget.valid_until) >= new Date(`${selectedMonth}-01T00:00:00`))
+      .sort((a, b) => a.start_month.localeCompare(b.start_month))
+  }, [budgets, selectedCategory, selectedMonth])
+  const plannedTotal = plannedBudgetItems.reduce((sum, budget) => sum + budget.amount, 0)
+  const modalTotal = categoryTransactions.reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
+  const pendingChanges = Object.keys(editedCats).length
+
   function prevMonth() {
     setSelectedMonth(month => addMonths(month, -1))
   }
 
   function nextMonth() {
     setSelectedMonth(month => addMonths(month, 1))
+  }
+
+  async function refreshSpendingAndTransactions() {
+    const [spendingRes, transactionRes] = await Promise.all([
+      api.get('/spending-analysis'),
+      api.get('/transactions'),
+    ])
+    setSpending(spendingRes.data as SpendingData)
+    setTransactions(transactionRes.data as Transaction[])
+  }
+
+  function closeModal() {
+    setSelectedCategory(null)
+    setEditedCats({})
+    setSaveMsg('')
+  }
+
+  async function saveCategoryChanges() {
+    const changes = Object.entries(editedCats)
+    if (changes.length === 0) return
+
+    setSaving(true)
+    let updated = 0
+    try {
+      for (const [id, category] of changes) {
+        await api.patch(`/transactions/${id}`, { category })
+        updated++
+      }
+      await refreshSpendingAndTransactions()
+      setEditedCats({})
+      setSaveMsg(`${updated} transaction${updated !== 1 ? 's' : ''} updated.`)
+      setTimeout(() => setSaveMsg(''), 3000)
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -269,7 +363,16 @@ export default function PlannedVsReal() {
                 const percentLabel = isUnplanned ? 'No plan' : `${Math.round(ratio * 100)}%`
 
                 return (
-                  <div key={row.category} className={`rounded-lg border px-4 py-3 ${cardClass}`}>
+                  <button
+                    key={row.category}
+                    type="button"
+                    onClick={() => {
+                      setSelectedCategory(row.category)
+                      setEditedCats({})
+                      setSaveMsg('')
+                    }}
+                    className={`rounded-lg border px-4 py-3 text-left transition hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-[#1B4D3E]/30 ${cardClass}`}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <p className="font-bold text-[#1B4D3E] truncate">{row.category}</p>
@@ -288,9 +391,155 @@ export default function PlannedVsReal() {
                         <p className={`font-bold ${isUnplanned ? 'text-[#6F7D73]' : over ? 'text-[#B85050]' : 'text-[#1B6B3A]'}`}>CAD$ {fmt(row.real)}</p>
                       </div>
                     </div>
-                  </div>
+                  </button>
                 )
               })}
+            </div>
+          )}
+
+          {selectedCategory && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F241C]/45 px-4 py-6">
+              <div className="w-full max-w-5xl max-h-[88vh] overflow-hidden rounded-lg bg-white border border-[#D4E4D5] shadow-xl">
+                <div className="flex items-start justify-between gap-4 border-b border-[#D4E4D5] px-5 py-4">
+                  <div>
+                    <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Category details</p>
+                    <h2 className="text-xl font-bold text-[#1B4D3E] mt-1">{selectedCategory}</h2>
+                    <p className="text-sm text-[#6F7D73] mt-1">
+                      {monthLabel(selectedMonth)} · planned CAD$ {fmt(plannedTotal)} · real CAD$ {fmt(modalTotal)}
+                      {selectedRow && ` · variance CAD$ ${fmt(Math.abs(selectedRow.variance))}`}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={closeModal}
+                    className="p-2 rounded-lg text-[#1B4D3E] hover:bg-[#F4FAF5] transition"
+                    title="Close"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {saveMsg && (
+                  <div className="mx-5 mt-4 rounded-lg border border-[#D4E4D5] bg-[#F4FAF5] px-4 py-2 text-sm font-semibold text-[#1B6B3A]">
+                    {saveMsg}
+                  </div>
+                )}
+
+                <div className="max-h-[58vh] overflow-auto">
+                  <div className="min-w-[860px] grid grid-cols-[280px_1fr] gap-4 p-5">
+                    <div className="rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] overflow-hidden">
+                      <div className="border-b border-[#D4E4D5] px-4 py-3">
+                        <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Planned list</p>
+                        <p className="mt-1 text-lg font-bold text-[#1B4D3E]">CAD$ {fmt(plannedTotal)}</p>
+                      </div>
+
+                      {plannedBudgetItems.length === 0 ? (
+                        <div className="px-4 py-8 text-sm text-[#8BAE90]">
+                          No planned budget for this category in {monthLabel(selectedMonth)}.
+                        </div>
+                      ) : (
+                        plannedBudgetItems.map(budget => (
+                          <div key={budget.id} className="border-b border-[#EDF4EE] px-4 py-3 last:border-0">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-bold text-[#1B4D3E]">{budget.category}</p>
+                                <p className="mt-1 text-xs text-[#6F7D73]">
+                                  From {monthLabel(budget.start_month)}
+                                  {budget.valid_until ? ` to ${monthLabel(budget.valid_until)}` : ' onward'}
+                                </p>
+                              </div>
+                              <p className="text-right text-sm font-bold tabular-nums text-[#1B4D3E]">
+                                CAD$ {fmt(budget.amount)}
+                              </p>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+
+                    <div className="rounded-lg border border-[#D4E4D5] bg-white overflow-hidden">
+                      <div className="flex items-center justify-between gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Real transactions</p>
+                          <p className="mt-1 text-sm font-semibold text-[#1B4D3E]">{categoryTransactions.length} transactions</p>
+                        </div>
+                        <p className="text-right text-lg font-bold text-[#B85050]">CAD$ {fmt(modalTotal)}</p>
+                      </div>
+
+                      {categoryTransactions.length === 0 ? (
+                        <div className="px-5 py-12 text-center text-[#8BAE90]">
+                          No transactions found in this category for {monthLabel(selectedMonth)}.
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="grid grid-cols-[90px_1fr_120px_180px] gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
+                            <span>Date</span>
+                            <span>Description</span>
+                            <span className="text-right">Amount</span>
+                            <span>Move to</span>
+                          </div>
+                          {categoryTransactions.map((tx, index) => {
+                            const [year, month, day] = tx.date.slice(0, 10).split('-').map(Number)
+                            const dateStr = new Date(year, month - 1, day).toLocaleDateString('en', { month: 'short', day: 'numeric' })
+                            const currentCat = editedCats[tx.id] ?? tx.category ?? 'Other'
+                            const isEdited = editedCats[tx.id] !== undefined && editedCats[tx.id] !== tx.category
+
+                            return (
+                              <div
+                                key={tx.id}
+                                className={`grid grid-cols-[90px_1fr_120px_180px] gap-3 items-center border-b border-[#EDF4EE] px-5 py-3 last:border-0 ${index % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
+                              >
+                                <span className="text-xs text-[#8BAE90]">{dateStr}</span>
+                                <span className="min-w-0 truncate text-sm text-[#2C3E2D]">{tx.description}</span>
+                                <span className="text-right text-sm font-semibold tabular-nums text-[#B85050]">
+                                  CAD$ {fmt(Math.abs(tx.amount))}
+                                </span>
+                                <select
+                                  value={currentCat}
+                                  onChange={event => {
+                                    const nextCategory = event.target.value
+                                    setEditedCats(prev => {
+                                      if (nextCategory === tx.category) {
+                                        const { [tx.id]: _removed, ...rest } = prev
+                                        return rest
+                                      }
+                                      return { ...prev, [tx.id]: nextCategory }
+                                    })
+                                  }}
+                                  className={`w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none ${
+                                    isEdited
+                                      ? 'border-[#C9A84C] bg-[#FDF6E3] font-semibold text-[#7A5C0A]'
+                                      : 'border-[#D4E4D5] bg-white text-[#2C3E2D]'
+                                  }`}
+                                >
+                                  {categories.map(category => (
+                                    <option key={category} value={category}>{category}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 border-t border-[#D4E4D5] bg-[#F4FAF5] px-5 py-4">
+                  <span className="text-sm font-semibold text-[#1B4D3E]">
+                    {pendingChanges > 0 ? `${pendingChanges} unsaved change${pendingChanges !== 1 ? 's' : ''}` : 'No unsaved changes'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={saveCategoryChanges}
+                    disabled={pendingChanges === 0 || saving}
+                    className="flex items-center gap-2 rounded-lg bg-[#1B4D3E] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#2D6A4F] disabled:opacity-50"
+                  >
+                    <Save size={14} />
+                    {saving ? 'Saving...' : 'Save changes'}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </>
