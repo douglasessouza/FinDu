@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, ChevronDown, ChevronUp, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { CalendarDays, ChevronDown, ChevronUp, GitBranch, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import api from '../services/api'
 import type { Category, CategoryBudget, RecurringExpense } from '../services/api'
 
@@ -97,6 +97,8 @@ export default function RecurringExpenses() {
   const [expandedBudgetId, setExpandedBudgetId] = useState<number | null>(null)
   const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null)
   const [editingBudgetItems, setEditingBudgetItems] = useState<{ name: string; amount: string }[]>([])
+  const [adjustingBudgetId, setAdjustingBudgetId] = useState<number | null>(null)
+  const [adjustmentStartMonth, setAdjustmentStartMonth] = useState(new Date().toISOString().slice(0, 7))
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -354,6 +356,15 @@ export default function RecurringExpenses() {
     const items = budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]
     setEditingBudgetId(budget.id)
     setEditingBudgetItems(items.map(item => ({ name: item.name, amount: String(item.amount) })))
+    setAdjustingBudgetId(null)
+  }
+
+  function startAdjustingBudget(budget: CategoryBudget) {
+    const items = budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]
+    setAdjustingBudgetId(budget.id)
+    setEditingBudgetId(budget.id)
+    setEditingBudgetItems(items.map(item => ({ name: item.name, amount: String(item.amount) })))
+    setAdjustmentStartMonth(new Date().toISOString().slice(0, 7))
   }
 
   function updateEditingBudgetItem(index: number, update: Partial<{ name: string; amount: string }>) {
@@ -395,10 +406,52 @@ export default function RecurringExpenses() {
     }
   }
 
+  async function saveBudgetAdjustment(budget: CategoryBudget) {
+    const items = editingBudgetItems
+      .map(item => ({ name: item.name.trim(), amount: Number(item.amount || 0) }))
+      .filter(item => item.name && Number.isFinite(item.amount) && item.amount > 0)
+
+    if (!adjustmentStartMonth) {
+      setError('New start month is required.')
+      return
+    }
+    if (adjustmentStartMonth <= budget.start_month) {
+      setError('New start month must be after the current budget start month.')
+      return
+    }
+    if (items.length === 0) {
+      setError('Add at least one budget item with a name and amount greater than zero.')
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await api.post(`/category-budgets/${budget.id}/adjust`, {
+        start_month: adjustmentStartMonth,
+        items,
+      })
+      const previous = res.data.previous as CategoryBudget
+      const current = res.data.current as CategoryBudget
+      setBudgets(prev => [...prev.filter(existing => existing.id !== budget.id), previous, current].sort((a, b) => a.category.localeCompare(b.category) || a.start_month.localeCompare(b.start_month)))
+      setEditingBudgetId(null)
+      setAdjustingBudgetId(null)
+      setEditingBudgetItems([])
+      setMessage(`${budget.category} budget adjusted from ${adjustmentStartMonth}. Previous months were preserved.`)
+    } catch (e) {
+      console.error(`Failed to adjust category budget ${budget.id}`, e)
+      setError('Could not adjust category budget.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   function renderBudget(budget: CategoryBudget) {
     const items = budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]
     const expanded = expandedBudgetId === budget.id
     const editing = editingBudgetId === budget.id
+    const adjusting = adjustingBudgetId === budget.id
 
     return (
       <div key={budget.id} className="border-b border-[#EDF4EE] last:border-0">
@@ -441,6 +494,20 @@ export default function RecurringExpenses() {
           <div className="mx-5 mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] overflow-hidden">
             {editing ? (
               <div className="p-3">
+                {adjusting && (
+                  <div className="mb-3 rounded-lg border border-[#D4E4D5] bg-white p-3">
+                    <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">New value starts in</label>
+                    <input
+                      type="month"
+                      value={adjustmentStartMonth}
+                      onChange={e => setAdjustmentStartMonth(e.target.value)}
+                      className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                    />
+                    <p className="mt-2 text-xs text-[#7BAE8A]">
+                      FinDu will end the current budget the month before this date and create a new version.
+                    </p>
+                  </div>
+                )}
                 <div className="space-y-2">
                   {editingBudgetItems.map((item, index) => (
                     <div key={index} className="grid grid-cols-[1fr_120px_34px] gap-2">
@@ -484,6 +551,7 @@ export default function RecurringExpenses() {
                       type="button"
                       onClick={() => {
                         setEditingBudgetId(null)
+                        setAdjustingBudgetId(null)
                         setEditingBudgetItems([])
                       }}
                       className="px-3 py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-white transition"
@@ -492,11 +560,11 @@ export default function RecurringExpenses() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => saveBudgetItems(budget)}
+                      onClick={() => adjusting ? saveBudgetAdjustment(budget) : saveBudgetItems(budget)}
                       disabled={saving}
                       className="px-3 py-2 rounded-lg bg-[#1B4D3E] text-white text-sm font-semibold hover:bg-[#2D6A4F] transition disabled:opacity-50"
                     >
-                      Save Items
+                      {adjusting ? 'Save New Version' : 'Save Items'}
                     </button>
                   </div>
                 </div>
@@ -512,13 +580,23 @@ export default function RecurringExpenses() {
                   </div>
                 ))}
                 <div className="px-4 py-3 bg-white">
-                  <button
-                    type="button"
-                    onClick={() => startEditingBudget(budget)}
-                    className="w-full py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition"
-                  >
-                    Edit Items
-                  </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startEditingBudget(budget)}
+                      className="py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition"
+                    >
+                      Edit Current Version
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => startAdjustingBudget(budget)}
+                      className="py-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition flex items-center justify-center gap-2"
+                    >
+                      <GitBranch size={14} />
+                      Adjust From Month
+                    </button>
+                  </div>
                 </div>
               </>
             )}

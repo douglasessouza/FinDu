@@ -56,9 +56,11 @@ export default function PlannedVsReal() {
     async function load() {
       setLoading(true)
       try {
+        const today = new Date()
+        const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
         const [spendingRes, budgetRes, accountRes] = await Promise.all([
           api.get('/spending-analysis'),
-          api.get('/category-budgets'),
+          api.get('/category-budgets', { params: { month: currentMonth } }),
           api.get('/accounts'),
         ])
         const nextSpending = spendingRes.data as SpendingData
@@ -67,8 +69,6 @@ export default function PlannedVsReal() {
         setAccounts(accountRes.data as Account[])
 
         const months = Object.keys(nextSpending).sort()
-        const today = new Date()
-        const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
         setSelectedMonth(months.includes(currentMonth) ? currentMonth : months[months.length - 1] || currentMonth)
       } finally {
         setLoading(false)
@@ -76,6 +76,17 @@ export default function PlannedVsReal() {
     }
     load()
   }, [])
+
+  useEffect(() => {
+    if (!selectedMonth) return
+
+    async function loadBudgetsForMonth() {
+      const budgetRes = await api.get('/category-budgets', { params: { month: selectedMonth } })
+      setBudgets(budgetRes.data as CategoryBudget[])
+    }
+
+    loadBudgetsForMonth()
+  }, [selectedMonth])
 
   useEffect(() => {
     async function loadTransactionContext() {
@@ -533,8 +544,9 @@ export default function PlannedVsReal() {
                                     const nextCategory = event.target.value
                                     setEditedCats(prev => {
                                       if (nextCategory === tx.category) {
-                                        const { [tx.id]: _removed, ...rest } = prev
-                                        return rest
+                                        const next = { ...prev }
+                                        delete next[tx.id]
+                                        return next
                                       }
                                       return { ...prev, [tx.id]: nextCategory }
                                     })

@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from datetime import datetime
+from datetime import timedelta
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
@@ -100,6 +101,21 @@ class CategoryBudgetCreate(BaseModel):
     start_month: str
     valid_until: Optional[datetime] = None
     items: list[CategoryBudgetItemPayload] = Field(default_factory=list)
+
+class CategoryBudgetAdjustment(BaseModel):
+    start_month: str
+    valid_until: Optional[datetime] = None
+    items: list[CategoryBudgetItemPayload] = Field(default_factory=list)
+
+def month_start(month: str) -> datetime:
+    try:
+        year, month_number = [int(part) for part in month.split("-")]
+        return datetime(year, month_number, 1)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Month must use YYYY-MM format")
+
+def previous_month_end(month: str) -> datetime:
+    return month_start(month) - timedelta(days=1)
 
 @app.post("/categories")
 def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
@@ -227,6 +243,50 @@ def update_category_budget(budget_id: int, updates: dict, db: Session = Depends(
     db.commit()
     db.refresh(budget)
     return serialize_category_budget(budget)
+
+@app.post("/category-budgets/{budget_id}/adjust")
+def adjust_category_budget(budget_id: int, adjustment: CategoryBudgetAdjustment, db: Session = Depends(get_db)):
+    """Creates a new budget version from a future month while preserving previous months."""
+    budget = db.query(CategoryBudget).filter(CategoryBudget.id == budget_id).first()
+    if not budget:
+        raise HTTPException(status_code=404, detail="Category budget not found")
+
+    new_start = month_start(adjustment.start_month)
+    old_start = month_start(budget.start_month)
+    if new_start <= old_start:
+        raise HTTPException(status_code=400, detail="New start month must be after the current budget start month")
+    if budget.valid_until and budget.valid_until < new_start:
+        raise HTTPException(status_code=400, detail="Budget already ends before the selected start month")
+
+    clean_items = [
+        item for item in adjustment.items
+        if item.name.strip() and item.amount > 0
+    ]
+    if not clean_items:
+        raise HTTPException(status_code=400, detail="Add at least one budget item with an amount greater than zero")
+
+    original_valid_until = budget.valid_until
+    budget.valid_until = previous_month_end(adjustment.start_month)
+    next_budget = CategoryBudget(
+        category=budget.category,
+        amount=round(sum(item.amount for item in clean_items), 2),
+        currency=budget.currency,
+        start_month=adjustment.start_month,
+        valid_until=adjustment.valid_until if adjustment.valid_until is not None else original_valid_until,
+        is_active=budget.is_active,
+    )
+    next_budget.items = [
+        CategoryBudgetItem(name=item.name.strip(), amount=item.amount)
+        for item in clean_items
+    ]
+    db.add(next_budget)
+    db.commit()
+    db.refresh(budget)
+    db.refresh(next_budget)
+    return {
+        "previous": serialize_category_budget(budget),
+        "current": serialize_category_budget(next_budget),
+    }
 
 @app.delete("/category-budgets/{budget_id}")
 def delete_category_budget(budget_id: int, db: Session = Depends(get_db)):

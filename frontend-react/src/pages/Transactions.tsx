@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { ArrowDownUp, Save } from 'lucide-react'
+import { ArrowDownUp, Save, Trash2 } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category } from '../services/api'
 
@@ -40,6 +40,7 @@ export default function Transactions() {
   const [editedStatements, setEditedStatements] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
   const [saveMsg, setSaveMsg] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
@@ -137,6 +138,35 @@ export default function Transactions() {
       data = data.filter(t => t.date?.slice(0, 7) === monthFilter)
     }
     setTxs(data)
+  }
+
+  async function deleteTransaction(tx: Transaction) {
+    const confirmed = window.confirm(`Delete this transaction?\n\n${tx.description}\n$ ${fmt(Math.abs(tx.amount))}`)
+    if (!confirmed) return
+
+    setDeletingId(tx.id)
+    setSaveMsg('')
+    try {
+      await api.delete(`/transactions/${tx.id}`)
+      setTxs(prev => prev.filter(existing => existing.id !== tx.id))
+      setEditedCats(prev => {
+        const next = { ...prev }
+        delete next[tx.id]
+        return next
+      })
+      setEditedStatements(prev => {
+        const next = { ...prev }
+        delete next[tx.id]
+        return next
+      })
+      setSaveMsg('✅ Transaction deleted.')
+      setTimeout(() => setSaveMsg(''), 3000)
+    } catch (error) {
+      console.error(`Failed to delete transaction ${tx.id}`, error)
+      setSaveMsg('Could not delete transaction.')
+    } finally {
+      setDeletingId(null)
+    }
   }
 
   function changeSort(key: SortKey) {
@@ -324,13 +354,14 @@ export default function Transactions() {
         <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden">
           {/* Header */}
           <div className="grid text-xs font-semibold uppercase tracking-widest px-4 py-3 border-b-2 border-[#D4E4D5] bg-[#F9FCF9]"
-            style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px' : '90px 1fr 130px 160px' }}
+            style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px 48px' : '90px 1fr 130px 160px 48px' }}
           >
             {renderSortButton('Date', 'date')}
             {renderSortButton('Description', 'description')}
             {renderSortButton('Amount', 'amount', 'right')}
             <span className="pl-2">{renderSortButton('Category', 'category')}</span>
             {isCard && <span className="pl-2">{renderSortButton('Statement', 'statement')}</span>}
+            <span className="text-right">Delete</span>
           </div>
 
           {/* Rows */}
@@ -346,7 +377,7 @@ export default function Transactions() {
               <div
                 key={t.id}
                 className={`grid px-4 py-2.5 border-b border-[#EDF4EE] last:border-0 items-center ${idx % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
-                style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px' : '90px 1fr 130px 160px' }}
+                style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px 48px' : '90px 1fr 130px 160px 48px' }}
               >
                 <span className="text-[#8BAE90] text-xs">{dateStr}</span>
 
@@ -384,6 +415,18 @@ export default function Transactions() {
                     />
                   </div>
                 )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => deleteTransaction(t)}
+                    disabled={deletingId === t.id || saving}
+                    className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
+                    title="Delete transaction"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
             )
           })}
