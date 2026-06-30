@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Upload, Trash2, Bot, CheckCircle, RefreshCw } from 'lucide-react'
+import { Upload, Trash2, Bot, CheckCircle, RefreshCw, Split, Plus, X } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category } from '../services/api'
 
@@ -24,6 +24,12 @@ interface ParsedTransaction {
   category?: string
   is_recurring?: boolean
   recurring_match?: string | null
+}
+
+interface SplitRow {
+  description: string
+  category: string
+  amount: string
 }
 
 type Step = 'upload' | 'preview' | 'review' | 'balance' | 'done'
@@ -54,6 +60,9 @@ export default function ImportStatement() {
   const [lastDate, setLastDate] = useState<string | null>(null)
   const [parsedTxs, setParsedTxs] = useState<ParsedTransaction[]>([])
   const [reviewedTxs, setReviewedTxs] = useState<ParsedTransaction[]>([])
+  const [splitIndex, setSplitIndex] = useState<number | null>(null)
+  const [splitRows, setSplitRows] = useState<SplitRow[]>([])
+  const [splitError, setSplitError] = useState('')
 
   const [loading, setLoading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
@@ -169,6 +178,92 @@ export default function ImportStatement() {
     setImporting(false)
   }
 
+  function startSplit(index: number) {
+    const tx = reviewedTxs[index]
+    setSplitIndex(index)
+    setSplitError('')
+    setSplitRows([
+      {
+        description: tx.description,
+        category: tx.category || 'Other',
+        amount: fmt(Math.abs(tx.amount)).replace(/,/g, ''),
+      },
+      {
+        description: tx.description,
+        category: tx.category || 'Other',
+        amount: '0.00',
+      },
+    ])
+  }
+
+  function updateSplitRow(index: number, update: Partial<SplitRow>) {
+    setSplitRows(prev => prev.map((row, currentIndex) => currentIndex === index ? { ...row, ...update } : row))
+  }
+
+  function addSplitRow() {
+    const source = splitIndex !== null ? reviewedTxs[splitIndex] : null
+    setSplitRows(prev => [
+      ...prev,
+      {
+        description: source?.description || '',
+        category: source?.category || 'Other',
+        amount: '0.00',
+      },
+    ])
+  }
+
+  function removeSplitRow(index: number) {
+    setSplitRows(prev => prev.length <= 2 ? prev : prev.filter((_, currentIndex) => currentIndex !== index))
+  }
+
+  function cancelSplit() {
+    setSplitIndex(null)
+    setSplitRows([])
+    setSplitError('')
+  }
+
+  function saveSplit() {
+    if (splitIndex === null) return
+
+    const original = reviewedTxs[splitIndex]
+    const sign = original.amount < 0 ? -1 : 1
+    const originalCents = Math.round(Math.abs(original.amount) * 100)
+    const rows = splitRows
+      .map(row => ({
+        description: row.description.trim(),
+        category: row.category || 'Other',
+        amountCents: Math.round(Number(row.amount || 0) * 100),
+      }))
+      .filter(row => row.description && row.amountCents > 0)
+
+    if (rows.length < 2) {
+      setSplitError('Add at least two split rows with descriptions and amounts.')
+      return
+    }
+
+    const splitCents = rows.reduce((sum, row) => sum + row.amountCents, 0)
+    if (splitCents !== originalCents) {
+      setSplitError(`Split total must equal $ ${fmt(Math.abs(original.amount))}. Remaining: $ ${fmt(Math.abs(originalCents - splitCents) / 100)}.`)
+      return
+    }
+
+    const splitTransactions: ParsedTransaction[] = rows.map(row => ({
+      ...original,
+      description: row.description,
+      category: row.category,
+      amount: sign * (row.amountCents / 100),
+      is_recurring: false,
+      recurring_match: null,
+    }))
+
+    setReviewedTxs(prev => [
+      ...prev.slice(0, splitIndex),
+      ...splitTransactions,
+      ...prev.slice(splitIndex + 1),
+    ])
+    cancelSplit()
+  }
+
   async function handleConfirmBalance() {
     if (confirmedBalance === null || !selectedAccId) return
     await api.patch(`/accounts/${selectedAccId}`, { balance: confirmedBalance })
@@ -194,6 +289,12 @@ export default function ImportStatement() {
 
   const totalExpenses = reviewedTxs.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
   const totalIncome = reviewedTxs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)
+  const splitSource = splitIndex !== null ? reviewedTxs[splitIndex] : null
+  const splitTotal = splitRows.reduce((sum, row) => {
+    const amount = Number(row.amount || 0)
+    return sum + (Number.isFinite(amount) ? amount : 0)
+  }, 0)
+  const splitRemaining = splitSource ? Math.abs(splitSource.amount) - splitTotal : 0
 
   return (
     <div className="w-full max-w-4xl mx-auto px-6">
@@ -356,7 +457,7 @@ export default function ImportStatement() {
           <div className="bg-white rounded-xl border border-[#D4E4D5] p-4 mb-4 flex flex-wrap gap-4 items-center justify-between">
             <div>
               <p className="text-sm font-bold text-[#1B4D3E]">📋 Review & confirm {reviewedTxs.length} transactions</p>
-              <p className="text-xs text-[#8BAE90]">Edit categories before importing.</p>
+              <p className="text-xs text-[#8BAE90]">Edit categories or split mixed purchases before importing.</p>
             </div>
             <div className="flex gap-4">
               {isCard ? (
@@ -379,18 +480,19 @@ export default function ImportStatement() {
           {/* Review table */}
           <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden mb-4">
             <div className="grid text-xs font-semibold text-[#8BAE90] uppercase tracking-widest px-4 py-2 border-b border-[#D4E4D5] bg-[#F9FCF9]"
-              style={{ gridTemplateColumns: '90px 1fr 110px 150px 90px' }}>
+              style={{ gridTemplateColumns: '90px 1fr 110px 150px 90px 72px' }}>
               <span>Date</span>
               <span>Description</span>
               <span className="text-right">Amount</span>
               <span className="pl-2">Category</span>
               <span className="pl-2">Recurring</span>
+              <span className="text-right">Split</span>
             </div>
             <div className="max-h-96 overflow-y-auto">
               {reviewedTxs.map((t, i) => (
                 <div key={i}
                   className={`grid px-4 py-2 border-b border-[#EDF4EE] last:border-0 items-center ${i % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
-                  style={{ gridTemplateColumns: '90px 1fr 110px 150px 90px' }}>
+                  style={{ gridTemplateColumns: '90px 1fr 110px 150px 90px 72px' }}>
                   <span className="text-[#8BAE90] text-xs">{t.date}</span>
                   <input
                     value={t.description}
@@ -413,6 +515,16 @@ export default function ImportStatement() {
                     {t.is_recurring && (
                       <span className="text-xs text-[#4E9A7A] font-semibold">✓ {t.recurring_match || 'Yes'}</span>
                     )}
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => startSplit(i)}
+                      className="p-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] hover:bg-[#F4FAF5] transition"
+                      title="Split transaction"
+                    >
+                      <Split size={14} />
+                    </button>
                   </div>
                 </div>
               ))}
@@ -484,6 +596,120 @@ export default function ImportStatement() {
           >
             Import Another Statement
           </button>
+        </div>
+      )}
+
+      {splitSource && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1F18]/45 px-4">
+          <div className="w-full max-w-2xl rounded-xl border border-[#D4E4D5] bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-4 border-b border-[#EDF4EE] px-5 py-4">
+              <div>
+                <p className="text-lg font-bold text-[#1B4D3E]">Split Transaction</p>
+                <p className="mt-1 text-sm text-[#7BAE8A]">
+                  {splitSource.description} · $ {fmt(Math.abs(splitSource.amount))}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={cancelSplit}
+                className="rounded-lg p-2 text-[#8BAE90] hover:bg-[#F4FAF5] hover:text-[#1B4D3E] transition"
+                title="Close split dialog"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-5">
+              <div className="mb-3 grid grid-cols-[1fr_150px_110px_34px] gap-2 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
+                <span>Description</span>
+                <span>Category</span>
+                <span className="text-right">Amount</span>
+                <span />
+              </div>
+
+              <div className="space-y-2">
+                {splitRows.map((row, index) => (
+                  <div key={index} className="grid grid-cols-[1fr_150px_110px_34px] gap-2">
+                    <input
+                      type="text"
+                      value={row.description}
+                      onChange={e => updateSplitRow(index, { description: e.target.value })}
+                      className="w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm font-semibold text-[#1B4D3E] focus:outline-none"
+                    />
+                    <select
+                      value={row.category}
+                      onChange={e => updateSplitRow(index, { category: e.target.value })}
+                      className="w-full rounded-lg border border-[#D4E4D5] bg-white px-2 py-2 text-xs font-semibold text-[#1B4D3E] focus:outline-none"
+                    >
+                      {categories.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      value={row.amount}
+                      onChange={e => updateSplitRow(index, { amount: e.target.value })}
+                      className="w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-right text-sm font-semibold tabular-nums text-[#1B4D3E] focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeSplitRow(index)}
+                      disabled={splitRows.length <= 2}
+                      className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-40"
+                      title="Remove split row"
+                    >
+                      <Trash2 size={14} className="mx-auto" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={addSplitRow}
+                className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#D4E4D5] py-2 text-sm font-semibold text-[#1B4D3E] hover:bg-[#F4FAF5] transition"
+              >
+                <Plus size={14} />
+                Add Split Row
+              </button>
+
+              <div className="mt-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] px-4 py-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-semibold text-[#7BAE8A]">Split total</span>
+                  <span className="font-bold tabular-nums text-[#1B4D3E]">$ {fmt(splitTotal)}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-sm">
+                  <span className="font-semibold text-[#7BAE8A]">Remaining</span>
+                  <span className={`font-bold tabular-nums ${Math.round(splitRemaining * 100) === 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                    $ {fmt(Math.abs(splitRemaining))}
+                  </span>
+                </div>
+              </div>
+
+              {splitError && (
+                <div className="mt-3 rounded-lg border border-[#B85050] bg-[#FDF5F5] px-4 py-2 text-sm text-[#B85050]">
+                  {splitError}
+                </div>
+              )}
+
+              <div className="mt-5 flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={cancelSplit}
+                  className="rounded-xl border border-[#D4E4D5] px-5 py-3 text-sm font-semibold text-[#8BAE90] hover:text-[#1B4D3E] transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveSplit}
+                  className="rounded-xl bg-[#1B4D3E] px-5 py-3 text-sm font-semibold text-white hover:bg-[#2D6A4F] transition"
+                >
+                  Save Split
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
