@@ -10,6 +10,7 @@ import hmac
 import hashlib
 import json as auth_json
 import time
+import requests as http_requests
 from dotenv import load_dotenv
 from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from datetime import datetime
@@ -21,7 +22,15 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 APP_PASSWORD = os.getenv("FINDU_APP_PASSWORD")
-SECRET_KEY = os.getenv("SECRET_KEY") or APP_PASSWORD or "dev-secret"
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+ALLOWED_GOOGLE_EMAILS = {
+    email.strip().lower()
+    for email in os.getenv("ALLOWED_GOOGLE_EMAILS", "").split(",")
+    if email.strip()
+}
+GOOGLE_AUTH_ENABLED = bool(GOOGLE_CLIENT_ID and ALLOWED_GOOGLE_EMAILS)
+AUTH_ENABLED = bool(APP_PASSWORD or GOOGLE_AUTH_ENABLED)
+SECRET_KEY = os.getenv("SECRET_KEY") or APP_PASSWORD or GOOGLE_CLIENT_ID or "dev-secret"
 AUTH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
 
 engine = create_engine(
@@ -46,11 +55,15 @@ AUTH_PUBLIC_PATHS = {
     "/",
     "/health",
     "/auth/login",
+    "/auth/google",
     "/auth/status",
 }
 
 class LoginRequest(BaseModel):
     password: str
+
+class GoogleLoginRequest(BaseModel):
+    credential: str
 
 def base64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
@@ -59,9 +72,9 @@ def base64url_decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
     return base64.urlsafe_b64decode(value + padding)
 
-def create_auth_token() -> str:
+def create_auth_token(subject: str = "douglas") -> str:
     payload = {
-        "sub": "douglas",
+        "sub": subject,
         "iat": int(time.time()),
         "exp": int(time.time()) + AUTH_TOKEN_TTL_SECONDS,
     }
@@ -85,7 +98,7 @@ def verify_auth_token(token: str) -> bool:
 @app.middleware("http")
 async def require_auth(request: Request, call_next):
     path = request.url.path
-    if not APP_PASSWORD:
+    if not AUTH_ENABLED:
         return await call_next(request)
     if request.method == "OPTIONS" or path in AUTH_PUBLIC_PATHS or path.startswith("/static"):
         return await call_next(request)
@@ -101,7 +114,14 @@ def root():
 
 @app.get("/auth/status")
 def auth_status():
-    return {"requires_auth": bool(APP_PASSWORD)}
+    return {
+        "requires_auth": AUTH_ENABLED,
+        "providers": {
+            "password": bool(APP_PASSWORD),
+            "google": GOOGLE_AUTH_ENABLED,
+        },
+        "google_client_id": GOOGLE_CLIENT_ID if GOOGLE_AUTH_ENABLED else None,
+    }
 
 @app.post("/auth/login")
 def auth_login(login: LoginRequest):
@@ -109,7 +129,36 @@ def auth_login(login: LoginRequest):
         return {"token": create_auth_token()}
     if not hmac.compare_digest(login.password, APP_PASSWORD):
         raise HTTPException(status_code=401, detail="Invalid password")
-    return {"token": create_auth_token()}
+    return {"token": create_auth_token("password")}
+
+@app.post("/auth/google")
+def auth_google(login: GoogleLoginRequest):
+    if not GOOGLE_AUTH_ENABLED:
+        raise HTTPException(status_code=400, detail="Google sign-in is not configured")
+    try:
+        response = http_requests.get(
+            "https://oauth2.googleapis.com/tokeninfo",
+            params={"id_token": login.credential},
+            timeout=10,
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid Google credential")
+        token_info = response.json()
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Could not verify Google credential")
+
+    email = str(token_info.get("email", "")).lower()
+    email_verified = token_info.get("email_verified")
+    if token_info.get("aud") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Invalid Google audience")
+    if email_verified not in (True, "true", "True", "1", 1):
+        raise HTTPException(status_code=403, detail="Google email is not verified")
+    if email not in ALLOWED_GOOGLE_EMAILS:
+        raise HTTPException(status_code=403, detail="Google email is not allowed")
+
+    return {"token": create_auth_token(email)}
 
 @app.get("/auth/me")
 def auth_me():
@@ -755,7 +804,6 @@ import pandas as pd
 import io
 import uuid
 import json
-import requests as http_requests
 
 def parse_statement_file(content: bytes, filename: str, from_date: str):
     """

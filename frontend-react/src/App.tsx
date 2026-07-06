@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import MonthlyCashFlow from './pages/MonthlyCashFlow'
 import PlannedVsReal from './pages/PlannedVsReal'
@@ -14,6 +14,43 @@ import Categories from './pages/Categories'
 import HowItWorks from './pages/HowItWorks'
 import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
 import axios from 'axios'
+
+type AuthStatus = {
+  requires_auth: boolean
+  providers?: {
+    password?: boolean
+    google?: boolean
+  }
+  google_client_id?: string | null
+}
+
+type GoogleCredentialResponse = {
+  credential?: string
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (options: {
+            client_id: string
+            callback: (response: GoogleCredentialResponse) => void
+          }) => void
+          renderButton: (
+            element: HTMLElement,
+            options: {
+              theme: string
+              size: string
+              width: number
+              text: string
+            },
+          ) => void
+        }
+      }
+    }
+  }
+}
 
 const navReports = [
   { to: '/', icon: Banknote, label: 'Monthly Cash Flow' },
@@ -128,10 +165,72 @@ function Sidebar() {
   )
 }
 
-function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
+function LoginScreen({ authStatus, onAuthenticated }: { authStatus: AuthStatus | null; onAuthenticated: () => void }) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const googleButtonRef = useRef<HTMLDivElement | null>(null)
+
+  const passwordEnabled = Boolean(authStatus?.providers?.password)
+  const googleClientId = authStatus?.providers?.google && authStatus.google_client_id ? authStatus.google_client_id : null
+
+  useEffect(() => {
+    if (!googleClientId || !googleButtonRef.current) return
+
+    let cancelled = false
+    const clientId = googleClientId
+
+    async function signInWithGoogle(response: GoogleCredentialResponse) {
+      if (!response.credential) {
+        setError('Google sign-in failed.')
+        return
+      }
+      setError('')
+      setLoading(true)
+      try {
+        const res = await api.post('/auth/google', { credential: response.credential })
+        setAuthToken(res.data.token)
+        onAuthenticated()
+      } catch {
+        clearAuthToken()
+        setError('This Google account is not allowed.')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    function renderGoogleButton() {
+      if (cancelled || !window.google || !googleButtonRef.current) return
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: signInWithGoogle,
+      })
+      googleButtonRef.current.innerHTML = ''
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: 'outline',
+        size: 'large',
+        width: 304,
+        text: 'signin_with',
+      })
+    }
+
+    const existingScript = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]')
+    if (existingScript) {
+      if (window.google) renderGoogleButton()
+      else existingScript.addEventListener('load', renderGoogleButton, { once: true })
+    } else {
+      const script = document.createElement('script')
+      script.src = 'https://accounts.google.com/gsi/client'
+      script.async = true
+      script.defer = true
+      script.onload = renderGoogleButton
+      document.head.appendChild(script)
+    }
+
+    return () => {
+      cancelled = true
+    }
+  }, [googleClientId, onAuthenticated])
 
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -151,31 +250,54 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
 
   return (
     <div className="min-h-screen bg-[#EDF4EE] flex items-center justify-center px-6">
-      <form onSubmit={submit} className="w-full max-w-sm bg-white border border-[#D4E4D5] rounded-xl p-6 shadow-sm">
+      <div className="w-full max-w-sm bg-white border border-[#D4E4D5] rounded-xl p-6 shadow-sm">
         <div className="bg-[#1B4D3E] rounded-xl px-4 py-3 mb-5">
           <p className="text-[#E8C84A] font-bold text-lg">FinDu</p>
           <p className="text-[#7BAE8A] text-xs mt-0.5">Personal finance control</p>
         </div>
 
-        <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">
-          Password
-        </label>
-        <input
-          autoFocus
-          type="password"
-          value={password}
-          onChange={e => setPassword(e.target.value)}
-          className="w-full px-4 py-2.5 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none focus:border-[#1B4D3E]"
-        />
+        {googleClientId && (
+          <div className="mb-4">
+            <div ref={googleButtonRef} className="min-h-10 flex justify-center" />
+          </div>
+        )}
+
+        {googleClientId && passwordEnabled && (
+          <div className="flex items-center gap-3 my-4">
+            <div className="h-px bg-[#D4E4D5] flex-1" />
+            <span className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">or</span>
+            <div className="h-px bg-[#D4E4D5] flex-1" />
+          </div>
+        )}
+
+        {passwordEnabled && (
+          <form onSubmit={submit}>
+            <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">
+              Password
+            </label>
+            <input
+              autoFocus={!googleClientId}
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full px-4 py-2.5 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none focus:border-[#1B4D3E]"
+            />
+            <button
+              type="submit"
+              disabled={loading || !password}
+              className="w-full mt-5 px-4 py-2.5 bg-[#1B4D3E] text-white text-sm font-semibold rounded-lg hover:bg-[#2D6A4F] transition disabled:opacity-50"
+            >
+              {loading ? 'Signing in...' : 'Sign in'}
+            </button>
+          </form>
+        )}
+
+        {!googleClientId && !passwordEnabled && (
+          <p className="text-sm text-[#B85050]">Authentication is not configured.</p>
+        )}
+
         {error && <p className="text-sm text-[#B85050] mt-3">{error}</p>}
-        <button
-          type="submit"
-          disabled={loading || !password}
-          className="w-full mt-5 px-4 py-2.5 bg-[#1B4D3E] text-white text-sm font-semibold rounded-lg hover:bg-[#2D6A4F] transition disabled:opacity-50"
-        >
-          {loading ? 'Signing in...' : 'Sign in'}
-        </button>
-      </form>
+      </div>
     </div>
   )
 }
@@ -183,11 +305,13 @@ function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
 export default function App() {
   const [authReady, setAuthReady] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null)
 
   useEffect(() => {
     async function checkAuth() {
       try {
-        const status = await api.get('/auth/status')
+        const status = await api.get<AuthStatus>('/auth/status')
+        setAuthStatus(status.data)
         if (!status.data.requires_auth) {
           setAuthenticated(true)
           return
@@ -217,7 +341,7 @@ export default function App() {
   }
 
   if (!authenticated) {
-    return <LoginScreen onAuthenticated={() => setAuthenticated(true)} />
+    return <LoginScreen authStatus={authStatus} onAuthenticated={() => setAuthenticated(true)} />
   }
 
   return (

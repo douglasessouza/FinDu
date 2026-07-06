@@ -37,7 +37,7 @@ jobs:
             --region us-east1 \
             --platform managed \
             --allow-unauthenticated \
-            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }},ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},SECRET_KEY=${{ secrets.SECRET_KEY }},FINDU_APP_PASSWORD=${{ secrets.FINDU_APP_PASSWORD }}"
+            --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }},ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},SECRET_KEY=${{ secrets.SECRET_KEY }},FINDU_APP_PASSWORD=${{ secrets.FINDU_APP_PASSWORD }},GOOGLE_CLIENT_ID=${{ secrets.GOOGLE_CLIENT_ID }},ALLOWED_GOOGLE_EMAILS=${{ secrets.ALLOWED_GOOGLE_EMAILS }}"
 
       - name: Deploy React to Cloud Run
         run: |
