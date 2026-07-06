@@ -9,6 +9,7 @@ psycopg2-binary==2.9.11
 anthropic==0.94.0
 httpx==0.28.1
 requests==2.32.3
+pandas==2.3.3
 openpyxl==3.1.2
 xlrd>=2.0.1
 python-dateutil
