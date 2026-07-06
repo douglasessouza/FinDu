@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp } from 'lucide-react'
 import { useEffect, useState } from 'react'
+import type { FormEvent } from 'react'
 import MonthlyCashFlow from './pages/MonthlyCashFlow'
 import PlannedVsReal from './pages/PlannedVsReal'
 import SpendingAnalysis from './pages/SpendingAnalysis'
@@ -11,6 +12,7 @@ import CreditCards from './pages/CreditCards'
 import RecurringExpenses from './pages/RecurringExpenses'
 import Categories from './pages/Categories'
 import HowItWorks from './pages/HowItWorks'
+import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
 import axios from 'axios'
 
 const navReports = [
@@ -126,7 +128,98 @@ function Sidebar() {
   )
 }
 
+function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setError('')
+    setLoading(true)
+    try {
+      const res = await api.post('/auth/login', { password })
+      setAuthToken(res.data.token)
+      onAuthenticated()
+    } catch {
+      clearAuthToken()
+      setError('Invalid password.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-[#EDF4EE] flex items-center justify-center px-6">
+      <form onSubmit={submit} className="w-full max-w-sm bg-white border border-[#D4E4D5] rounded-xl p-6 shadow-sm">
+        <div className="bg-[#1B4D3E] rounded-xl px-4 py-3 mb-5">
+          <p className="text-[#E8C84A] font-bold text-lg">FinDu</p>
+          <p className="text-[#7BAE8A] text-xs mt-0.5">Personal finance control</p>
+        </div>
+
+        <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">
+          Password
+        </label>
+        <input
+          autoFocus
+          type="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          className="w-full px-4 py-2.5 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none focus:border-[#1B4D3E]"
+        />
+        {error && <p className="text-sm text-[#B85050] mt-3">{error}</p>}
+        <button
+          type="submit"
+          disabled={loading || !password}
+          className="w-full mt-5 px-4 py-2.5 bg-[#1B4D3E] text-white text-sm font-semibold rounded-lg hover:bg-[#2D6A4F] transition disabled:opacity-50"
+        >
+          {loading ? 'Signing in...' : 'Sign in'}
+        </button>
+      </form>
+    </div>
+  )
+}
+
 export default function App() {
+  const [authReady, setAuthReady] = useState(false)
+  const [authenticated, setAuthenticated] = useState(false)
+
+  useEffect(() => {
+    async function checkAuth() {
+      try {
+        const status = await api.get('/auth/status')
+        if (!status.data.requires_auth) {
+          setAuthenticated(true)
+          return
+        }
+
+        const token = getAuthToken()
+        if (!token) {
+          setAuthenticated(false)
+          return
+        }
+
+        setAuthToken(token)
+        await api.get('/auth/me')
+        setAuthenticated(true)
+      } catch {
+        clearAuthToken()
+        setAuthenticated(false)
+      } finally {
+        setAuthReady(true)
+      }
+    }
+    checkAuth()
+  }, [])
+
+  if (!authReady) {
+    return <div className="min-h-screen bg-[#EDF4EE]" />
+  }
+
+  if (!authenticated) {
+    return <LoginScreen onAuthenticated={() => setAuthenticated(true)} />
+  }
+
   return (
     <BrowserRouter>
       <div className="flex h-screen bg-[#EDF4EE] text-[#2C3E2D]">

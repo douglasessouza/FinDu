@@ -1,20 +1,29 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel, Field
 from typing import Optional
 import os
+import base64
+import hmac
+import hashlib
+import json as auth_json
+import time
 from dotenv import load_dotenv
 from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from datetime import datetime
 from datetime import timedelta
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
+APP_PASSWORD = os.getenv("FINDU_APP_PASSWORD")
+SECRET_KEY = os.getenv("SECRET_KEY") or APP_PASSWORD or "dev-secret"
+AUTH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 30
+
 engine = create_engine(
     DATABASE_URL,
     pool_size=3,
@@ -33,9 +42,78 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
+AUTH_PUBLIC_PATHS = {
+    "/",
+    "/health",
+    "/auth/login",
+    "/auth/status",
+}
+
+class LoginRequest(BaseModel):
+    password: str
+
+def base64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+def base64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(value + padding)
+
+def create_auth_token() -> str:
+    payload = {
+        "sub": "douglas",
+        "iat": int(time.time()),
+        "exp": int(time.time()) + AUTH_TOKEN_TTL_SECONDS,
+    }
+    payload_raw = auth_json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    payload_part = base64url_encode(payload_raw)
+    signature = hmac.new(SECRET_KEY.encode("utf-8"), payload_part.encode("utf-8"), hashlib.sha256).digest()
+    return f"{payload_part}.{base64url_encode(signature)}"
+
+def verify_auth_token(token: str) -> bool:
+    try:
+        payload_part, signature_part = token.split(".", 1)
+        expected = hmac.new(SECRET_KEY.encode("utf-8"), payload_part.encode("utf-8"), hashlib.sha256).digest()
+        provided = base64url_decode(signature_part)
+        if not hmac.compare_digest(expected, provided):
+            return False
+        payload = auth_json.loads(base64url_decode(payload_part))
+        return int(payload.get("exp", 0)) >= int(time.time())
+    except Exception:
+        return False
+
+@app.middleware("http")
+async def require_auth(request: Request, call_next):
+    path = request.url.path
+    if not APP_PASSWORD:
+        return await call_next(request)
+    if request.method == "OPTIONS" or path in AUTH_PUBLIC_PATHS or path.startswith("/static"):
+        return await call_next(request)
+    header = request.headers.get("Authorization", "")
+    token = header.removeprefix("Bearer ").strip()
+    if not token or not verify_auth_token(token):
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    return await call_next(request)
+
 @app.get("/")
 def root():
     return FileResponse("app/static/index.html")
+
+@app.get("/auth/status")
+def auth_status():
+    return {"requires_auth": bool(APP_PASSWORD)}
+
+@app.post("/auth/login")
+def auth_login(login: LoginRequest):
+    if not APP_PASSWORD:
+        return {"token": create_auth_token()}
+    if not hmac.compare_digest(login.password, APP_PASSWORD):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    return {"token": create_auth_token()}
+
+@app.get("/auth/me")
+def auth_me():
+    return {"authenticated": True}
 
 def get_db():
     db = SessionLocal()

@@ -1,8 +1,29 @@
 import axios from 'axios'
 
+const AUTH_TOKEN_KEY = 'findu_auth_token'
+
 const api = axios.create({
   baseURL: '/api',
 })
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_KEY)
+}
+
+export function setAuthToken(token: string) {
+  localStorage.setItem(AUTH_TOKEN_KEY, token)
+  api.defaults.headers.common.Authorization = `Bearer ${token}`
+}
+
+export function clearAuthToken() {
+  localStorage.removeItem(AUTH_TOKEN_KEY)
+  delete api.defaults.headers.common.Authorization
+}
+
+const existingToken = getAuthToken()
+if (existingToken) {
+  api.defaults.headers.common.Authorization = `Bearer ${existingToken}`
+}
 
 export default api
 
