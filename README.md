@@ -88,8 +88,7 @@ Upload PDFs, CSVs, OFX files, or even photos of paper statements. FinDu reads an
 | Backend | FastAPI |
 | Database | PostgreSQL (Supabase) |
 | ORM | SQLAlchemy + Alembic |
-| Frontend (v1) | Streamlit |
-| Frontend (v2) | React + TypeScript + Tailwind CSS |
+| Frontend | React + TypeScript + Tailwind CSS |
 | Container | Docker |
 | Cloud | Google Cloud Run |
 | CI/CD | GitHub Actions |

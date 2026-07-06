@@ -25,11 +25,6 @@ jobs:
           docker build -f Dockerfile.api -t us-east1-docker.pkg.dev/findu23/findu/findu-api:${{ github.sha }} .
           docker push us-east1-docker.pkg.dev/findu23/findu/findu-api:${{ github.sha }}
 
-      - name: Build and push Streamlit image
-        run: |
-          docker build --no-cache -f Dockerfile.streamlit -t us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} .
-          docker push us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }}
-
       - name: Build and push React image
         run: |
           docker build -f Dockerfile.web -t us-east1-docker.pkg.dev/findu23/findu/findu-web:${{ github.sha }} .
@@ -43,15 +38,6 @@ jobs:
             --platform managed \
             --allow-unauthenticated \
             --set-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }},ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},SECRET_KEY=${{ secrets.SECRET_KEY }},FINDU_APP_PASSWORD=${{ secrets.FINDU_APP_PASSWORD }}"
-
-      - name: Deploy Streamlit to Cloud Run
-        run: |
-          gcloud run deploy findu-app \
-            --image us-east1-docker.pkg.dev/findu23/findu/findu-app:${{ github.sha }} \
-            --region us-east1 \
-            --platform managed \
-            --allow-unauthenticated \
-            --set-env-vars "API_URL=https://findu-api-uwii3tfcqa-ue.a.run.app,ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}"
 
       - name: Deploy React to Cloud Run
         run: |
