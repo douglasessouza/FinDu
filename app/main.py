@@ -234,6 +234,15 @@ class CategoryBudgetAdjustment(BaseModel):
     valid_until: Optional[datetime] = None
     items: list[CategoryBudgetItemPayload] = Field(default_factory=list)
 
+class FinancialChatMessage(BaseModel):
+    role: str
+    content: str
+
+class FinancialChatRequest(BaseModel):
+    message: str
+    history: list[FinancialChatMessage] = Field(default_factory=list)
+    mode: str = "chat"
+
 def month_start(month: str) -> datetime:
     try:
         year, month_number = [int(part) for part in month.split("-")]
@@ -797,6 +806,188 @@ def spending_analysis(db: Session = Depends(get_db)):
         result[month_key][cat][col] += round(amount, 2)
 
     return dict(sorted(result.items()))
+
+def build_financial_snapshot(db: Session) -> dict:
+    accounts = db.query(Account).order_by(Account.bank, Account.name).all()
+    account_by_id = {account.id: account for account in accounts}
+    transactions = db.query(Transaction).order_by(Transaction.date.desc()).limit(500).all()
+    recurring = db.query(RecurringExpense).filter(RecurringExpense.is_active == True).order_by(RecurringExpense.name).all()
+    budgets = db.query(CategoryBudget).order_by(CategoryBudget.category).all()
+
+    monthly = {}
+    category_monthly = {}
+    excluded_spending_categories = {"Salary", "Other Income", "Transfer"}
+    today_month = datetime.utcnow().strftime("%Y-%m")
+
+    for tx in transactions:
+        account = account_by_id.get(tx.account_id)
+        month = tx.statement_month if account and account.account_type.value == "CREDIT_CARD" and tx.amount < 0 else tx.date.strftime("%Y-%m")
+        currency = tx.currency.value if hasattr(tx.currency, "value") else str(tx.currency)
+        category = tx.category or "Other"
+        if month not in monthly:
+            monthly[month] = {}
+        if currency not in monthly[month]:
+            monthly[month][currency] = {"income": 0.0, "expenses": 0.0, "net": 0.0}
+        if tx.amount >= 0:
+            monthly[month][currency]["income"] += tx.amount
+        else:
+            monthly[month][currency]["expenses"] += abs(tx.amount)
+        monthly[month][currency]["net"] += tx.amount
+
+        if tx.amount < 0 and category not in excluded_spending_categories:
+            if month not in category_monthly:
+                category_monthly[month] = {}
+            category_monthly[month][category] = category_monthly[month].get(category, 0.0) + abs(tx.amount)
+
+    for month_data in monthly.values():
+        for values in month_data.values():
+            for key in values:
+                values[key] = round(values[key], 2)
+
+    category_monthly = {
+        month: dict(sorted(
+            ((category, round(amount, 2)) for category, amount in categories.items()),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:12])
+        for month, categories in category_monthly.items()
+    }
+
+    budget_rows = []
+    budget_alerts = []
+    for budget in budgets:
+        if not category_budget_is_active_for_month(budget, today_month):
+            continue
+        amount = sum(item.amount for item in budget.items) if budget.items else budget.amount
+        spent = category_monthly.get(today_month, {}).get(budget.category, 0.0)
+        usage = (spent / amount) if amount else 0
+        budget_rows.append({
+            "category": budget.category,
+            "amount": round(amount, 2),
+            "currency": budget.currency.value if hasattr(budget.currency, "value") else budget.currency,
+            "month": today_month,
+            "spent": round(spent, 2),
+            "usage_pct": round(usage * 100, 1),
+        })
+        if amount and usage >= 0.9:
+            budget_alerts.append(f"{budget.category} is at {round(usage * 100, 1)}% of its {today_month} budget.")
+
+    account_rows = []
+    account_alerts = []
+    for account in accounts:
+        row = {
+            "id": account.id,
+            "name": account.name,
+            "bank": account.bank,
+            "type": account.account_type.value,
+            "currency": account.currency.value,
+            "balance": round(account.balance or 0, 2),
+            "credit_limit": round(account.credit_limit, 2) if account.credit_limit else None,
+        }
+        if account.account_type.value == "CREDIT_CARD" and account.credit_limit:
+            utilization = abs(min(account.balance or 0, 0)) / account.credit_limit
+            row["utilization_pct"] = round(utilization * 100, 1)
+            if utilization >= 0.8:
+                account_alerts.append(f"{account.name} credit utilization is high at {round(utilization * 100, 1)}%.")
+        account_rows.append(row)
+
+    latest_transactions = [
+        {
+            "date": tx.date.strftime("%Y-%m-%d"),
+            "account": account_by_id.get(tx.account_id).name if account_by_id.get(tx.account_id) else "Unknown",
+            "description": tx.description,
+            "amount": round(tx.amount, 2),
+            "currency": tx.currency.value if hasattr(tx.currency, "value") else str(tx.currency),
+            "category": tx.category or "Other",
+            "statement_month": tx.statement_month,
+        }
+        for tx in transactions[:80]
+    ]
+
+    return {
+        "generated_at": datetime.utcnow().isoformat(),
+        "current_month": today_month,
+        "accounts": account_rows,
+        "monthly_summary": dict(sorted(monthly.items(), reverse=True)[:8]),
+        "category_spending_by_month": dict(sorted(category_monthly.items(), reverse=True)[:6]),
+        "budgets": budget_rows,
+        "recurring": [
+            {
+                "name": item.name,
+                "amount": round(item.amount, 2),
+                "currency": item.currency.value if hasattr(item.currency, "value") else str(item.currency),
+                "due_day": item.due_day,
+                "type": item.type.value,
+                "category": item.category,
+                "valid_until": item.valid_until.strftime("%Y-%m-%d") if item.valid_until else None,
+            }
+            for item in recurring
+        ],
+        "latest_transactions": latest_transactions,
+        "system_alerts": account_alerts + budget_alerts,
+    }
+
+@app.post("/financial-chat")
+def financial_chat(request: FinancialChatRequest, db: Session = Depends(get_db)):
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not anthropic_api_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    snapshot = build_financial_snapshot(db)
+    user_message = request.message.strip()
+    if not user_message:
+        user_message = "Generate the most important financial insights and alerts for me right now."
+
+    history = [
+        {"role": item.role, "content": item.content[:1200]}
+        for item in request.history[-8:]
+        if item.role in {"user", "assistant"} and item.content.strip()
+    ]
+
+    system_prompt = """You are FinDu's private financial assistant for one user.
+Use only the provided financial snapshot. Be concrete, concise, and actionable.
+Focus on cash flow, unusual spending, budget risk, recurring bills, credit cards, and practical next steps.
+When mentioning money, include the currency from the data. If the data is insufficient, say what is missing.
+Do not provide legal, tax, or investment advice. Do not invent transactions or balances.
+Return plain text with short sections and bullets when useful."""
+
+    messages = history + [{
+        "role": "user",
+        "content": (
+            f"Financial snapshot JSON:\n{auth_json.dumps(snapshot, ensure_ascii=False)}\n\n"
+            f"User request: {user_message}"
+        ),
+    }]
+
+    try:
+        resp = http_requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": anthropic_api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 1400,
+                "system": system_prompt,
+                "messages": messages,
+            },
+            timeout=60,
+        )
+        resp_body = resp.json()
+        if resp.status_code >= 400:
+            error_message = resp_body.get("error", {}).get("message", resp.text)
+            raise HTTPException(status_code=500, detail=f"AI error: {error_message}")
+        return {
+            "answer": resp_body["content"][0]["text"],
+            "alerts": snapshot["system_alerts"],
+            "snapshot_month": snapshot["current_month"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
 
 # ── File upload imports ────────────────────────────────────────────
 from fastapi import UploadFile, File, Form

@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp } from 'lucide-react'
+import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import MonthlyCashFlow from './pages/MonthlyCashFlow'
@@ -12,6 +12,7 @@ import CreditCards from './pages/CreditCards'
 import RecurringExpenses from './pages/RecurringExpenses'
 import Categories from './pages/Categories'
 import HowItWorks from './pages/HowItWorks'
+import FinancialChat from './pages/FinancialChat'
 import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
 import axios from 'axios'
 
@@ -56,6 +57,7 @@ const navReports = [
   { to: '/', icon: Banknote, label: 'Monthly Cash Flow' },
   { to: '/planned-vs-real', icon: Target, label: 'Budget & Card Cycles' },
   { to: '/spending', icon: TrendingUp, label: 'Spending Analysis' },
+  { to: '/chat', icon: MessageCircle, label: 'Financial Chat' },
   { to: '/transactions', icon: Receipt, label: 'Transactions' },
 ]
 
@@ -353,6 +355,7 @@ export default function App() {
             <Route path="/" element={<MonthlyCashFlow />} />
             <Route path="/planned-vs-real" element={<PlannedVsReal />} />
             <Route path="/spending" element={<SpendingAnalysis />} />
+            <Route path="/chat" element={<FinancialChat />} />
             <Route path="/transactions" element={<Transactions />} />
             <Route path="/import" element={<ImportStatement />} />
             <Route path="/accounts" element={<Accounts />} />
