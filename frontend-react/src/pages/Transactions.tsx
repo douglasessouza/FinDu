@@ -36,6 +36,7 @@ export default function Transactions() {
   const [selectedAccId, setSelectedAccId] = useState<number | null>(null)
   const [monthFilter, setMonthFilter] = useState(currentMonth)
   const [txs, setTxs] = useState<Transaction[]>([])
+  const [editedDates, setEditedDates] = useState<Record<number, string>>({})
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
   const [editedStatements, setEditedStatements] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(false)
@@ -69,6 +70,7 @@ export default function Transactions() {
     if (!selectedAccId) return
     async function loadTxs() {
       setLoading(true)
+      setEditedDates({})
       setEditedCats({})
       setEditedStatements({})
       try {
@@ -93,6 +95,7 @@ export default function Transactions() {
 
   async function saveChanges() {
     const ids = new Set([
+      ...Object.keys(editedDates),
       ...Object.keys(editedCats),
       ...Object.keys(editedStatements),
     ])
@@ -102,6 +105,9 @@ export default function Transactions() {
     for (const id of ids) {
       try {
         const changes: Record<string, string> = {}
+        if (editedDates[Number(id)] !== undefined) {
+          changes.date = `${editedDates[Number(id)]}T12:00:00`
+        }
         if (editedCats[Number(id)] !== undefined) {
           changes.category = editedCats[Number(id)]
         }
@@ -125,6 +131,7 @@ export default function Transactions() {
       }
     }
     setSaving(false)
+    setEditedDates({})
     setEditedCats({})
     setEditedStatements({})
     setSaveMsg(`✅ ${updated} transaction${updated !== 1 ? 's' : ''} updated!`)
@@ -149,6 +156,11 @@ export default function Transactions() {
     try {
       await api.delete(`/transactions/${tx.id}`)
       setTxs(prev => prev.filter(existing => existing.id !== tx.id))
+      setEditedDates(prev => {
+        const next = { ...prev }
+        delete next[tx.id]
+        return next
+      })
       setEditedCats(prev => {
         const next = { ...prev }
         delete next[tx.id]
@@ -180,7 +192,7 @@ export default function Transactions() {
 
   const sortedTxs = useMemo(() => {
     function sortValue(tx: Transaction, key: SortKey): string | number {
-      if (key === 'date') return tx.date || ''
+      if (key === 'date') return editedDates[tx.id] ?? (tx.date || '')
       if (key === 'description') return tx.description || ''
       if (key === 'amount') return tx.amount
       if (key === 'category') return editedCats[tx.id] ?? tx.category ?? 'Other'
@@ -198,11 +210,12 @@ export default function Transactions() {
 
       return String(aValue).localeCompare(String(bValue), undefined, { numeric: true, sensitivity: 'base' }) * direction
     })
-  }, [editedCats, sortDirection, sortKey, txs])
+  }, [editedCats, editedDates, sortDirection, sortKey, txs])
 
   const totalExpenses = txs.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0)
   const totalIncome = txs.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0)
   const pendingChanges = new Set([
+    ...Object.keys(editedDates),
     ...Object.keys(editedCats),
     ...Object.keys(editedStatements),
   ]).size
@@ -354,7 +367,7 @@ export default function Transactions() {
         <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden">
           {/* Header */}
           <div className="grid text-xs font-semibold uppercase tracking-widest px-4 py-3 border-b-2 border-[#D4E4D5] bg-[#F9FCF9]"
-            style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px 48px' : '90px 1fr 130px 160px 48px' }}
+            style={{ gridTemplateColumns: isCard ? '130px 1fr 130px 160px 100px 48px' : '130px 1fr 130px 160px 48px' }}
           >
             {renderSortButton('Date', 'date')}
             {renderSortButton('Description', 'description')}
@@ -366,8 +379,8 @@ export default function Transactions() {
 
           {/* Rows */}
           {sortedTxs.map((t, idx) => {
-            const [y, mo, dy] = t.date.slice(0, 10).split('-').map(Number)
-            const dateStr = new Date(y, mo - 1, dy).toLocaleDateString('en', { month: 'short', day: 'numeric' })
+            const currentDate = editedDates[t.id] ?? t.date.slice(0, 10)
+            const isDateEdited = editedDates[t.id] !== undefined && editedDates[t.id] !== t.date.slice(0, 10)
             const currentCat = editedCats[t.id] ?? t.category ?? 'Other'
             const isEdited = editedCats[t.id] !== undefined && editedCats[t.id] !== t.category
             const currentStatement = editedStatements[t.id] ?? t.statement_month ?? ''
@@ -377,9 +390,18 @@ export default function Transactions() {
               <div
                 key={t.id}
                 className={`grid px-4 py-2.5 border-b border-[#EDF4EE] last:border-0 items-center ${idx % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
-                style={{ gridTemplateColumns: isCard ? '90px 1fr 130px 160px 100px 48px' : '90px 1fr 130px 160px 48px' }}
+                style={{ gridTemplateColumns: isCard ? '130px 1fr 130px 160px 100px 48px' : '130px 1fr 130px 160px 48px' }}
               >
-                <span className="text-[#8BAE90] text-xs">{dateStr}</span>
+                <input
+                  type="date"
+                  value={currentDate}
+                  onChange={e => setEditedDates(prev => ({ ...prev, [t.id]: e.target.value }))}
+                  className={`w-full text-xs px-2 py-1.5 rounded-lg border focus:outline-none ${
+                    isDateEdited
+                      ? 'border-[#C9A84C] bg-[#FDF6E3] text-[#7A5C0A] font-semibold'
+                      : 'border-[#D4E4D5] bg-transparent text-[#2C3E2D]'
+                  }`}
+                />
 
                 <span className="text-[#2C3E2D] text-sm truncate pr-4">{t.description}</span>
 

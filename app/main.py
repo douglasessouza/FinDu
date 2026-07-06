@@ -117,6 +117,31 @@ def month_start(month: str) -> datetime:
 def previous_month_end(month: str) -> datetime:
     return month_start(month) - timedelta(days=1)
 
+def apply_card_statement_fields(data: dict, account: Account, tx_date: datetime):
+    """Set statement cycle fields for credit card transactions."""
+    if account.account_type.value != "CREDIT_CARD" or not account.closing_day or not account.due_day:
+        return
+
+    closing = account.closing_day
+    due = account.due_day
+
+    if tx_date.day >= closing:
+        if tx_date.month == 12:
+            stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
+        else:
+            stmt_month = tx_date.replace(month=tx_date.month + 1, day=1)
+    else:
+        stmt_month = tx_date.replace(day=1)
+
+    data["statement_month"] = stmt_month.strftime("%Y-%m")
+
+    if stmt_month.month == 12:
+        due_date = stmt_month.replace(year=stmt_month.year + 1, month=1, day=due)
+    else:
+        due_date = stmt_month.replace(month=stmt_month.month + 1, day=due)
+
+    data["payment_due_date"] = due_date
+
 @app.post("/categories")
 def create_category(category: CategoryCreate, db: Session = Depends(get_db)):
     """Creates a new user-defined category."""
@@ -370,30 +395,7 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
 
     data = transaction.model_dump()
 
-    # Auto-calculate statement_month and payment_due_date for credit cards
-    if account.account_type.value == "CREDIT_CARD" and account.closing_day and account.due_day:
-        tx_date = transaction.date
-        closing = account.closing_day
-        due = account.due_day
-
-        # If purchase date is after closing day, it goes to next month's statement
-        if tx_date.day >= closing:
-            if tx_date.month == 12:
-                stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
-            else:
-                stmt_month = tx_date.replace(month=tx_date.month + 1, day=1)
-        else:
-            stmt_month = tx_date.replace(day=1)
-
-        data["statement_month"] = stmt_month.strftime("%Y-%m")
-
-        # Payment due date = due_day of the month after statement_month
-        if stmt_month.month == 12:
-            due_date = stmt_month.replace(year=stmt_month.year + 1, month=1, day=due)
-        else:
-            due_date = stmt_month.replace(month=stmt_month.month + 1, day=due)
-
-        data["payment_due_date"] = due_date
+    apply_card_statement_fields(data, account, transaction.date)
 
     db_transaction = Transaction(**data)
     db.add(db_transaction)
@@ -517,6 +519,13 @@ def update_transaction(transaction_id: int, updates: dict, db: Session = Depends
             if key in {"date", "payment_due_date"} and isinstance(value, str):
                 value = datetime.fromisoformat(value)
             setattr(transaction, key, value)
+    if "date" in updates:
+        account = db.query(Account).filter(Account.id == transaction.account_id).first()
+        if account:
+            data = {}
+            apply_card_statement_fields(data, account, transaction.date)
+            for key, value in data.items():
+                setattr(transaction, key, value)
     db.commit()
     db.refresh(transaction)
     return transaction
