@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, CircleHelp, Sparkles } from 'lucide-react'
 import api from '../services/api'
 import CardCycleSummary from '../components/CardCycleSummary'
-import { investmentSummaryForMonth } from '../utils/investmentPlans'
+import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
 import type {
   Account,
   RecurringExpense,
@@ -412,6 +412,9 @@ export default function MonthlyCashFlow() {
             const investmentSavings = currency === 'CAD'
               ? investmentSummaryForMonth(monthStr, 'CAD')
               : { plannedDue: 0, savedActual: 0, remainingDue: 0, openPlans: 0 }
+            const investmentPortfolio = currency === 'CAD'
+              ? investmentPortfolioSummary('CAD')
+              : { openPlans: 0, savedTotal: 0, projectedFinal: 0, targetTotal: 0, riskPlans: 0 }
             const payrollIncome = incomeList.filter(item => {
               const text = `${item.name} ${item.category || ''}`.toLowerCase()
               return text.includes('payroll') || text.includes('salary')
@@ -708,11 +711,18 @@ export default function MonthlyCashFlow() {
 
                 <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden">
                   <p className="section-title px-5 pt-4 mb-3">Balance</p>
-                  <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-[#EDF4EE]">
+                  <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#EDF4EE]">
                     <div className="px-5 pb-5">
                       <p className="text-xs text-[#8BAE90] mb-1">Current Bank Balance</p>
                       <p className="text-2xl font-bold text-[#1B4D3E]">{symbol} {fmt(inBank)}</p>
                       <p className="text-xs text-[#8BAE90] mt-1">Already includes received income and paid expenses.</p>
+                    </div>
+                    <div className="px-5 py-5 md:pt-0 bg-[#F8FBF8]">
+                      <p className="text-xs text-[#8BAE90] mb-1">Total Savings</p>
+                      <p className="text-2xl font-bold text-[#1B6B3A]">{symbol} {fmt(investmentPortfolio.savedTotal)}</p>
+                      <p className="text-xs text-[#8BAE90] mt-1">
+                        Updated from {investmentPortfolio.openPlans} open investment plan{investmentPortfolio.openPlans === 1 ? '' : 's'}.
+                      </p>
                     </div>
                     <div className="px-5 py-5 md:pt-0 bg-[#2D6A4F] md:rounded-br-xl">
                       <p className="text-xs text-white mb-1">Projected End-of-Month Balance</p>
