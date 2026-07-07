@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, ChevronLeft, ChevronRight, Save, Target, Wand2, X } from 'lucide-react'
 import api from '../services/api'
-import type { Account, Category, CategoryBudget, Transaction } from '../services/api'
+import type { Account, Category, CategoryBudget, RecurringExpense, Transaction } from '../services/api'
 
 interface SpendingData {
   [month: string]: { [category: string]: { cards: number; debit: number } }
@@ -165,11 +165,17 @@ function pct(value: number): string {
   return value.toLocaleString('en-CA', { maximumFractionDigits: 1 })
 }
 
+function recurringIsActiveForMonth(item: RecurringExpense, month: string): boolean {
+  if (!item.valid_until) return true
+  return new Date(item.valid_until) >= new Date(`${month}-01T00:00:00`)
+}
+
 export default function PlannedVsReal() {
   const [spending, setSpending] = useState<SpendingData>({})
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<string[]>([])
+  const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
@@ -219,14 +225,16 @@ export default function PlannedVsReal() {
 
   useEffect(() => {
     async function loadTransactionContext() {
-      const [accountRes, categoryRes, transactionRes] = await Promise.all([
+      const [accountRes, categoryRes, transactionRes, recurringRes] = await Promise.all([
         api.get('/accounts'),
         api.get('/categories'),
         api.get('/transactions'),
+        api.get('/recurring-expenses'),
       ])
       setAccounts(accountRes.data as Account[])
       setCategories((categoryRes.data as Category[]).map(category => category.name).sort())
       setTransactions(transactionRes.data as Transaction[])
+      setRecurring(recurringRes.data as RecurringExpense[])
     }
     loadTransactionContext()
   }, [])
@@ -345,7 +353,7 @@ export default function PlannedVsReal() {
   const selectedBuckets = methodState.selectedMethod === 'custom'
     ? methodState.customBuckets
     : BUDGET_METHODS[methodState.selectedMethod].buckets
-  const monthlyIncomeCad = useMemo(() => {
+  const actualIncomeCad = useMemo(() => {
     return transactions
       .filter(tx => tx.amount > 0)
       .filter(tx => tx.currency === 'CAD')
@@ -353,6 +361,15 @@ export default function PlannedVsReal() {
       .filter(tx => tx.date?.slice(0, 7) === selectedMonth)
       .reduce((sum, tx) => sum + tx.amount, 0)
   }, [selectedMonth, transactions])
+  const plannedIncomeCad = useMemo(() => {
+    return recurring
+      .filter(item => item.type === 'INCOME')
+      .filter(item => item.currency === 'CAD')
+      .filter(item => recurringIsActiveForMonth(item, selectedMonth))
+      .reduce((sum, item) => sum + item.amount, 0)
+  }, [recurring, selectedMonth])
+  const monthlyIncomeCad = actualIncomeCad > 0 ? actualIncomeCad : plannedIncomeCad
+  const monthlyIncomeSource = actualIncomeCad > 0 ? 'actual received income' : plannedIncomeCad > 0 ? 'planned recurring income' : 'missing income'
   const bucketRows = BUDGET_BUCKETS.map(bucket => {
     const categoriesInBucket = methodCategories.filter(category => categoryMap[category] === bucket.key)
     const actual = rows
@@ -662,7 +679,7 @@ export default function PlannedVsReal() {
                 </div>
                 <div className="mt-3 rounded-lg bg-white border border-[#D4E4D5] px-3 py-2">
                   <p className="text-xs text-[#7BAE8A]">
-                    Income base: <span className="font-bold text-[#1B4D3E]">CAD$ {fmt(monthlyIncomeCad)}</span>. If this looks low, import or classify salary transactions for {monthLabel(selectedMonth)}.
+                    Income base: <span className="font-bold text-[#1B4D3E]">CAD$ {fmt(monthlyIncomeCad)}</span> from {monthlyIncomeSource}. If this looks low, update recurring income or classify salary transactions for {monthLabel(selectedMonth)}.
                   </p>
                 </div>
               </div>
