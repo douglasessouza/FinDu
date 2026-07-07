@@ -136,6 +136,10 @@ function bucketStatus(actual: number, target: number): { label: string; classNam
   return { label: 'Over target', className: 'text-[#B85050]' }
 }
 
+function pct(value: number): string {
+  return value.toLocaleString('en-CA', { maximumFractionDigits: 1 })
+}
+
 export default function PlannedVsReal() {
   const [spending, setSpending] = useState<SpendingData>({})
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
@@ -330,10 +334,12 @@ export default function PlannedVsReal() {
       .filter(row => categoryMap[row.category] === bucket.key)
       .reduce((sum, row) => sum + row.real, 0)
     const target = monthlyIncomeCad * (selectedBuckets[bucket.key] / 100)
+    const actualPercent = monthlyIncomeCad > 0 ? (actual / monthlyIncomeCad) * 100 : 0
     const status = bucketStatus(actual, target)
     return {
       ...bucket,
       percent: selectedBuckets[bucket.key],
+      actualPercent,
       target,
       actual,
       variance: target - actual,
@@ -527,7 +533,7 @@ export default function PlannedVsReal() {
             <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
               <div className="grid gap-3 md:grid-cols-3">
                 {bucketRows.map(bucket => {
-                  const progress = bucket.target > 0 ? Math.min((bucket.actual / bucket.target) * 100, 140) : 0
+                  const progress = bucket.percent > 0 ? Math.min((bucket.actualPercent / bucket.percent) * 100, 140) : 0
                   return (
                     <div key={bucket.key} className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] p-4">
                       <div className="flex items-start justify-between gap-3">
@@ -548,8 +554,19 @@ export default function PlannedVsReal() {
                         </div>
                       </div>
                       <div className="mt-4">
+                        <div className="rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 mb-3">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <p className="text-xs font-semibold text-[#8BAE90]">Actual share of income</p>
+                            <p className={`text-xl font-bold ${bucket.status.className}`}>
+                              {monthlyIncomeCad > 0 ? `${pct(bucket.actualPercent)}%` : '-'}
+                            </p>
+                          </div>
+                          <p className="text-xs text-[#7BAE8A] mt-1">
+                            Target share {pct(bucket.percent)}% - Actual CAD$ {fmt(bucket.actual)}
+                          </p>
+                        </div>
                         <div className="flex items-center justify-between text-xs font-semibold">
-                          <span className="text-[#7BAE8A]">Actual CAD$ {fmt(bucket.actual)}</span>
+                          <span className="text-[#7BAE8A]">{monthlyIncomeCad > 0 ? `${pct(bucket.actualPercent)}% of salary` : 'Income missing'}</span>
                           <span className={bucket.status.className}>{bucket.status.label}</span>
                         </div>
                         <div className="mt-2 h-2 rounded-full bg-white border border-[#D4E4D5] overflow-hidden">
