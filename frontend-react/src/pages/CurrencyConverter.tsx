@@ -106,7 +106,7 @@ export default function CurrencyConverter() {
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#D4E4D5] bg-white px-4 py-2.5 text-sm font-bold text-[#1B4D3E] transition hover:bg-[#F4FAF5] disabled:opacity-50"
         >
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-          Refresh rates
+          {loading ? 'Updating...' : 'Update now'}
         </button>
       </div>
 
@@ -116,8 +116,11 @@ export default function CurrencyConverter() {
             <p className="text-xs font-bold uppercase tracking-widest text-[#8BAE90]">Live conversion</p>
             <h2 className="mt-1 text-xl font-bold text-[#1B4D3E]">Type in any currency</h2>
           </div>
-          <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-3 py-2 text-xs font-semibold text-[#7BAE8A]">
-            {loading ? 'Loading rates...' : formatUpdatedAt(updatedAt)}
+          <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-3 py-2 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-[#8BAE90]">Last rate update</p>
+            <p className="text-xs font-semibold text-[#1B4D3E]">
+              {loading ? 'Loading latest rates...' : formatUpdatedAt(updatedAt)}
+            </p>
           </div>
         </div>
 
