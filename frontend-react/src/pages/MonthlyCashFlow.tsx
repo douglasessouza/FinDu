@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, CircleHelp, Sparkles } from 'lucide-react'
 import api from '../services/api'
+import CardCycleSummary from '../components/CardCycleSummary'
 import type {
   Account,
   RecurringExpense,
@@ -377,6 +378,10 @@ export default function MonthlyCashFlow() {
 
       {!loading && (
         <div>
+          <div className="mb-6">
+            <CardCycleSummary accounts={accounts} month={monthStr} />
+          </div>
+
           {(['CAD', 'BRL'] as const).map(currency => {
             const symbol = currency === 'CAD' ? 'CAD$' : 'R$'
             const flag = currency === 'CAD' ? '🇨🇦' : '🇧🇷'

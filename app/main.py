@@ -243,6 +243,10 @@ class FinancialChatRequest(BaseModel):
     history: list[FinancialChatMessage] = Field(default_factory=list)
     mode: str = "chat"
 
+class BudgetMethodologySuggestRequest(BaseModel):
+    categories: list[str] = Field(default_factory=list)
+    model: str = "60-20-20"
+
 def month_start(month: str) -> datetime:
     try:
         year, month_number = [int(part) for part in month.split("-")]
@@ -341,6 +345,73 @@ def serialize_category_budget(budget: CategoryBudget):
         "items": items,
         "created_at": budget.created_at.isoformat() if budget.created_at else None,
     }
+
+def fallback_budget_bucket(category: str) -> str:
+    value = category.lower()
+    if any(token in value for token in ["investment", "saving", "emergency", "debt", "loan", "tfsa", "rrsp"]):
+        return "savings"
+    if any(token in value for token in ["coffee", "restaurant", "leisure", "entertainment", "travel", "clothing", "subscription"]):
+        return "wants"
+    if any(token in value for token in ["rent", "housing", "food", "grocery", "transport", "gas", "car", "insurance", "phone", "health", "wellness", "education"]):
+        return "needs"
+    return "wants"
+
+@app.post("/budget-methodology/suggest")
+def suggest_budget_methodology_mapping(request: BudgetMethodologySuggestRequest):
+    categories = [
+        category.strip()
+        for category in request.categories
+        if category and category.strip() and category.strip() not in {"Salary", "Other Income", "Transfer"}
+    ]
+    fallback = {category: fallback_budget_bucket(category) for category in categories}
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not anthropic_api_key or not categories:
+        return {"mapping": fallback, "source": "fallback"}
+
+    system_prompt = """You classify personal finance categories into budget buckets.
+Return only compact JSON in this exact shape: {"mapping":{"Category":"needs|wants|savings"}}.
+Use:
+- needs: required living costs such as rent, housing, groceries, basic food, transport, gas, car, insurance, phone, health, education, required bills.
+- wants: flexible lifestyle costs such as coffee, restaurants, leisure, entertainment, subscriptions, travel, clothing.
+- savings: investments, savings, emergency fund, debt acceleration, future goals.
+If a category is personal/ambiguous, choose the most likely bucket and keep the category name exactly as provided."""
+
+    try:
+        resp = http_requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": anthropic_api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 800,
+                "system": system_prompt,
+                "messages": [{
+                    "role": "user",
+                    "content": auth_json.dumps({
+                        "budget_model": request.model,
+                        "categories": categories,
+                    }),
+                }],
+            },
+            timeout=45,
+        )
+        body = resp.json()
+        if resp.status_code >= 400:
+            return {"mapping": fallback, "source": "fallback"}
+        text = body["content"][0]["text"]
+        parsed = auth_json.loads(text)
+        raw_mapping = parsed.get("mapping", {})
+        allowed = {"needs", "wants", "savings"}
+        mapping = {}
+        for category in categories:
+            bucket = raw_mapping.get(category)
+            mapping[category] = bucket if bucket in allowed else fallback[category]
+        return {"mapping": mapping, "source": "ai"}
+    except Exception:
+        return {"mapping": fallback, "source": "fallback"}
 
 @app.get("/category-budgets")
 def list_category_budgets(month: Optional[str] = None, db: Session = Depends(get_db)):

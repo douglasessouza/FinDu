@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CreditCard, Save, Target, X } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, ChevronRight, Save, Target, Wand2, X } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category, CategoryBudget, Transaction } from '../services/api'
 
@@ -13,6 +13,74 @@ interface Row {
   real: number
   variance: number
 }
+
+type BudgetBucket = 'needs' | 'wants' | 'savings'
+type BudgetMethodKey = '50-30-20' | '60-20-20' | '60-30-10' | 'custom'
+
+interface BudgetMethod {
+  label: string
+  description: string
+  buckets: Record<BudgetBucket, number>
+}
+
+interface BudgetMethodState {
+  selectedMethod: BudgetMethodKey
+  customBuckets: Record<BudgetBucket, number>
+  categoryMap: Record<string, BudgetBucket>
+}
+
+const BUDGET_BUCKETS: { key: BudgetBucket; label: string; description: string; color: string }[] = [
+  {
+    key: 'needs',
+    label: 'Needs',
+    description: 'Rent, groceries, insurance, phone, transport, and required bills.',
+    color: 'bg-[#1B4D3E]',
+  },
+  {
+    key: 'wants',
+    label: 'Wants',
+    description: 'Coffee, restaurants, leisure, entertainment, travel, and flexible lifestyle.',
+    color: 'bg-[#C9A84C]',
+  },
+  {
+    key: 'savings',
+    label: 'Savings / Investments',
+    description: 'Savings, investments, debt acceleration, and future goals.',
+    color: 'bg-[#2D6A4F]',
+  },
+]
+
+const BUDGET_METHODS: Record<BudgetMethodKey, BudgetMethod> = {
+  '50-30-20': {
+    label: '50/30/20',
+    description: 'Classic split for needs, wants, and savings.',
+    buckets: { needs: 50, wants: 30, savings: 20 },
+  },
+  '60-20-20': {
+    label: '60/20/20',
+    description: 'More room for essentials while preserving a strong savings target.',
+    buckets: { needs: 60, wants: 20, savings: 20 },
+  },
+  '60-30-10': {
+    label: '60/30/10',
+    description: 'Useful when essentials are high and savings need a gradual ramp.',
+    buckets: { needs: 60, wants: 30, savings: 10 },
+  },
+  custom: {
+    label: 'Custom Douglas Plan',
+    description: 'Your own allocation, editable as your priorities change.',
+    buckets: { needs: 60, wants: 20, savings: 20 },
+  },
+}
+
+const DEFAULT_METHOD_STATE: BudgetMethodState = {
+  selectedMethod: '60-20-20',
+  customBuckets: { needs: 60, wants: 20, savings: 20 },
+  categoryMap: {},
+}
+
+const METHOD_STORAGE_KEY = 'findu_budget_methodology'
+const EXCLUDED_METHOD_CATEGORIES = new Set(['Salary', 'Other Income', 'Transfer'])
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -29,13 +97,43 @@ function addMonths(month: string, delta: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
-function cycleDate(month: string, day: number): Date {
-  const [year, monthNumber] = month.split('-').map(Number)
-  return new Date(year, monthNumber - 1, Math.min(day, new Date(year, monthNumber, 0).getDate()))
+function defaultBucketForCategory(category: string): BudgetBucket {
+  const value = category.toLowerCase()
+  if (/(investment|saving|emergency|debt|loan|tfsa|rrsp)/.test(value)) return 'savings'
+  if (/(coffee|restaurant|leisure|entertainment|travel|clothing|subscription)/.test(value)) return 'wants'
+  if (/(rent|housing|food|grocery|transport|gas|car|insurance|phone|health|wellness|education)/.test(value)) return 'needs'
+  return 'wants'
 }
 
-function shortDate(date: Date): string {
-  return date.toLocaleDateString('en', { month: 'short', day: 'numeric' })
+function loadMethodState(): BudgetMethodState {
+  try {
+    const raw = localStorage.getItem(METHOD_STORAGE_KEY)
+    if (!raw) return DEFAULT_METHOD_STATE
+    const parsed = JSON.parse(raw) as Partial<BudgetMethodState>
+    return {
+      selectedMethod: parsed.selectedMethod && BUDGET_METHODS[parsed.selectedMethod] ? parsed.selectedMethod : DEFAULT_METHOD_STATE.selectedMethod,
+      customBuckets: {
+        ...DEFAULT_METHOD_STATE.customBuckets,
+        ...(parsed.customBuckets || {}),
+      },
+      categoryMap: parsed.categoryMap || {},
+    }
+  } catch {
+    return DEFAULT_METHOD_STATE
+  }
+}
+
+function saveMethodState(state: BudgetMethodState) {
+  localStorage.setItem(METHOD_STORAGE_KEY, JSON.stringify(state))
+}
+
+function bucketStatus(actual: number, target: number): { label: string; className: string } {
+  if (target <= 0 && actual <= 0) return { label: 'No activity', className: 'text-[#8BAE90]' }
+  if (target <= 0) return { label: 'Review', className: 'text-[#B85050]' }
+  const ratio = actual / target
+  if (ratio <= 0.9) return { label: 'On track', className: 'text-[#1B6B3A]' }
+  if (ratio <= 1.05) return { label: 'Close', className: 'text-[#C9A84C]' }
+  return { label: 'Over target', className: 'text-[#B85050]' }
 }
 
 export default function PlannedVsReal() {
@@ -45,12 +143,14 @@ export default function PlannedVsReal() {
   const [categories, setCategories] = useState<string[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
-  const [showAllCycles, setShowAllCycles] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
+  const [methodState, setMethodState] = useState<BudgetMethodState>(() => loadMethodState())
+  const [mappingLoading, setMappingLoading] = useState(false)
+  const [mappingMessage, setMappingMessage] = useState('')
 
   useEffect(() => {
     async function load() {
@@ -167,25 +267,6 @@ export default function PlannedVsReal() {
     }),
     { planned: 0, real: 0, variance: 0 },
   )
-  const cards = accounts
-    .filter(account => account.account_type === 'CREDIT_CARD' && account.closing_day && account.due_day)
-    .sort((a, b) => (a.closing_day || 0) - (b.closing_day || 0))
-  const now = new Date()
-  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const cycleStatus = selectedMonth < currentMonth
-    ? 'Closed'
-    : selectedMonth > currentMonth
-      ? 'Upcoming'
-      : cards.some(card => cycleDate(selectedMonth, card.closing_day || 1) >= new Date(now.getFullYear(), now.getMonth(), now.getDate()))
-        ? 'Open'
-        : 'Closed'
-  const nextClosing = selectedMonth === currentMonth
-    ? cards
-      .map(card => ({ card, date: cycleDate(selectedMonth, card.closing_day || 1) }))
-      .filter(item => item.date >= new Date(now.getFullYear(), now.getMonth(), now.getDate()))
-      .sort((a, b) => a.date.getTime() - b.date.getTime())[0]
-    : undefined
-
   const categoryTransactions = useMemo(() => {
     if (!selectedCategory || !selectedMonth) return []
 
@@ -217,6 +298,54 @@ export default function PlannedVsReal() {
   const plannedTotal = plannedBudgetItems.reduce((sum, budget) => sum + budget.amount, 0)
   const modalTotal = categoryTransactions.reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
   const pendingChanges = Object.keys(editedCats).length
+  const methodCategories = useMemo(() => {
+    return Array.from(new Set([
+      ...categories,
+      ...rows.map(row => row.category),
+      ...budgets.map(budget => budget.category),
+    ]))
+      .filter(category => category && !EXCLUDED_METHOD_CATEGORIES.has(category))
+      .sort()
+  }, [budgets, categories, rows])
+  const categoryMap = useMemo(() => {
+    return methodCategories.reduce<Record<string, BudgetBucket>>((lookup, category) => {
+      lookup[category] = methodState.categoryMap[category] || defaultBucketForCategory(category)
+      return lookup
+    }, {})
+  }, [methodCategories, methodState.categoryMap])
+  const selectedBuckets = methodState.selectedMethod === 'custom'
+    ? methodState.customBuckets
+    : BUDGET_METHODS[methodState.selectedMethod].buckets
+  const monthlyIncomeCad = useMemo(() => {
+    return transactions
+      .filter(tx => tx.amount > 0)
+      .filter(tx => tx.currency === 'CAD')
+      .filter(tx => (tx.category || 'Other') !== 'Transfer')
+      .filter(tx => tx.date?.slice(0, 7) === selectedMonth)
+      .reduce((sum, tx) => sum + tx.amount, 0)
+  }, [selectedMonth, transactions])
+  const bucketRows = BUDGET_BUCKETS.map(bucket => {
+    const categoriesInBucket = methodCategories.filter(category => categoryMap[category] === bucket.key)
+    const actual = rows
+      .filter(row => categoryMap[row.category] === bucket.key)
+      .reduce((sum, row) => sum + row.real, 0)
+    const target = monthlyIncomeCad * (selectedBuckets[bucket.key] / 100)
+    const status = bucketStatus(actual, target)
+    return {
+      ...bucket,
+      percent: selectedBuckets[bucket.key],
+      target,
+      actual,
+      variance: target - actual,
+      categories: categoriesInBucket,
+      status,
+    }
+  })
+  const percentTotal = Object.values(selectedBuckets).reduce((sum, value) => sum + Number(value || 0), 0)
+
+  useEffect(() => {
+    saveMethodState(methodState)
+  }, [methodState])
 
   function prevMonth() {
     setSelectedMonth(month => addMonths(month, -1))
@@ -261,6 +390,70 @@ export default function PlannedVsReal() {
     }
   }
 
+  function updateMethodState(updates: Partial<BudgetMethodState>) {
+    setMappingMessage('')
+    setMethodState(current => ({ ...current, ...updates }))
+  }
+
+  function updateCategoryBucket(category: string, bucket: BudgetBucket) {
+    setMappingMessage('')
+    setMethodState(current => ({
+      ...current,
+      categoryMap: {
+        ...current.categoryMap,
+        [category]: bucket,
+      },
+    }))
+  }
+
+  function updateCustomBucket(bucket: BudgetBucket, value: number) {
+    setMethodState(current => ({
+      ...current,
+      selectedMethod: 'custom',
+      customBuckets: {
+        ...current.customBuckets,
+        [bucket]: Number.isFinite(value) ? value : 0,
+      },
+    }))
+  }
+
+  async function autoMapCategories() {
+    setMappingLoading(true)
+    setMappingMessage('')
+    try {
+      const res = await api.post('/budget-methodology/suggest', {
+        categories: methodCategories,
+        model: methodState.selectedMethod,
+      })
+      const suggestions = (res.data?.mapping || {}) as Record<string, BudgetBucket>
+      setMethodState(current => ({
+        ...current,
+        categoryMap: {
+          ...current.categoryMap,
+          ...suggestions,
+        },
+      }))
+      setMappingMessage(res.data?.source === 'fallback'
+        ? 'Mapped with FinDu rules. Review before relying on it.'
+        : 'AI mapped your categories. Review and adjust if needed.')
+    } catch {
+      const fallback = methodCategories.reduce<Record<string, BudgetBucket>>((lookup, category) => {
+        lookup[category] = defaultBucketForCategory(category)
+        return lookup
+      }, {})
+      setMethodState(current => ({
+        ...current,
+        categoryMap: {
+          ...current.categoryMap,
+          ...fallback,
+        },
+      }))
+      setMappingMessage('AI was unavailable, so FinDu used local rules. Review before relying on it.')
+    } finally {
+      setMappingLoading(false)
+    }
+  }
+
   return (
     <div className="w-full max-w-7xl mx-auto px-6">
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
@@ -269,7 +462,7 @@ export default function PlannedVsReal() {
             <Target size={24} />
             Budget & Card Cycles
           </h1>
-          <p className="text-sm text-[#7BAE8A] mt-1">See how much of each category budget remains in the selected card cycle.</p>
+          <p className="text-sm text-[#7BAE8A] mt-1">Compare your real spending against budgets and a flexible money methodology.</p>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={prevMonth} className="p-2 rounded-lg hover:bg-[#D4E4D5] transition text-[#1B4D3E]">
@@ -286,45 +479,143 @@ export default function PlannedVsReal() {
         <div className="text-center text-[#8BAE90] py-20">Loading planned vs real...</div>
       ) : (
         <>
-          <div className="bg-[#1B4D3E] text-white rounded-xl p-4 mb-5">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <span className="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
-                  <CreditCard size={18} />
-                </span>
-                <div>
-                  <p className="text-sm font-bold">{monthLabel(selectedMonth)} spending cycle · {cycleStatus}</p>
-                  <p className="text-xs text-white/75 mt-1">
-                    {nextClosing
-                      ? `Next closing: ${nextClosing.card.name}, ${shortDate(nextClosing.date)} · paid ${shortDate(cycleDate(addMonths(selectedMonth, 1), nextClosing.card.due_day || 1))}`
-                      : 'Closing dates define the spending cycle. Due dates define when the bill enters Monthly Cash Flow.'}
-                  </p>
-                </div>
+          <section className="bg-white border border-[#D4E4D5] rounded-xl p-5 mb-6">
+            <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-5 mb-5">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Budget methodology</p>
+                <h2 className="text-xl font-bold text-[#1B4D3E] mt-1">Recommended allocation</h2>
+                <p className="text-sm text-[#7BAE8A] mt-1 max-w-3xl">
+                  Pick a rule, map each FinDu category to a bucket, and compare your real spending against a target based on this month's CAD income.
+                </p>
               </div>
               <button
-                onClick={() => setShowAllCycles(value => !value)}
-                className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-xs font-semibold transition"
+                type="button"
+                onClick={autoMapCategories}
+                disabled={mappingLoading || methodCategories.length === 0}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-[#1B4D3E] text-white text-sm font-bold hover:bg-[#2D6A4F] transition disabled:opacity-50"
               >
-                {showAllCycles ? 'Hide card cycles' : 'View all card cycles'}
-                {showAllCycles ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                <Wand2 size={16} />
+                {mappingLoading ? 'Mapping...' : 'Auto-map with AI'}
               </button>
             </div>
-            {showAllCycles && (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 mt-4 pt-4 border-t border-white/15">
-                {cards.map(card => {
-                  const closing = cycleDate(selectedMonth, card.closing_day || 1)
-                  const payment = cycleDate(addMonths(selectedMonth, 1), card.due_day || 1)
+
+            <div className="grid gap-2 md:grid-cols-4 mb-5">
+              {(Object.keys(BUDGET_METHODS) as BudgetMethodKey[]).map(methodKey => {
+                const method = BUDGET_METHODS[methodKey]
+                const active = methodState.selectedMethod === methodKey
+                return (
+                  <button
+                    key={methodKey}
+                    type="button"
+                    onClick={() => updateMethodState({ selectedMethod: methodKey })}
+                    className={`rounded-lg border px-4 py-3 text-left transition ${
+                      active
+                        ? 'border-[#1B4D3E] bg-[#EDF4EE]'
+                        : 'border-[#D4E4D5] bg-[#F8FBF8] hover:border-[#9CC7A7]'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-bold text-[#1B4D3E]">{method.label}</p>
+                      {active && <CheckCircle2 size={16} className="text-[#1B6B3A]" />}
+                    </div>
+                    <p className="text-xs text-[#7BAE8A] mt-1">{method.description}</p>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+              <div className="grid gap-3 md:grid-cols-3">
+                {bucketRows.map(bucket => {
+                  const progress = bucket.target > 0 ? Math.min((bucket.actual / bucket.target) * 100, 140) : 0
                   return (
-                    <div key={card.id} className="rounded-lg bg-white/10 px-3 py-2">
-                      <p className="text-sm font-bold truncate">{card.name}</p>
-                      <p className="text-xs text-white/75 mt-1">Closes {shortDate(closing)}</p>
-                      <p className="text-xs text-[#E8C84A]">Paid {shortDate(payment)}</p>
+                    <div key={bucket.key} className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-[#1B4D3E]">{bucket.label}</p>
+                          <p className="text-xs text-[#7BAE8A] mt-1">{bucket.description}</p>
+                        </div>
+                        <div className="w-20 shrink-0">
+                          <label className="sr-only">{bucket.label} target percent</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={bucket.percent}
+                            onChange={event => updateCustomBucket(bucket.key, Number(event.target.value))}
+                            className="w-full rounded-lg border border-[#D4E4D5] bg-white px-2 py-1.5 text-right text-sm font-bold text-[#1B4D3E] focus:outline-none focus:border-[#1B4D3E]"
+                          />
+                        </div>
+                      </div>
+                      <div className="mt-4">
+                        <div className="flex items-center justify-between text-xs font-semibold">
+                          <span className="text-[#7BAE8A]">Actual CAD$ {fmt(bucket.actual)}</span>
+                          <span className={bucket.status.className}>{bucket.status.label}</span>
+                        </div>
+                        <div className="mt-2 h-2 rounded-full bg-white border border-[#D4E4D5] overflow-hidden">
+                          <div className={`${bucket.color} h-full rounded-full`} style={{ width: `${Math.min(progress, 100)}%` }} />
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <p className="text-[#8BAE90]">Target</p>
+                            <p className="font-bold text-[#1B4D3E]">CAD$ {fmt(bucket.target)}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-[#8BAE90]">Difference</p>
+                            <p className={`font-bold ${bucket.variance >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                              {bucket.variance >= 0 ? 'Under' : 'Over'} CAD$ {fmt(Math.abs(bucket.variance))}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )
                 })}
               </div>
-            )}
-          </div>
+
+              <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] p-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-sm font-bold text-[#1B4D3E]">Category mapping</p>
+                    <p className="text-xs text-[#7BAE8A] mt-1">AI suggests buckets; you approve the final setup.</p>
+                  </div>
+                  <span className={`text-xs font-bold ${percentTotal === 100 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                    {percentTotal}%
+                  </span>
+                </div>
+                {mappingMessage && (
+                  <div className="rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-xs font-semibold text-[#1B4D3E] mb-3">
+                    {mappingMessage}
+                  </div>
+                )}
+                <div className="max-h-64 overflow-auto space-y-2 pr-1">
+                  {methodCategories.length === 0 ? (
+                    <p className="text-sm text-[#8BAE90]">No expense categories found yet.</p>
+                  ) : (
+                    methodCategories.map(category => (
+                      <div key={category} className="grid grid-cols-[minmax(0,1fr)_150px] gap-2 items-center">
+                        <p className="truncate text-sm font-semibold text-[#1B4D3E]">{category}</p>
+                        <select
+                          value={categoryMap[category]}
+                          onChange={event => updateCategoryBucket(category, event.target.value as BudgetBucket)}
+                          className="rounded-lg border border-[#D4E4D5] bg-white px-2 py-1.5 text-xs font-semibold text-[#1B4D3E] focus:outline-none focus:border-[#1B4D3E]"
+                        >
+                          {BUDGET_BUCKETS.map(bucket => (
+                            <option key={bucket.key} value={bucket.key}>{bucket.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="mt-3 rounded-lg bg-white border border-[#D4E4D5] px-3 py-2">
+                  <p className="text-xs text-[#7BAE8A]">
+                    Income base: <span className="font-bold text-[#1B4D3E]">CAD$ {fmt(monthlyIncomeCad)}</span>. If this looks low, import or classify salary transactions for {monthLabel(selectedMonth)}.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </section>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
             <div className="bg-white border border-[#D4E4D5] rounded-xl p-4">
