@@ -60,7 +60,6 @@ const navReports = [
   { to: '/planned-vs-real', icon: Target, label: 'Budget & Card Cycles' },
   { to: '/investments', icon: PiggyBank, label: 'Investments' },
   { to: '/spending', icon: TrendingUp, label: 'Spending Analysis' },
-  { to: '/chat', icon: MessageCircle, label: 'Financial Chat' },
   { to: '/transactions', icon: Receipt, label: 'Transactions' },
 ]
 
@@ -153,6 +152,19 @@ function Sidebar() {
       ))}
 
       <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest px-2 mt-4 mb-1">Help</p>
+      <NavLink
+        to="/chat"
+        className={({ isActive }) =>
+          `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors mb-0.5 ${
+            isActive
+              ? 'bg-[#EDF4EE] text-[#1B4D3E] font-semibold border-l-[3px] border-[#E8C84A]'
+              : 'text-[#8BAE90] hover:bg-[#F4FAF5] hover:text-[#1B4D3E]'
+          }`
+        }
+      >
+        <MessageCircle size={15} />
+        Financial Chat
+      </NavLink>
       <NavLink
         to="/currency-converter"
         className={({ isActive }) =>
