@@ -1,12 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import axios from 'axios'
 import { ArrowLeftRight, RefreshCw } from 'lucide-react'
+import api from '../services/api'
 
 type Currency = 'CAD' | 'USD' | 'BRL'
 
 interface RatesResponse {
-  rates: Record<string, number>
-  time_last_updated?: number
+  base: Currency
+  rates: Record<Currency, number | null>
+  rate_last_updated_at?: string | null
+  rate_next_update_at?: string | null
+  fetched_at?: string | null
+  source?: string
+  update_frequency?: 'hourly' | 'daily'
 }
 
 const CURRENCIES: {
@@ -30,9 +35,9 @@ function parseAmount(value: string): number {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-function formatUpdatedAt(timestamp?: number): string {
-  if (!timestamp) return 'Updated just now'
-  return new Date(timestamp * 1000).toLocaleString('en-CA', {
+function formatUpdatedAt(timestamp?: string | null): string {
+  if (!timestamp) return 'Not available yet'
+  return new Date(timestamp).toLocaleString('en-CA', {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -42,7 +47,10 @@ function formatUpdatedAt(timestamp?: number): string {
 
 export default function CurrencyConverter() {
   const [rates, setRates] = useState<Record<Currency, number> | null>(null)
-  const [updatedAt, setUpdatedAt] = useState<number | undefined>()
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null)
+  const [fetchedAt, setFetchedAt] = useState<string | null>(null)
+  const [nextUpdateAt, setNextUpdateAt] = useState<string | null>(null)
+  const [frequency, setFrequency] = useState<'hourly' | 'daily'>('daily')
   const [baseCurrency, setBaseCurrency] = useState<Currency>('CAD')
   const [amountText, setAmountText] = useState('1')
   const [loading, setLoading] = useState(true)
@@ -52,13 +60,21 @@ export default function CurrencyConverter() {
     setLoading(true)
     setError('')
     try {
-      const res = await axios.get<RatesResponse>('https://api.exchangerate-api.com/v4/latest/CAD')
+      const res = await api.get<RatesResponse>('/exchange-rates', { params: { base: 'CAD' } })
+      const usdRate = Number(res.data.rates.USD)
+      const brlRate = Number(res.data.rates.BRL)
+      if (!Number.isFinite(usdRate) || !Number.isFinite(brlRate) || usdRate <= 0 || brlRate <= 0) {
+        throw new Error('Missing exchange rates')
+      }
       setRates({
-        CAD: 1,
-        USD: res.data.rates.USD,
-        BRL: res.data.rates.BRL,
+        CAD: Number(res.data.rates.CAD || 1),
+        USD: usdRate,
+        BRL: brlRate,
       })
-      setUpdatedAt(res.data.time_last_updated)
+      setUpdatedAt(res.data.rate_last_updated_at || null)
+      setFetchedAt(res.data.fetched_at || null)
+      setNextUpdateAt(res.data.rate_next_update_at || null)
+      setFrequency(res.data.update_frequency || 'daily')
     } catch {
       setError('Could not load live exchange rates.')
     } finally {
@@ -96,7 +112,7 @@ export default function CurrencyConverter() {
             Currency Converter
           </h1>
           <p className="text-sm text-[#7BAE8A] mt-1">
-            Convert between CAD, USD, and BRL using the latest available exchange rate.
+            Convert between CAD, USD, and BRL using the freshest available exchange rate.
           </p>
         </div>
         <button
@@ -116,13 +132,43 @@ export default function CurrencyConverter() {
             <p className="text-xs font-bold uppercase tracking-widest text-[#8BAE90]">Live conversion</p>
             <h2 className="mt-1 text-xl font-bold text-[#1B4D3E]">Type in any currency</h2>
           </div>
-          <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-3 py-2 text-right">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-[#8BAE90]">Last rate update</p>
-            <p className="text-xs font-semibold text-[#1B4D3E]">
-              {loading ? 'Loading latest rates...' : formatUpdatedAt(updatedAt)}
-            </p>
+          <div className="grid gap-2 text-right">
+            <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-3 py-2">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-[#8BAE90]">Last rate update</p>
+              <p className="text-xs font-semibold text-[#1B4D3E]">
+                {loading ? 'Loading latest rates...' : formatUpdatedAt(updatedAt)}
+              </p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 text-[11px] font-bold">
+              <span
+                className={`rounded-full border px-2.5 py-1 ${
+                  frequency === 'hourly'
+                    ? 'border-[#8DBE9B] bg-[#EDF8F0] text-[#1B6B3A]'
+                    : 'border-[#E8C84A] bg-[#FFF9D8] text-[#8A6D00]'
+                }`}
+              >
+                {frequency === 'hourly' ? 'Hourly provider' : 'Daily fallback'}
+              </span>
+              {fetchedAt && (
+                <span className="rounded-full border border-[#D4E4D5] bg-white px-2.5 py-1 text-[#1B4D3E]">
+                  Fetched {formatUpdatedAt(fetchedAt)}
+                </span>
+              )}
+            </div>
           </div>
         </div>
+
+        {frequency === 'daily' && !loading && (
+          <div className="mb-4 rounded-lg border border-[#E8C84A] bg-[#FFF9D8] px-4 py-3 text-sm font-semibold text-[#7A6200]">
+            Hourly refresh is ready in the app. Add the EXCHANGE_RATE_API_KEY secret to switch from daily fallback to hourly rates.
+          </div>
+        )}
+
+        {frequency === 'hourly' && nextUpdateAt && (
+          <div className="mb-4 rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-4 py-3 text-sm font-semibold text-[#1B4D3E]">
+            Next provider refresh: {formatUpdatedAt(nextUpdateAt)}.
+          </div>
+        )}
 
         {error && (
           <div className="mb-4 rounded-lg border border-[#E8A09A] bg-[#FFF1F0] px-4 py-3 text-sm font-semibold text-[#B85050]">

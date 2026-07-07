@@ -16,7 +16,6 @@ import FinancialChat from './pages/FinancialChat'
 import InvestmentPlanning from './pages/InvestmentPlanning'
 import CurrencyConverter from './pages/CurrencyConverter'
 import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
-import axios from 'axios'
 
 type AuthStatus = {
   requires_auth: boolean
@@ -77,13 +76,15 @@ function Sidebar() {
   useEffect(() => {
     async function loadFx() {
       try {
-        const [r1, r2] = await Promise.all([
-          axios.get('https://api.exchangerate-api.com/v4/latest/USD'),
-          axios.get('https://api.exchangerate-api.com/v4/latest/CAD'),
-        ])
+        const res = await api.get('/exchange-rates', { params: { base: 'CAD' } })
+        const usdRate = Number(res.data.rates.USD)
+        const brlRate = Number(res.data.rates.BRL)
+        if (!Number.isFinite(usdRate) || !Number.isFinite(brlRate) || usdRate <= 0 || brlRate <= 0) {
+          throw new Error('Missing exchange rates')
+        }
         setFx({
-          usd_cad: r1.data.rates.CAD,
-          cad_brl: r2.data.rates.BRL,
+          usd_cad: 1 / usdRate,
+          cad_brl: brlRate,
         })
       } catch {
         setFx(null)

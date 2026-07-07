@@ -23,6 +23,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 APP_PASSWORD = os.getenv("FINDU_APP_PASSWORD")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
 ALLOWED_GOOGLE_EMAILS = {
     email.strip().lower()
     for email in os.getenv("ALLOWED_GOOGLE_EMAILS", "").split(",")
@@ -163,6 +164,66 @@ def auth_google(login: GoogleLoginRequest):
 @app.get("/auth/me")
 def auth_me():
     return {"authenticated": True}
+
+@app.get("/exchange-rates")
+def exchange_rates(base: str = "CAD"):
+    base_currency = base.upper()
+    supported = {"CAD", "USD", "BRL"}
+    if base_currency not in supported:
+        raise HTTPException(status_code=400, detail="Unsupported currency")
+
+    fetched_at = datetime.utcnow().isoformat() + "Z"
+
+    if EXCHANGE_RATE_API_KEY:
+        try:
+            response = http_requests.get(
+                f"https://v6.exchangerate-api.com/v6/{EXCHANGE_RATE_API_KEY}/latest/{base_currency}",
+                timeout=12,
+            )
+            if response.status_code != 200:
+                raise HTTPException(status_code=502, detail="Could not load hourly exchange rates")
+            payload = response.json()
+            rates = payload.get("conversion_rates") or {}
+            if payload.get("result") != "success" or not rates:
+                raise HTTPException(status_code=502, detail="Invalid hourly exchange rate response")
+
+            updated_unix = int(payload.get("time_last_update_unix") or time.time())
+            next_unix = int(payload.get("time_next_update_unix") or updated_unix)
+            return {
+                "base": base_currency,
+                "rates": {currency: rates.get(currency) for currency in supported},
+                "rate_last_updated_at": datetime.utcfromtimestamp(updated_unix).isoformat() + "Z",
+                "rate_next_update_at": datetime.utcfromtimestamp(next_unix).isoformat() + "Z",
+                "fetched_at": fetched_at,
+                "source": "exchange-rate-api-v6",
+                "update_frequency": "hourly",
+            }
+        except Exception:
+            pass
+
+    try:
+        response = http_requests.get(
+            f"https://api.exchangerate-api.com/v4/latest/{base_currency}",
+            timeout=12,
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="Could not load exchange rates")
+        payload = response.json()
+        rates = payload.get("rates") or {}
+        updated_unix = int(payload.get("time_last_updated") or time.time())
+        return {
+            "base": base_currency,
+            "rates": {currency: rates.get(currency) for currency in supported},
+            "rate_last_updated_at": datetime.utcfromtimestamp(updated_unix).isoformat() + "Z",
+            "rate_next_update_at": None,
+            "fetched_at": fetched_at,
+            "source": "exchange-rate-api-v4-public",
+            "update_frequency": "daily",
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="Could not load exchange rates")
 
 def get_db():
     db = SessionLocal()
