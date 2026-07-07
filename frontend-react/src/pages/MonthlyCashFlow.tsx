@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, CircleHelp, Sparkles } from 'lucide-react'
 import api from '../services/api'
 import CardCycleSummary from '../components/CardCycleSummary'
+import { investmentSummaryForMonth } from '../utils/investmentPlans'
 import type {
   Account,
   RecurringExpense,
@@ -408,6 +409,9 @@ export default function MonthlyCashFlow() {
             }, 0)
             const plannedFixedExpenses = totalRecurringExpensesPlanned + totalCardsPlanned
             const openFixedExpenses = remainingRecurringExpenses + remainingCards
+            const investmentSavings = currency === 'CAD'
+              ? investmentSummaryForMonth(monthStr, 'CAD')
+              : { plannedDue: 0, savedActual: 0, remainingDue: 0, openPlans: 0 }
             const payrollIncome = incomeList.filter(item => {
               const text = `${item.name} ${item.category || ''}`.toLowerCase()
               return text.includes('payroll') || text.includes('salary')
@@ -416,15 +420,15 @@ export default function MonthlyCashFlow() {
             const payrollIncomeTotal = payrollIncome.reduce((s, r) => s + r.amount, 0)
             const plannedOtherIncomeTotal = otherIncome.reduce((s, r) => s + r.amount, 0)
             const otherIncomeTotal = plannedOtherIncomeTotal + actualOtherIncomeTotal
-            const projectedBalance = inBank + remainingIncome - openFixedExpenses
+            const projectedBalance = inBank + remainingIncome - openFixedExpenses - investmentSavings.remainingDue
 
-            if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0) return null
+            if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0 && investmentSavings.plannedDue === 0) return null
 
             return (
               <div key={currency} className="mb-10">
                 <h2 className="text-lg font-bold text-[#1B4D3E] mb-4">{flag} {currency}</h2>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-5">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
                     <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Expected Income</p>
                     <p className="text-xl font-bold text-[#1B6B3A] mt-1">+ {symbol} {fmt(remainingIncome)}</p>
@@ -435,10 +439,17 @@ export default function MonthlyCashFlow() {
                     <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(plannedFixedExpenses)}</p>
                     <p className="text-xs text-[#8BAE90] mt-1">Recurring bills + cards due</p>
                   </div>
+                  <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
+                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Planned Savings</p>
+                    <p className="text-xl font-bold text-[#1B4D3E] mt-1">- {symbol} {fmt(investmentSavings.remainingDue)}</p>
+                    <p className="text-xs text-[#8BAE90] mt-1">
+                      {symbol} {fmt(investmentSavings.savedActual)} saved of {symbol} {fmt(investmentSavings.plannedDue)}
+                    </p>
+                  </div>
                   <div className="bg-[#2D6A4F] rounded-xl border border-[#2D6A4F] p-4">
                     <p className="text-[10px] font-semibold text-white uppercase tracking-widest">Projected End-of-Month</p>
                     <p className="text-xl font-bold text-[#E8C84A] mt-1">{symbol} {fmt(projectedBalance)}</p>
-                    <p className="text-xs text-white/80 mt-1">After expected income and open payments</p>
+                    <p className="text-xs text-white/80 mt-1">After income, open payments, and planned savings</p>
                   </div>
                 </div>
 
@@ -706,11 +717,11 @@ export default function MonthlyCashFlow() {
                     <div className="px-5 py-5 md:pt-0 bg-[#2D6A4F] md:rounded-br-xl">
                       <p className="text-xs text-white mb-1">Projected End-of-Month Balance</p>
                       <p className="text-2xl font-bold text-[#E8C84A]">{symbol} {fmt(projectedBalance)}</p>
-                      <p className="text-xs text-white/80 mt-1">After expected income and all remaining payments.</p>
+                      <p className="text-xs text-white/80 mt-1">After expected income, remaining payments, and planned savings.</p>
                     </div>
                   </div>
                   <p className="text-xs text-[#8BAE90] text-center py-2 border-t border-[#EDF4EE]">
-                    {fmt(inBank)} + expected income {fmt(remainingIncome)} - remaining payments {fmt(openFixedExpenses)} = {symbol} {fmt(projectedBalance)}
+                    {fmt(inBank)} + expected income {fmt(remainingIncome)} - remaining payments {fmt(openFixedExpenses)} - planned savings {fmt(investmentSavings.remainingDue)} = {symbol} {fmt(projectedBalance)}
                   </p>
                 </div>
 

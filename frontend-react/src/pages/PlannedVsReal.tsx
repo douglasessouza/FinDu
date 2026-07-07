@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, ChevronLeft, ChevronRight, Save, Target, Wand2, X } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category, CategoryBudget, RecurringExpense, Transaction } from '../services/api'
+import { investmentSummaryForMonth } from '../utils/investmentPlans'
 
 interface SpendingData {
   [month: string]: { [category: string]: { cards: number; debit: number } }
@@ -370,11 +371,20 @@ export default function PlannedVsReal() {
   }, [recurring, selectedMonth])
   const monthlyIncomeCad = actualIncomeCad > 0 ? actualIncomeCad : plannedIncomeCad
   const monthlyIncomeSource = actualIncomeCad > 0 ? 'actual received income' : plannedIncomeCad > 0 ? 'planned recurring income' : 'missing income'
+  const investmentMonthSummary = selectedMonth ? investmentSummaryForMonth(selectedMonth, 'CAD') : {
+    plannedDue: 0,
+    savedActual: 0,
+    remainingDue: 0,
+    openPlans: 0,
+  }
   const bucketRows = BUDGET_BUCKETS.map(bucket => {
     const categoriesInBucket = methodCategories.filter(category => categoryMap[category] === bucket.key)
-    const actual = rows
+    const categoryActual = rows
       .filter(row => categoryMap[row.category] === bucket.key)
       .reduce((sum, row) => sum + row.real, 0)
+    const actual = bucket.key === 'savings'
+      ? categoryActual + investmentMonthSummary.savedActual
+      : categoryActual
     const target = monthlyIncomeCad * (selectedBuckets[bucket.key] / 100)
     const actualPercent = monthlyIncomeCad > 0 ? (actual / monthlyIncomeCad) * 100 : 0
     const status = bucketStatus(actual, target)
@@ -681,6 +691,11 @@ export default function PlannedVsReal() {
                   <p className="text-xs text-[#7BAE8A]">
                     Income base: <span className="font-bold text-[#1B4D3E]">CAD$ {fmt(monthlyIncomeCad)}</span> from {monthlyIncomeSource}. If this looks low, update recurring income or classify salary transactions for {monthLabel(selectedMonth)}.
                   </p>
+                  {investmentMonthSummary.openPlans > 0 && (
+                    <p className="text-xs text-[#7BAE8A] mt-2">
+                      Investment plans: <span className="font-bold text-[#1B4D3E]">CAD$ {fmt(investmentMonthSummary.savedActual)}</span> saved of CAD$ {fmt(investmentMonthSummary.plannedDue)} planned this month.
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
