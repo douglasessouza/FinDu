@@ -29,24 +29,49 @@ interface BudgetMethodState {
   categoryMap: Record<string, BudgetBucket>
 }
 
-const BUDGET_BUCKETS: { key: BudgetBucket; label: string; description: string; color: string }[] = [
+const BUDGET_BUCKETS: {
+  key: BudgetBucket
+  label: string
+  description: string
+  color: string
+  accent: string
+  card: string
+  chip: string
+  select: string
+  ring: string
+}[] = [
   {
     key: 'needs',
     label: 'Needs',
     description: 'Rent, groceries, insurance, phone, transport, and required bills.',
-    color: 'bg-[#1B4D3E]',
+    color: 'bg-[#1F6F8B]',
+    accent: 'bg-[#1F6F8B]',
+    card: 'bg-[#F1F8FA] border-[#B7D8E2]',
+    chip: 'bg-[#DCEFF4] text-[#14566D] border-[#B7D8E2]',
+    select: 'bg-[#F1F8FA] text-[#14566D] border-[#B7D8E2]',
+    ring: 'focus:border-[#1F6F8B]',
   },
   {
     key: 'wants',
     label: 'Wants',
     description: 'Coffee, restaurants, leisure, entertainment, travel, and flexible lifestyle.',
     color: 'bg-[#C9A84C]',
+    accent: 'bg-[#C9A84C]',
+    card: 'bg-[#FFF9E9] border-[#E8D28C]',
+    chip: 'bg-[#FFF0B8] text-[#6F5608] border-[#E8D28C]',
+    select: 'bg-[#FFF9E9] text-[#6F5608] border-[#E8D28C]',
+    ring: 'focus:border-[#C9A84C]',
   },
   {
     key: 'savings',
     label: 'Savings / Investments',
     description: 'Savings, investments, debt acceleration, and future goals.',
     color: 'bg-[#2D6A4F]',
+    accent: 'bg-[#2D6A4F]',
+    card: 'bg-[#F1F8F4] border-[#B8D9C6]',
+    chip: 'bg-[#DCF0E5] text-[#1F5A3D] border-[#B8D9C6]',
+    select: 'bg-[#F1F8F4] text-[#1F5A3D] border-[#B8D9C6]',
+    ring: 'focus:border-[#2D6A4F]',
   },
 ]
 
@@ -535,10 +560,14 @@ export default function PlannedVsReal() {
                 {bucketRows.map(bucket => {
                   const progress = bucket.percent > 0 ? Math.min((bucket.actualPercent / bucket.percent) * 100, 140) : 0
                   return (
-                    <div key={bucket.key} className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] p-4">
+                    <div key={bucket.key} className={`rounded-lg border p-4 overflow-hidden relative ${bucket.card}`}>
+                      <div className={`absolute left-0 top-0 h-full w-1.5 ${bucket.accent}`} />
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-sm font-bold text-[#1B4D3E]">{bucket.label}</p>
+                          <div className="flex items-center gap-2">
+                            <span className={`w-3 h-3 rounded-full ${bucket.accent}`} />
+                            <p className="text-sm font-bold text-[#1B4D3E]">{bucket.label}</p>
+                          </div>
                           <p className="text-xs text-[#7BAE8A] mt-1">{bucket.description}</p>
                         </div>
                         <div className="w-20 shrink-0">
@@ -549,7 +578,7 @@ export default function PlannedVsReal() {
                             max="100"
                             value={bucket.percent}
                             onChange={event => updateCustomBucket(bucket.key, Number(event.target.value))}
-                            className="w-full rounded-lg border border-[#D4E4D5] bg-white px-2 py-1.5 text-right text-sm font-bold text-[#1B4D3E] focus:outline-none focus:border-[#1B4D3E]"
+                            className={`w-full rounded-lg border bg-white px-2 py-1.5 text-right text-sm font-bold focus:outline-none ${bucket.chip} ${bucket.ring}`}
                           />
                         </div>
                       </div>
@@ -609,20 +638,26 @@ export default function PlannedVsReal() {
                   {methodCategories.length === 0 ? (
                     <p className="text-sm text-[#8BAE90]">No expense categories found yet.</p>
                   ) : (
-                    methodCategories.map(category => (
-                      <div key={category} className="grid grid-cols-[minmax(0,1fr)_150px] gap-2 items-center">
-                        <p className="truncate text-sm font-semibold text-[#1B4D3E]">{category}</p>
-                        <select
-                          value={categoryMap[category]}
-                          onChange={event => updateCategoryBucket(category, event.target.value as BudgetBucket)}
-                          className="rounded-lg border border-[#D4E4D5] bg-white px-2 py-1.5 text-xs font-semibold text-[#1B4D3E] focus:outline-none focus:border-[#1B4D3E]"
-                        >
-                          {BUDGET_BUCKETS.map(bucket => (
-                            <option key={bucket.key} value={bucket.key}>{bucket.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                    ))
+                    methodCategories.map(category => {
+                      const mappedBucket = BUDGET_BUCKETS.find(bucket => bucket.key === categoryMap[category])
+                      return (
+                        <div key={category} className={`grid grid-cols-[minmax(0,1fr)_150px] gap-2 items-center rounded-lg border px-2 py-1.5 ${mappedBucket?.card || 'bg-white border-[#D4E4D5]'}`}>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${mappedBucket?.accent || 'bg-[#8BAE90]'}`} />
+                            <p className="truncate text-sm font-semibold text-[#1B4D3E]">{category}</p>
+                          </div>
+                          <select
+                            value={categoryMap[category]}
+                            onChange={event => updateCategoryBucket(category, event.target.value as BudgetBucket)}
+                            className={`rounded-lg border px-2 py-1.5 text-xs font-semibold focus:outline-none ${mappedBucket?.select || 'bg-white text-[#1B4D3E] border-[#D4E4D5]'}`}
+                          >
+                            {BUDGET_BUCKETS.map(bucket => (
+                              <option key={bucket.key} value={bucket.key}>{bucket.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )
+                    })
                   )}
                 </div>
                 <div className="mt-3 rounded-lg bg-white border border-[#D4E4D5] px-3 py-2">
