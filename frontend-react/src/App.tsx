@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle, PiggyBank } from 'lucide-react'
+import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle, PiggyBank, ArrowLeftRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import MonthlyCashFlow from './pages/MonthlyCashFlow'
@@ -14,6 +14,7 @@ import Categories from './pages/Categories'
 import HowItWorks from './pages/HowItWorks'
 import FinancialChat from './pages/FinancialChat'
 import InvestmentPlanning from './pages/InvestmentPlanning'
+import CurrencyConverter from './pages/CurrencyConverter'
 import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
 import axios from 'axios'
 
@@ -152,6 +153,19 @@ function Sidebar() {
       ))}
 
       <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest px-2 mt-4 mb-1">Help</p>
+      <NavLink
+        to="/currency-converter"
+        className={({ isActive }) =>
+          `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors mb-0.5 ${
+            isActive
+              ? 'bg-[#EDF4EE] text-[#1B4D3E] font-semibold border-l-[3px] border-[#E8C84A]'
+              : 'text-[#8BAE90] hover:bg-[#F4FAF5] hover:text-[#1B4D3E]'
+          }`
+        }
+      >
+        <ArrowLeftRight size={15} />
+        Currency Converter
+      </NavLink>
       <NavLink
         to="/how-it-works"
         className={({ isActive }) =>
@@ -365,6 +379,7 @@ export default function App() {
             <Route path="/cards" element={<CreditCards />} />
             <Route path="/recurring" element={<RecurringExpenses />} />
             <Route path="/categories" element={<Categories />} />
+            <Route path="/currency-converter" element={<CurrencyConverter />} />
             <Route path="/how-it-works" element={<HowItWorks />} />
           </Routes>
         </main>

@@ -1,0 +1,188 @@
+import { useEffect, useMemo, useState } from 'react'
+import axios from 'axios'
+import { ArrowLeftRight, RefreshCw } from 'lucide-react'
+
+type Currency = 'CAD' | 'USD' | 'BRL'
+
+interface RatesResponse {
+  rates: Record<string, number>
+  time_last_updated?: number
+}
+
+const CURRENCIES: {
+  code: Currency
+  label: string
+  symbol: string
+  helper: string
+}[] = [
+  { code: 'CAD', label: 'Canadian Dollar', symbol: 'CAD$', helper: 'Dólar canadense' },
+  { code: 'USD', label: 'US Dollar', symbol: 'US$', helper: 'Dólar americano' },
+  { code: 'BRL', label: 'Brazilian Real', symbol: 'R$', helper: 'Real brasileiro' },
+]
+
+function fmt(value: number): string {
+  return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function parseAmount(value: string): number {
+  const normalized = value.replace(/\s/g, '').replace(',', '.')
+  const parsed = Number(normalized)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function formatUpdatedAt(timestamp?: number): string {
+  if (!timestamp) return 'Updated just now'
+  return new Date(timestamp * 1000).toLocaleString('en-CA', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+export default function CurrencyConverter() {
+  const [rates, setRates] = useState<Record<Currency, number> | null>(null)
+  const [updatedAt, setUpdatedAt] = useState<number | undefined>()
+  const [baseCurrency, setBaseCurrency] = useState<Currency>('CAD')
+  const [amountText, setAmountText] = useState('1')
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  async function loadRates() {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await axios.get<RatesResponse>('https://api.exchangerate-api.com/v4/latest/CAD')
+      setRates({
+        CAD: 1,
+        USD: res.data.rates.USD,
+        BRL: res.data.rates.BRL,
+      })
+      setUpdatedAt(res.data.time_last_updated)
+    } catch {
+      setError('Could not load live exchange rates.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    loadRates()
+  }, [])
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  const converted = useMemo(() => {
+    if (!rates) return null
+    const amount = parseAmount(amountText)
+    const amountInCad = amount / rates[baseCurrency]
+    return CURRENCIES.reduce<Record<Currency, number>>((lookup, currency) => {
+      lookup[currency.code] = amountInCad * rates[currency.code]
+      return lookup
+    }, { CAD: 0, USD: 0, BRL: 0 })
+  }, [amountText, baseCurrency, rates])
+
+  function updateCurrencyInput(currency: Currency, value: string) {
+    setBaseCurrency(currency)
+    setAmountText(value)
+  }
+
+  return (
+    <div className="w-full max-w-5xl mx-auto px-6">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-[#1B4D3E] flex items-center gap-2">
+            <ArrowLeftRight size={24} />
+            Currency Converter
+          </h1>
+          <p className="text-sm text-[#7BAE8A] mt-1">
+            Convert between CAD, USD, and BRL using the latest available exchange rate.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={loadRates}
+          disabled={loading}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#D4E4D5] bg-white px-4 py-2.5 text-sm font-bold text-[#1B4D3E] transition hover:bg-[#F4FAF5] disabled:opacity-50"
+        >
+          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+          Refresh rates
+        </button>
+      </div>
+
+      <section className="rounded-xl border border-[#D4E4D5] bg-white p-5">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4 mb-5">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-widest text-[#8BAE90]">Live conversion</p>
+            <h2 className="mt-1 text-xl font-bold text-[#1B4D3E]">Type in any currency</h2>
+          </div>
+          <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-3 py-2 text-xs font-semibold text-[#7BAE8A]">
+            {loading ? 'Loading rates...' : formatUpdatedAt(updatedAt)}
+          </div>
+        </div>
+
+        {error && (
+          <div className="mb-4 rounded-lg border border-[#E8A09A] bg-[#FFF1F0] px-4 py-3 text-sm font-semibold text-[#B85050]">
+            {error}
+          </div>
+        )}
+
+        <div className="grid gap-3">
+          {CURRENCIES.map(currency => {
+            const value = currency.code === baseCurrency
+              ? amountText
+              : converted
+                ? fmt(converted[currency.code])
+                : ''
+
+            return (
+              <label
+                key={currency.code}
+                className={`grid gap-3 rounded-lg border px-4 py-4 md:grid-cols-[minmax(0,1fr)_180px] md:items-center ${
+                  currency.code === baseCurrency
+                    ? 'border-[#1B4D3E] bg-[#EDF4EE]'
+                    : 'border-[#D4E4D5] bg-[#F8FBF8]'
+                }`}
+              >
+                <div>
+                  <p className="text-lg font-bold text-[#1B4D3E]">{currency.label}</p>
+                  <p className="text-xs font-semibold text-[#7BAE8A]">{currency.helper}</p>
+                </div>
+                <div className="flex items-center gap-2 rounded-lg border border-[#D4E4D5] bg-white px-3 py-2">
+                  <span className="w-12 text-xs font-bold text-[#8BAE90]">{currency.symbol}</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={value}
+                    onChange={event => updateCurrencyInput(currency.code, event.target.value)}
+                    className="min-w-0 flex-1 bg-transparent text-right text-lg font-bold text-[#1B4D3E] outline-none"
+                  />
+                </div>
+              </label>
+            )
+          })}
+        </div>
+
+        {rates && (
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-[#8BAE90]">1 CAD</p>
+              <p className="mt-1 text-lg font-bold text-[#1B4D3E]">US$ {fmt(rates.USD)}</p>
+              <p className="text-sm font-semibold text-[#1B6B3A]">R$ {fmt(rates.BRL)}</p>
+            </div>
+            <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-[#8BAE90]">1 USD</p>
+              <p className="mt-1 text-lg font-bold text-[#1B4D3E]">CAD$ {fmt(1 / rates.USD)}</p>
+              <p className="text-sm font-semibold text-[#1B6B3A]">R$ {fmt(rates.BRL / rates.USD)}</p>
+            </div>
+            <div className="rounded-lg border border-[#D4E4D5] bg-[#F8FBF8] px-4 py-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-[#8BAE90]">1 BRL</p>
+              <p className="mt-1 text-lg font-bold text-[#1B4D3E]">CAD$ {fmt(1 / rates.BRL)}</p>
+              <p className="text-sm font-semibold text-[#1B6B3A]">US$ {fmt(rates.USD / rates.BRL)}</p>
+            </div>
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
