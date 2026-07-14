@@ -60,6 +60,7 @@ export interface RecurringExpense {
   due_day: number
   type: 'INCOME' | 'EXPENSE'
   category?: string
+  start_month?: string | null
   valid_until?: string
 }
 

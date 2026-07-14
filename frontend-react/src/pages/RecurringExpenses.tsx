@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, ChevronDown, ChevronUp, GitBranch, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { CalendarDays, ChevronDown, ChevronUp, Edit3, GitBranch, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import api from '../services/api'
 import type { Category, CategoryBudget, RecurringExpense } from '../services/api'
 
@@ -34,6 +34,15 @@ function validUntilLabel(value?: string): string {
   })}`
 }
 
+function startMonthLabel(value?: string | null): string {
+  if (!value) return 'Started before tracking'
+  const [year, month] = value.slice(0, 7).split('-').map(Number)
+  return `From ${new Date(year, month - 1, 1).toLocaleDateString('en', {
+    month: 'short',
+    year: 'numeric',
+  })}`
+}
+
 function itemVerb(type: RecurringType): string {
   return type === 'INCOME' ? 'Receive' : 'Due'
 }
@@ -44,6 +53,12 @@ interface RecurringForm {
   currency: Currency
   due_day: string
   category: string
+  start_month: string
+  valid_until: string
+}
+
+interface RecurringDateForm {
+  start_month: string
   valid_until: string
 }
 
@@ -61,6 +76,7 @@ const EXPENSE_FORM: RecurringForm = {
   currency: 'CAD',
   due_day: '1',
   category: '',
+  start_month: new Date().toISOString().slice(0, 7),
   valid_until: '',
 }
 
@@ -70,6 +86,7 @@ const INCOME_FORM: RecurringForm = {
   currency: 'CAD',
   due_day: '1',
   category: 'Salary',
+  start_month: new Date().toISOString().slice(0, 7),
   valid_until: '',
 }
 
@@ -97,6 +114,8 @@ export default function RecurringExpenses() {
   const [expandedBudgetId, setExpandedBudgetId] = useState<number | null>(null)
   const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null)
   const [editingBudgetItems, setEditingBudgetItems] = useState<{ name: string; amount: string }[]>([])
+  const [editingItemId, setEditingItemId] = useState<number | null>(null)
+  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ start_month: '', valid_until: '' })
   const [adjustingBudgetId, setAdjustingBudgetId] = useState<number | null>(null)
   const [adjustmentStartMonth, setAdjustmentStartMonth] = useState(new Date().toISOString().slice(0, 7))
   const [loading, setLoading] = useState(true)
@@ -226,6 +245,8 @@ export default function RecurringExpenses() {
     if (!Number.isFinite(amount) || amount <= 0) return 'Amount must be greater than zero.'
     if (!validDay(dueDay)) return 'Day must be between 1 and 31.'
     if (!form.category) return 'Category is required.'
+    if (!form.start_month) return 'Start month is required.'
+    if (form.valid_until && form.valid_until.slice(0, 7) < form.start_month) return 'Valid until must be on or after the start month.'
     return null
   }
 
@@ -249,6 +270,7 @@ export default function RecurringExpenses() {
         due_day: Number(form.due_day),
         category: form.category,
         type: activeForm,
+        start_month: form.start_month,
         valid_until: form.valid_until ? `${form.valid_until}T00:00:00` : null,
       })
       setItems(prev => [...prev, res.data as RecurringExpense].sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name)))
@@ -327,6 +349,50 @@ export default function RecurringExpenses() {
   function updateCurrentForm(update: Partial<RecurringForm>) {
     if (activeForm === 'INCOME') setIncomeForm(prev => ({ ...prev, ...update }))
     else setExpenseForm(prev => ({ ...prev, ...update }))
+  }
+
+  function startEditingItemDates(item: RecurringExpense) {
+    setEditingItemId(item.id)
+    setEditingItemDates({
+      start_month: item.start_month || '',
+      valid_until: item.valid_until ? item.valid_until.slice(0, 10) : '',
+    })
+    setError('')
+    setMessage('')
+  }
+
+  function cancelEditingItemDates() {
+    setEditingItemId(null)
+    setEditingItemDates({ start_month: '', valid_until: '' })
+  }
+
+  async function saveItemDates(item: RecurringExpense) {
+    if (!editingItemDates.start_month) {
+      setError('Start month is required.')
+      return
+    }
+    if (editingItemDates.valid_until && editingItemDates.valid_until.slice(0, 7) < editingItemDates.start_month) {
+      setError('Valid until must be on or after the start month.')
+      return
+    }
+
+    setSaving(true)
+    setError('')
+    setMessage('')
+    try {
+      const res = await api.patch(`/recurring-expenses/${item.id}`, {
+        start_month: editingItemDates.start_month,
+        valid_until: editingItemDates.valid_until ? `${editingItemDates.valid_until}T00:00:00` : null,
+      })
+      setItems(prev => prev.map(existing => existing.id === item.id ? res.data as RecurringExpense : existing))
+      cancelEditingItemDates()
+      setMessage(`${item.name} dates updated.`)
+    } catch (e) {
+      console.error(`Failed to update recurring item ${item.id}`, e)
+      setError('Could not update recurring item dates.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   function updateBudgetItem(index: number, update: Partial<{ name: string; amount: string }>) {
@@ -608,35 +674,80 @@ export default function RecurringExpenses() {
 
   function renderItem(item: RecurringExpense) {
     const isIncome = item.type === 'INCOME'
+    const editingDates = editingItemId === item.id
 
     return (
-      <div key={item.id} className="px-5 py-4 flex flex-col md:flex-row md:items-center gap-3 border-b border-[#EDF4EE] last:border-0">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-bold text-[#1B4D3E] truncate">{item.name}</h3>
-            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-              isIncome ? 'bg-[#EDF4EE] text-[#1B6B3A]' : 'bg-[#FDF5F5] text-[#B85050]'
-            }`}>
-              {isIncome ? 'Income' : 'Expense'}
-            </span>
+      <div key={item.id} className="border-b border-[#EDF4EE] last:border-0">
+        <div className="px-5 py-4 flex flex-col md:flex-row md:items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="font-bold text-[#1B4D3E] truncate">{item.name}</h3>
+              <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
+                isIncome ? 'bg-[#EDF4EE] text-[#1B6B3A]' : 'bg-[#FDF5F5] text-[#B85050]'
+              }`}>
+                {isIncome ? 'Income' : 'Expense'}
+              </span>
+            </div>
+            <p className="text-sm text-[#7BAE8A] mt-1">
+              {itemVerb(item.type)} day {item.due_day} · {item.category || 'No category'} · {startMonthLabel(item.start_month)} · {validUntilLabel(item.valid_until)}
+            </p>
           </div>
-          <p className="text-sm text-[#7BAE8A] mt-1">
-            {itemVerb(item.type)} day {item.due_day} · {item.category || 'No category'} · {validUntilLabel(item.valid_until)}
-          </p>
+          <div className="flex items-center justify-between md:justify-end gap-3">
+            <p className={`text-lg font-bold tabular-nums ${isIncome ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+              {isIncome ? '+' : '-'} {symbol(item.currency)} {fmt(item.amount, item.currency)}
+            </p>
+            <button
+              type="button"
+              onClick={() => editingDates ? cancelEditingItemDates() : startEditingItemDates(item)}
+              disabled={saving}
+              className="p-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] hover:bg-[#F4FAF5] transition disabled:opacity-50"
+              title={editingDates ? 'Cancel date edit' : 'Edit start and end dates'}
+            >
+              {editingDates ? <X size={16} /> : <Edit3 size={16} />}
+            </button>
+            <button
+              onClick={() => deleteItem(item)}
+              disabled={saving}
+              className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
+              title="Delete recurring item"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
-        <div className="flex items-center justify-between md:justify-end gap-4">
-          <p className={`text-lg font-bold tabular-nums ${isIncome ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
-            {isIncome ? '+' : '-'} {symbol(item.currency)} {fmt(item.amount, item.currency)}
-          </p>
-          <button
-            onClick={() => deleteItem(item)}
-            disabled={saving}
-            className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
-            title="Delete recurring item"
-          >
-            <Trash2 size={16} />
-          </button>
-        </div>
+        {editingDates && (
+          <div className="mx-5 mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] p-3">
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 sm:items-end">
+              <div>
+                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Start month</label>
+                <input
+                  type="month"
+                  value={editingItemDates.start_month}
+                  onChange={e => setEditingItemDates(prev => ({ ...prev, start_month: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Valid until</label>
+                <input
+                  type="date"
+                  value={editingItemDates.valid_until}
+                  onChange={e => setEditingItemDates(prev => ({ ...prev, valid_until: e.target.value }))}
+                  className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => saveItemDates(item)}
+                disabled={saving}
+                className="h-10 px-4 rounded-lg bg-[#1B4D3E] text-white text-sm font-semibold hover:bg-[#2D6A4F] transition disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <Save size={14} />
+                Save
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     )
   }
@@ -826,15 +937,31 @@ export default function RecurringExpenses() {
             </div>
           </div>
 
-          <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Valid until</label>
-          <div className="relative mb-5">
-            <CalendarDays size={15} className="absolute left-3 top-2.5 text-[#8BAE90]" />
-            <input
-              type="date"
-              value={form.valid_until}
-              onChange={e => updateCurrentForm({ valid_until: e.target.value })}
-              className="w-full pl-9 pr-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Start month</label>
+              <div className="relative mb-5">
+                <CalendarDays size={15} className="absolute left-3 top-2.5 text-[#8BAE90]" />
+                <input
+                  type="month"
+                  value={form.start_month}
+                  onChange={e => updateCurrentForm({ start_month: e.target.value })}
+                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Valid until</label>
+              <div className="relative mb-5">
+                <CalendarDays size={15} className="absolute left-3 top-2.5 text-[#8BAE90]" />
+                <input
+                  type="date"
+                  value={form.valid_until}
+                  onChange={e => updateCurrentForm({ valid_until: e.target.value })}
+                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+                />
+              </div>
+            </div>
           </div>
 
             <button

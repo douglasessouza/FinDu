@@ -60,6 +60,7 @@ class RecurringExpense(Base):
     type = Column(Enum(RecurringTypeEnum), nullable=False, default=RecurringTypeEnum.EXPENSE)
     category = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
+    start_month = Column(String, nullable=True)
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

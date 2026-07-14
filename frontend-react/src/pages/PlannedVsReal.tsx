@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CheckCircle2, ChevronLeft, ChevronRight, Save, Target, Wand2, X } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, ChevronRight, Plus, Save, Split, Target, Trash2, Wand2, X } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category, CategoryBudget, RecurringExpense, Transaction } from '../services/api'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
@@ -28,6 +28,12 @@ interface BudgetMethodState {
   selectedMethod: BudgetMethodKey
   customBuckets: Record<BudgetBucket, number>
   categoryMap: Record<string, BudgetBucket>
+}
+
+interface SplitRow {
+  description: string
+  category: string
+  amount: string
 }
 
 const BUDGET_BUCKETS: {
@@ -167,6 +173,7 @@ function pct(value: number): string {
 }
 
 function recurringIsActiveForMonth(item: RecurringExpense, month: string): boolean {
+  if (item.start_month && item.start_month > month) return false
   if (!item.valid_until) return true
   return new Date(item.valid_until) >= new Date(`${month}-01T00:00:00`)
 }
@@ -187,6 +194,10 @@ export default function PlannedVsReal() {
   const [methodState, setMethodState] = useState<BudgetMethodState>(() => loadMethodState())
   const [mappingLoading, setMappingLoading] = useState(false)
   const [mappingMessage, setMappingMessage] = useState('')
+  const [splitTx, setSplitTx] = useState<Transaction | null>(null)
+  const [splitRows, setSplitRows] = useState<SplitRow[]>([])
+  const [splitError, setSplitError] = useState('')
+  const [splitting, setSplitting] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -336,6 +347,8 @@ export default function PlannedVsReal() {
   const plannedTotal = plannedBudgetItems.reduce((sum, budget) => sum + budget.amount, 0)
   const modalTotal = categoryTransactions.reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
   const pendingChanges = Object.keys(editedCats).length
+  const splitTotal = splitRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
+  const splitRemaining = splitTx ? Math.abs(splitTx.amount) - splitTotal : 0
   const methodCategories = useMemo(() => {
     return Array.from(new Set([
       ...categories,
@@ -426,6 +439,7 @@ export default function PlannedVsReal() {
     setSelectedCategory(null)
     setEditedCats({})
     setSaveMsg('')
+    cancelSplit()
   }
 
   async function saveCategoryChanges() {
@@ -445,6 +459,97 @@ export default function PlannedVsReal() {
       setTimeout(() => setSaveMsg(''), 3000)
     } finally {
       setSaving(false)
+    }
+  }
+
+  function startSplit(tx: Transaction) {
+    setSplitTx(tx)
+    setSplitError('')
+    setSplitRows([
+      {
+        description: tx.description,
+        category: editedCats[tx.id] ?? tx.category ?? 'Other',
+        amount: fmt(Math.abs(tx.amount)).replace(/,/g, ''),
+      },
+      {
+        description: tx.description,
+        category: editedCats[tx.id] ?? tx.category ?? 'Other',
+        amount: '0.00',
+      },
+    ])
+  }
+
+  function updateSplitRow(index: number, update: Partial<SplitRow>) {
+    setSplitRows(prev => prev.map((row, currentIndex) => currentIndex === index ? { ...row, ...update } : row))
+  }
+
+  function addSplitRow() {
+    setSplitRows(prev => [
+      ...prev,
+      {
+        description: splitTx?.description || '',
+        category: splitTx?.category || 'Other',
+        amount: '0.00',
+      },
+    ])
+  }
+
+  function removeSplitRow(index: number) {
+    setSplitRows(prev => prev.length <= 2 ? prev : prev.filter((_, currentIndex) => currentIndex !== index))
+  }
+
+  function cancelSplit() {
+    setSplitTx(null)
+    setSplitRows([])
+    setSplitError('')
+  }
+
+  async function saveSplit() {
+    if (!splitTx) return
+
+    const originalCents = Math.round(Math.abs(splitTx.amount) * 100)
+    const rows = splitRows
+      .map(row => ({
+        description: row.description.trim(),
+        category: row.category || 'Other',
+        amountCents: Math.round(Number(row.amount || 0) * 100),
+      }))
+      .filter(row => row.description && row.amountCents > 0)
+
+    if (rows.length < 2) {
+      setSplitError('Add at least two split rows with descriptions and amounts.')
+      return
+    }
+
+    const splitCents = rows.reduce((sum, row) => sum + row.amountCents, 0)
+    if (splitCents !== originalCents) {
+      setSplitError(`Split total must equal $ ${fmt(Math.abs(splitTx.amount))}. Remaining: $ ${fmt(Math.abs(originalCents - splitCents) / 100)}.`)
+      return
+    }
+
+    setSplitting(true)
+    try {
+      await api.post(`/transactions/${splitTx.id}/split`, {
+        lines: rows.map(row => ({
+          description: row.description,
+          category: row.category,
+          amount: row.amountCents / 100,
+        })),
+      })
+      cancelSplit()
+      await refreshSpendingAndTransactions()
+      setEditedCats(prev => {
+        const next = { ...prev }
+        delete next[splitTx.id]
+        return next
+      })
+      setSaveMsg('Transaction split saved.')
+      setTimeout(() => setSaveMsg(''), 3000)
+    } catch (error) {
+      console.error(`Failed to split transaction ${splitTx.id}`, error)
+      setSplitError('Could not save split.')
+    } finally {
+      setSplitting(false)
     }
   }
 
@@ -883,12 +988,13 @@ export default function PlannedVsReal() {
                         </div>
                       ) : (
                         <div>
-                          <div className="grid grid-cols-[80px_150px_1fr_120px_180px] gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
+                          <div className="grid grid-cols-[80px_150px_1fr_120px_180px_52px] gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
                             <span>Date</span>
                             <span>Source</span>
                             <span>Description</span>
                             <span className="text-right">Amount</span>
                             <span>Move to</span>
+                            <span className="text-right">Split</span>
                           </div>
                           {categoryTransactions.map((tx, index) => {
                             const [year, month, day] = tx.date.slice(0, 10).split('-').map(Number)
@@ -902,7 +1008,7 @@ export default function PlannedVsReal() {
                             return (
                               <div
                                 key={tx.id}
-                                className={`grid grid-cols-[80px_150px_1fr_120px_180px] gap-3 items-center border-b border-[#EDF4EE] px-5 py-3 last:border-0 ${index % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
+                                className={`grid grid-cols-[80px_150px_1fr_120px_180px_52px] gap-3 items-center border-b border-[#EDF4EE] px-5 py-3 last:border-0 ${index % 2 === 0 ? 'bg-white' : 'bg-[#F9FCF9]'}`}
                               >
                                 <span className="text-xs text-[#8BAE90]">{dateStr}</span>
                                 <div className="min-w-0">
@@ -936,6 +1042,17 @@ export default function PlannedVsReal() {
                                     <option key={category} value={category}>{category}</option>
                                   ))}
                                 </select>
+                                <div className="flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => startSplit(tx)}
+                                    disabled={saving}
+                                    className="rounded-lg border border-[#D4E4D5] p-2 text-[#1B4D3E] transition hover:bg-[#F4FAF5] disabled:opacity-50"
+                                    title="Split transaction"
+                                  >
+                                    <Split size={14} />
+                                  </button>
+                                </div>
                               </div>
                             )
                           })}
@@ -959,6 +1076,123 @@ export default function PlannedVsReal() {
                     {saving ? 'Saving...' : 'Save changes'}
                   </button>
                 </div>
+
+                {splitTx && (
+                  <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#0B1F18]/45 px-4">
+                    <div className="w-full max-w-2xl rounded-lg border border-[#D4E4D5] bg-white shadow-xl">
+                      <div className="flex items-start justify-between gap-4 border-b border-[#EDF4EE] px-5 py-4">
+                        <div>
+                          <p className="text-lg font-bold text-[#1B4D3E]">Split Transaction</p>
+                          <p className="mt-1 text-sm text-[#7BAE8A]">
+                            {splitTx.description} · $ {fmt(Math.abs(splitTx.amount))}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={cancelSplit}
+                          className="rounded-lg p-2 text-[#8BAE90] transition hover:bg-[#F4FAF5] hover:text-[#1B4D3E]"
+                          title="Close split dialog"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+
+                      <div className="p-5">
+                        <div className="mb-3 grid grid-cols-[1fr_150px_110px_34px] gap-2 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
+                          <span>Description</span>
+                          <span>Category</span>
+                          <span className="text-right">Amount</span>
+                          <span />
+                        </div>
+
+                        <div className="space-y-2">
+                          {splitRows.map((row, index) => (
+                            <div key={index} className="grid grid-cols-[1fr_150px_110px_34px] gap-2">
+                              <input
+                                type="text"
+                                value={row.description}
+                                onChange={event => updateSplitRow(index, { description: event.target.value })}
+                                className="w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm font-semibold text-[#1B4D3E] focus:outline-none"
+                              />
+                              <select
+                                value={row.category}
+                                onChange={event => updateSplitRow(index, { category: event.target.value })}
+                                className="w-full rounded-lg border border-[#D4E4D5] bg-white px-2 py-2 text-xs font-semibold text-[#1B4D3E] focus:outline-none"
+                              >
+                                {categories.map(category => (
+                                  <option key={category} value={category}>{category}</option>
+                                ))}
+                              </select>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min={0}
+                                value={row.amount}
+                                onChange={event => updateSplitRow(index, { amount: event.target.value })}
+                                className="w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-right text-sm font-semibold tabular-nums text-[#1B4D3E] focus:outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeSplitRow(index)}
+                                disabled={splitRows.length <= 2}
+                                className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] transition hover:bg-[#FDF5F5] disabled:opacity-40"
+                                title="Remove split row"
+                              >
+                                <Trash2 size={14} className="mx-auto" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={addSplitRow}
+                          className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border border-[#D4E4D5] py-2 text-sm font-semibold text-[#1B4D3E] transition hover:bg-[#F4FAF5]"
+                        >
+                          <Plus size={14} />
+                          Add Split Row
+                        </button>
+
+                        <div className="mt-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] px-4 py-3">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-semibold text-[#7BAE8A]">Split total</span>
+                            <span className="font-bold tabular-nums text-[#1B4D3E]">$ {fmt(splitTotal)}</span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-sm">
+                            <span className="font-semibold text-[#7BAE8A]">Remaining</span>
+                            <span className={`font-bold tabular-nums ${Math.round(splitRemaining * 100) === 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                              $ {fmt(Math.abs(splitRemaining))}
+                            </span>
+                          </div>
+                        </div>
+
+                        {splitError && (
+                          <div className="mt-3 rounded-lg border border-[#B85050] bg-[#FDF5F5] px-4 py-2 text-sm text-[#B85050]">
+                            {splitError}
+                          </div>
+                        )}
+
+                        <div className="mt-5 flex justify-end gap-3">
+                          <button
+                            type="button"
+                            onClick={cancelSplit}
+                            className="rounded-lg border border-[#D4E4D5] px-5 py-3 text-sm font-semibold text-[#8BAE90] transition hover:text-[#1B4D3E]"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={saveSplit}
+                            disabled={splitting}
+                            className="rounded-lg bg-[#1B4D3E] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#2D6A4F] disabled:opacity-50"
+                          >
+                            {splitting ? 'Saving...' : 'Save Split'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

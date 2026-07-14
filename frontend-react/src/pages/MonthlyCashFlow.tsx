@@ -149,9 +149,11 @@ function formatDueDate(dateStr: string): string {
 }
 
 function isValidThisMonth(item: RecurringExpense, year: number, month: number): boolean {
+  const monthKey = `${year}-${String(month).padStart(2, '0')}`
+  const startOfMonth = new Date(year, month - 1, 1)
+  if (item.start_month && item.start_month > monthKey) return false
   if (!item.valid_until) return true
   const end = new Date(item.valid_until)
-  const startOfMonth = new Date(year, month - 1, 1)
   return Number.isNaN(end.getTime()) || end >= startOfMonth
 }
 
@@ -272,8 +274,12 @@ export default function MonthlyCashFlow() {
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   const autoRecurringMatches = useMemo(
-    () => findRecurringMatches(recurring, statementTransactions, monthStr),
-    [recurring, statementTransactions, monthStr],
+    () => findRecurringMatches(
+      recurring.filter(item => isValidThisMonth(item, year, month)),
+      statementTransactions,
+      monthStr,
+    ),
+    [month, recurring, statementTransactions, monthStr, year],
   )
 
   const recurringMatches = useMemo(() => {

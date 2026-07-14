@@ -1,9 +1,9 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, func, or_
+from sqlalchemy import create_engine, func, inspect, or_, text
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import List, Optional
 import os
 import base64
 import hmac
@@ -248,6 +248,15 @@ DEFAULT_CATEGORIES = [
 def initialize_reference_data():
     """Create missing tables and seed reference data on startup."""
     Base.metadata.create_all(bind=engine)
+    inspector = inspect(engine)
+    recurring_columns = {
+        column["name"]
+        for column in inspector.get_columns("recurring_expenses")
+    } if inspector.has_table("recurring_expenses") else set()
+    if "start_month" not in recurring_columns:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE recurring_expenses ADD COLUMN start_month VARCHAR"))
+
     db = SessionLocal()
     try:
         for name, cat_type in DEFAULT_CATEGORIES:
@@ -609,6 +618,14 @@ class TransactionCreate(BaseModel):
     category: Optional[str] = None
     import_batch_id: Optional[str] = None  # UUID from the import session
 
+class TransactionSplitLine(BaseModel):
+    description: str = Field(min_length=1)
+    amount: float = Field(gt=0)
+    category: Optional[str] = None
+
+class TransactionSplitRequest(BaseModel):
+    lines: List[TransactionSplitLine] = Field(min_length=2)
+
 class RecurringExpenseCreate(BaseModel):
     name: str
     amount: float
@@ -616,7 +633,19 @@ class RecurringExpenseCreate(BaseModel):
     due_day: int
     category: Optional[str] = None
     type: RecurringTypeEnum = RecurringTypeEnum.EXPENSE
+    start_month: Optional[str] = None
     valid_until: Optional[datetime] = None   # ← NEW FIELD
+
+class RecurringExpenseUpdate(BaseModel):
+    name: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[CurrencyEnum] = None
+    due_day: Optional[int] = None
+    category: Optional[str] = None
+    type: Optional[RecurringTypeEnum] = None
+    start_month: Optional[str] = None
+    valid_until: Optional[datetime] = None
+    is_active: Optional[bool] = None
 
 @app.get("/health")
 def health_check():
@@ -798,6 +827,45 @@ def update_transaction(transaction_id: int, updates: dict, db: Session = Depends
     db.refresh(transaction)
     return transaction
 
+@app.post("/transactions/{transaction_id}/split")
+def split_transaction(transaction_id: int, split: TransactionSplitRequest, db: Session = Depends(get_db)):
+    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    if not transaction:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    original_cents = round(abs(transaction.amount) * 100)
+    split_cents = sum(round(line.amount * 100) for line in split.lines)
+    if split_cents != original_cents:
+        remaining = abs(original_cents - split_cents) / 100
+        raise HTTPException(
+            status_code=400,
+            detail=f"Split total must equal original amount. Remaining difference: {remaining:.2f}",
+        )
+
+    sign = -1 if transaction.amount < 0 else 1
+    split_transactions = []
+    for line in split.lines:
+        db_transaction = Transaction(
+            account_id=transaction.account_id,
+            description=line.description.strip(),
+            amount=sign * (round(line.amount * 100) / 100),
+            currency=transaction.currency,
+            date=transaction.date,
+            category=line.category or transaction.category or "Other",
+            statement_month=transaction.statement_month,
+            payment_due_date=transaction.payment_due_date,
+            import_batch_id=transaction.import_batch_id,
+        )
+        db.add(db_transaction)
+        split_transactions.append(db_transaction)
+
+    db.query(RecurringMatch).filter(RecurringMatch.transaction_id == transaction.id).delete()
+    db.delete(transaction)
+    db.commit()
+    for item in split_transactions:
+        db.refresh(item)
+    return split_transactions
+
 # --- Import batch endpoints ---
 
 @app.get("/imports")
@@ -858,23 +926,28 @@ def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depe
 @app.get("/recurring-expenses")
 def list_recurring_expenses(db: Session = Depends(get_db)):
     """
-    Returns active recurring expenses/income.
-    Auto-expires entries where valid_until < today (sets is_active=False).
+    Returns recurring expenses/income.
+    Month-based screens decide whether valid_until applies to their selected
+    month, so this endpoint must not mutate recurrence state based on today.
     """
-    now = datetime.utcnow()
- 
-    # Auto-deactivate expired entries
-    expired = db.query(RecurringExpense).filter(
-        RecurringExpense.is_active == True,
-        RecurringExpense.valid_until != None,
-        RecurringExpense.valid_until < now
+    return db.query(RecurringExpense).order_by(
+        RecurringExpense.due_day,
+        RecurringExpense.name,
     ).all()
-    for e in expired:
-        e.is_active = False
-    if expired:
-        db.commit()
- 
-    return db.query(RecurringExpense).filter(RecurringExpense.is_active == True).all()
+
+@app.patch("/recurring-expenses/{expense_id}")
+def update_recurring_expense(expense_id: int, updates: RecurringExpenseUpdate, db: Session = Depends(get_db)):
+    expense = db.query(RecurringExpense).filter(RecurringExpense.id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    changes = updates.model_dump(exclude_unset=True)
+    for key, value in changes.items():
+        setattr(expense, key, value)
+
+    db.commit()
+    db.refresh(expense)
+    return expense
 
 @app.delete("/recurring-expenses/{expense_id}")
 def delete_recurring_expense(expense_id: int, db: Session = Depends(get_db)):
@@ -1051,6 +1124,7 @@ def build_financial_snapshot(db: Session) -> dict:
                 "due_day": item.due_day,
                 "type": item.type.value,
                 "category": item.category,
+                "start_month": item.start_month,
                 "valid_until": item.valid_until.strftime("%Y-%m-%d") if item.valid_until else None,
             }
             for item in recurring
