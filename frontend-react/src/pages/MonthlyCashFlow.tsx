@@ -73,7 +73,8 @@ function textScore(name: string, description: string): number {
 function dayDistance(dateValue: string, dueDay: number): number {
   const date = new Date(dateValue)
   if (Number.isNaN(date.getTime())) return 31
-  return Math.abs(date.getDate() - Math.min(dueDay, 28))
+  const lastDayOfTransactionMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+  return Math.abs(date.getDate() - Math.min(dueDay, lastDayOfTransactionMonth))
 }
 
 function addMonths(month: string, delta: number): string {
@@ -82,8 +83,18 @@ function addMonths(month: string, delta: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
 }
 
-function incomeTransactionMonth(item: RecurringExpense, cashFlowMonth: string): string {
-  return item.due_day >= 28 ? addMonths(cashFlowMonth, -1) : cashFlowMonth
+function isPayrollIncome(item: RecurringExpense): boolean {
+  if (item.type !== 'INCOME') return false
+  const text = `${item.name} ${item.category || ''}`.toLowerCase()
+  return text.includes('payroll') || text.includes('salary')
+}
+
+function hasExpectedRecurringDate(item: RecurringExpense, tx: Transaction, cashFlowMonth: string): boolean {
+  const txMonth = tx.date.slice(0, 7)
+  const txDay = new Date(tx.date).getDate()
+  const effectiveCashFlowMonth = isPayrollIncome(item) && txDay > 25 ? addMonths(txMonth, 1) : txMonth
+  if (effectiveCashFlowMonth !== cashFlowMonth) return false
+  return dayDistance(tx.date, item.due_day) <= 7
 }
 
 function amountMatches(planned: number, actual: number): boolean {
@@ -101,12 +112,8 @@ function findRecurringMatches(
   const sortedItems = [...items].sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name))
 
   for (const item of sortedItems) {
-    const transactionMonth = item.type === 'INCOME'
-      ? incomeTransactionMonth(item, monthStr)
-      : monthStr
-
     const candidates = transactions
-      .filter(tx => tx.date.slice(0, 7) === transactionMonth)
+      .filter(tx => hasExpectedRecurringDate(item, tx, monthStr))
       .filter(tx => !usedTransactions.has(tx.id))
       .filter(tx => item.type === 'INCOME' ? tx.amount > 0 : tx.amount < 0)
       .filter(tx => tx.currency === item.currency)
@@ -286,9 +293,14 @@ export default function MonthlyCashFlow() {
     const merged: Record<number, RecurringMatchCandidate> = { ...autoRecurringMatches }
 
     for (const saved of savedMatches) {
+      if (saved.source === 'ignored') {
+        delete merged[saved.recurring_id]
+        continue
+      }
       if (!saved.transaction) continue
       const item = recurring.find(current => current.id === saved.recurring_id)
       if (!item) continue
+      if (!hasExpectedRecurringDate(item, saved.transaction, monthStr)) continue
       merged[saved.recurring_id] = {
         transaction: saved.transaction,
         actualAmount: saved.actual_amount,
@@ -301,7 +313,7 @@ export default function MonthlyCashFlow() {
     }
 
     return merged
-  }, [autoRecurringMatches, recurring, savedMatches])
+  }, [autoRecurringMatches, monthStr, recurring, savedMatches])
 
   useEffect(() => {
     if (loading) return
@@ -351,6 +363,30 @@ export default function MonthlyCashFlow() {
 
   function isPaid(itemType: string, itemId: number): MonthlyPayment | undefined {
     return payments.find(p => p.item_type === itemType && p.item_id === itemId)
+  }
+
+  async function ignoreRecurringMatch(item: RecurringExpense, match: RecurringMatchCandidate) {
+    const ignoredPayload = {
+      month: monthStr,
+      recurring_id: item.id,
+      transaction_id: match.transaction.id,
+      planned_amount: item.amount,
+      actual_amount: match.actualAmount,
+      variance: match.variance,
+      confidence: match.confidence,
+      score: match.score,
+      source: 'ignored',
+    }
+
+    const res = match.savedId
+      ? await api.post(`/recurring-matches/${match.savedId}/ignore`)
+      : await api.post('/recurring-matches', ignoredPayload)
+
+    const ignoredMatch = res.data as SavedRecurringMatch
+    setSavedMatches(prev => {
+      const withoutCurrent = prev.filter(current => current.recurring_id !== ignoredMatch.recurring_id)
+      return [...withoutCurrent, ignoredMatch]
+    })
   }
 
   async function togglePaid(itemType: string, itemId: number, itemName: string) {
@@ -484,11 +520,16 @@ export default function MonthlyCashFlow() {
                             <div key={r.id} className={`rounded-lg border border-[#D4E4D5] px-4 py-3 ${received ? 'bg-[#EDF4EE]' : 'bg-[#F4FAF5]'}`}>
                               <div className="flex items-start justify-between gap-3">
                                 <div className="flex items-start gap-2 min-w-0">
-                                  <span className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                                    received ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white' : 'border-[#D4E4D5]'
-                                  }`}>
+                                  <button
+                                    onClick={() => match && ignoreRecurringMatch(r, match)}
+                                    disabled={!match}
+                                    className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
+                                      received ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white hover:bg-[#B85050] hover:border-[#B85050]' : 'border-[#D4E4D5]'
+                                    }`}
+                                    title={match ? 'Unmark received for this month' : 'Not received yet'}
+                                  >
                                     {received && <Check size={13} />}
-                                  </span>
+                                  </button>
                                   <div className="min-w-0">
                                   <p className={`font-bold truncate ${received ? 'text-[#8BAE90] line-through' : 'text-[#1B4D3E]'}`}>{r.name}</p>
                                   <p className="text-xs text-[#7BAE8A] mt-1">
@@ -662,12 +703,11 @@ export default function MonthlyCashFlow() {
                               <div key={r.id} className={`flex flex-col md:flex-row md:justify-between md:items-center gap-2 px-4 py-3 border-b border-[#EDF4EE] last:border-0 transition ${done ? 'bg-[#F4FAF5]' : ''}`}>
                                 <div className="flex items-start gap-3 min-w-0">
                                   <button
-                                    onClick={() => !match && togglePaid('recurring', r.id, r.name)}
-                                    disabled={Boolean(match)}
+                                    onClick={() => match ? ignoreRecurringMatch(r, match) : togglePaid('recurring', r.id, r.name)}
                                     className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
-                                      done ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white' : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
+                                      done ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white hover:bg-[#B85050] hover:border-[#B85050]' : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
                                     }`}
-                                    title={match ? 'Auto matched from statement' : paid ? 'Marked as paid' : 'Mark as paid'}
+                                    title={match ? 'Unmark matched transaction for this month' : paid ? 'Marked as paid' : 'Mark as paid'}
                                   >
                                     {done && <Check size={13} />}
                                   </button>

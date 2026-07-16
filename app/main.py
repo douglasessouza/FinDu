@@ -1633,3 +1633,15 @@ def delete_recurring_match(match_id: int, db: Session = Depends(get_db)):
     db.delete(match)
     db.commit()
     return {"message": "Recurring match deleted"}
+
+@app.post("/recurring-matches/{match_id}/ignore")
+def ignore_recurring_match(match_id: int, db: Session = Depends(get_db)):
+    """Keep a recurring match unmarked for the month so auto matching does not recreate it."""
+    match = db.query(RecurringMatch).filter(RecurringMatch.id == match_id).first()
+    if not match:
+        raise HTTPException(status_code=404, detail="Recurring match not found")
+    match.source = "ignored"
+    db.commit()
+    db.refresh(match)
+    transaction = db.query(Transaction).filter(Transaction.id == match.transaction_id).first()
+    return serialize_recurring_match(match, transaction)
