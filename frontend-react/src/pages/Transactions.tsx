@@ -33,9 +33,18 @@ interface SplitRow {
   amount: string
 }
 
+interface NewTransactionDraft {
+  date: string
+  description: string
+  amount: string
+  category: string
+  statement: string
+}
+
 export default function Transactions() {
   const today = new Date()
   const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  const todayStr = today.toISOString().slice(0, 10)
 
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<string[]>([])
@@ -55,6 +64,16 @@ export default function Transactions() {
   const [splitRows, setSplitRows] = useState<SplitRow[]>([])
   const [splitError, setSplitError] = useState('')
   const [splitting, setSplitting] = useState(false)
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [addError, setAddError] = useState('')
+  const [newTx, setNewTx] = useState<NewTransactionDraft>({
+    date: todayStr,
+    description: '',
+    amount: '',
+    category: 'Other',
+    statement: currentMonth,
+  })
 
   useEffect(() => {
     async function load() {
@@ -102,10 +121,75 @@ export default function Transactions() {
 
   useEffect(() => {
     if (!selectedAccId) return
+    setNewTx(prev => ({
+      ...prev,
+      category: categories.includes(prev.category) ? prev.category : categories[0] || 'Other',
+      statement: monthFilter || prev.statement,
+    }))
     queueMicrotask(() => {
       void loadTxs()
     })
-  }, [loadTxs, selectedAccId])
+  }, [categories, loadTxs, monthFilter, selectedAccId])
+
+  function dueDateForStatement(statementMonth: string): string | null {
+    if (!selectedAcc?.due_day || !statementMonth) return null
+    const [year, month] = statementMonth.split('-').map(Number)
+    const dueDate = new Date(year, month, selectedAcc.due_day)
+    return [
+      dueDate.getFullYear(),
+      String(dueDate.getMonth() + 1).padStart(2, '0'),
+      String(dueDate.getDate()).padStart(2, '0'),
+    ].join('-')
+  }
+
+  async function addTransaction() {
+    if (!selectedAccId || !selectedAcc) return
+
+    const amount = Number(newTx.amount)
+    if (!newTx.date || !newTx.description.trim() || !Number.isFinite(amount) || amount <= 0) {
+      setAddError('Fill date, description, and a positive amount.')
+      return
+    }
+
+    setAdding(true)
+    setAddError('')
+    setSaveMsg('')
+    try {
+      const res = await api.post('/transactions', {
+        account_id: selectedAccId,
+        description: newTx.description.trim(),
+        amount: isCard ? -Math.round(amount * 100) / 100 : Math.round(amount * 100) / 100,
+        currency: selectedAcc.currency || 'CAD',
+        date: `${newTx.date}T12:00:00`,
+        category: newTx.category || 'Other',
+      })
+
+      if (isCard && newTx.statement) {
+        const dueDate = dueDateForStatement(newTx.statement)
+        await api.patch(`/transactions/${res.data.id}`, {
+          statement_month: newTx.statement,
+          ...(dueDate ? { payment_due_date: dueDate } : {}),
+        })
+      }
+
+      setNewTx({
+        date: todayStr,
+        description: '',
+        amount: '',
+        category: categories[0] || 'Other',
+        statement: monthFilter || currentMonth,
+      })
+      setShowAddForm(false)
+      setSaveMsg('✅ Transaction added.')
+      setTimeout(() => setSaveMsg(''), 3000)
+      await loadTxs()
+    } catch (error) {
+      console.error('Failed to add transaction', error)
+      setAddError('Could not add transaction.')
+    } finally {
+      setAdding(false)
+    }
+  }
 
   async function saveChanges() {
     const ids = new Set([
@@ -128,15 +212,8 @@ export default function Transactions() {
         if (editedStatements[Number(id)] !== undefined) {
           const statementMonth = editedStatements[Number(id)]
           changes.statement_month = statementMonth
-          if (selectedAcc?.due_day) {
-            const [year, month] = statementMonth.split('-').map(Number)
-            const dueDate = new Date(year, month, selectedAcc.due_day)
-            changes.payment_due_date = [
-              dueDate.getFullYear(),
-              String(dueDate.getMonth() + 1).padStart(2, '0'),
-              String(dueDate.getDate()).padStart(2, '0'),
-            ].join('-')
-          }
+          const dueDate = dueDateForStatement(statementMonth)
+          if (dueDate) changes.payment_due_date = dueDate
         }
         await api.patch(`/transactions/${id}`, changes)
         updated++
@@ -337,7 +414,17 @@ export default function Transactions() {
 
   return (
     <div className="w-full max-w-7xl mx-auto px-6">
-      <h1 className="text-2xl font-bold text-[#1B4D3E] mb-6">💸 Transactions</h1>
+      <div className="flex items-center justify-between gap-4 mb-6">
+        <h1 className="text-2xl font-bold text-[#1B4D3E]">💸 Transactions</h1>
+        <button
+          type="button"
+          onClick={() => setShowAddForm(show => !show)}
+          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#1B4D3E] text-white text-sm font-semibold hover:bg-[#2D6A4F] transition"
+        >
+          {showAddForm ? <X size={16} /> : <Plus size={16} />}
+          {showAddForm ? 'Cancel' : 'Add transaction'}
+        </button>
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap gap-4 mb-6">
@@ -407,6 +494,75 @@ export default function Transactions() {
           </div>
         </div>
       </div>
+
+      {showAddForm && (
+        <div className="mb-6 bg-white rounded-xl border border-[#D4E4D5] p-4">
+          <div className="grid gap-3 items-end" style={{ gridTemplateColumns: isCard ? '150px 1fr 120px 160px 130px auto' : '150px 1fr 120px 160px auto' }}>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Date</label>
+              <input
+                type="date"
+                value={newTx.date}
+                onChange={e => setNewTx(prev => ({ ...prev, date: e.target.value }))}
+                className="px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm focus:outline-none"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Description</label>
+              <input
+                type="text"
+                value={newTx.description}
+                onChange={e => setNewTx(prev => ({ ...prev, description: e.target.value }))}
+                className="px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm focus:outline-none"
+                placeholder="Merchant or note"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Amount</label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={newTx.amount}
+                onChange={e => setNewTx(prev => ({ ...prev, amount: e.target.value }))}
+                className="px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm focus:outline-none"
+                placeholder="0.00"
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Category</label>
+              <select
+                value={newTx.category}
+                onChange={e => setNewTx(prev => ({ ...prev, category: e.target.value }))}
+                className="px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm focus:outline-none"
+              >
+                {categories.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            {isCard && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Statement</label>
+                <input
+                  type="month"
+                  value={newTx.statement}
+                  onChange={e => setNewTx(prev => ({ ...prev, statement: e.target.value }))}
+                  className="px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm focus:outline-none"
+                />
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={addTransaction}
+              disabled={adding}
+              className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#1B4D3E] text-white text-sm font-semibold hover:bg-[#2D6A4F] transition disabled:opacity-50"
+            >
+              <Plus size={14} />
+              {adding ? 'Adding...' : 'Add'}
+            </button>
+          </div>
+          {addError && <p className="mt-3 text-sm font-semibold text-[#B85050]">{addError}</p>}
+        </div>
+      )}
 
       {/* Summary cards */}
       {txs.length > 0 && (
