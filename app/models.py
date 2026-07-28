@@ -64,6 +64,22 @@ class RecurringExpense(Base):
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class RecurringMonthlyOverride(Base):
+    __tablename__ = "recurring_monthly_overrides"
+    __table_args__ = (
+        UniqueConstraint("recurring_id", "month", name="uq_recurring_monthly_override_item_month"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    recurring_id = Column(
+        Integer,
+        ForeignKey("recurring_expenses.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    month = Column(String, nullable=False)
+    amount = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class CategoryTypeEnum(enum.Enum):
     EXPENSE = "EXPENSE"
     INCOME = "INCOME"

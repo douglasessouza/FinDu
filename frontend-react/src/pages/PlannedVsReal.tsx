@@ -305,7 +305,18 @@ export default function PlannedVsReal() {
         }
       })
       .filter(row => row.planned > 0 || row.real > 0)
-      .sort((a, b) => Math.max(b.real, b.planned) - Math.max(a.real, a.planned))
+      .sort((a, b) => {
+        const aHasPlan = a.planned > 0
+        const bHasPlan = b.planned > 0
+        if (aHasPlan !== bHasPlan) return aHasPlan ? -1 : 1
+
+        if (!aHasPlan && !bHasPlan) return b.real - a.real
+
+        const percentageDifference = (b.real / b.planned) - (a.real / a.planned)
+        if (percentageDifference !== 0) return percentageDifference
+
+        return b.variance - a.variance
+      })
   }, [accountById, budgets, selectedMonth, spending, transactions])
 
   const totals = rows.reduce(

@@ -118,7 +118,7 @@ export default function SpendingAnalysis() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
-  const [nMonths, setNMonths] = useState(2)
+  const [trendMonths, setTrendMonths] = useState<string[]>([])
   const [txCache, setTxCache] = useState<Record<number, Transaction[]>>({})
   const [openCategory, setOpenCategory] = useState<string | null>(null)
   const [categoryTxs, setCategoryTxs] = useState<Transaction[]>([])
@@ -141,7 +141,7 @@ export default function SpendingAnalysis() {
         setCategories((catRes.data as Category[]).map(c => c.name).sort())
         const months = Object.keys(dataRes.data).sort().reverse()
         if (months.length > 0) setSelectedMonth(months[0])
-        setNMonths(Math.min(2, months.length))
+        setTrendMonths(months.slice(0, 2))
       } finally {
         setLoading(false)
       }
@@ -161,7 +161,7 @@ export default function SpendingAnalysis() {
   const grandTotal = pieData.reduce((s, d) => s + d.value, 0)
 
   // Bar chart
-  const monthsToShow = allMonths.slice(-nMonths)
+  const monthsToShow = allMonths.filter(month => trendMonths.includes(month))
   const allCatsBar = Array.from(new Set(monthsToShow.flatMap(m => Object.keys(data[m] || {})))).sort()
   const barData = allCatsBar.map(cat => {
     const row: ChartRow = { category: cat }
@@ -180,6 +180,16 @@ export default function SpendingAnalysis() {
   })
 
   const monthBarKeys = monthsToShow.map(m => monthShort(m))
+
+  function toggleTrendMonth(month: string) {
+    setTrendMonths(current => {
+      if (current.includes(month)) {
+        if (current.length === 1) return current
+        return current.filter(value => value !== month)
+      }
+      return [...current, month]
+    })
+  }
 
   // Breakdown table
   const allCatsTable = Array.from(new Set(allMonths.flatMap(m => Object.keys(data[m] || {})))).sort()
@@ -429,16 +439,34 @@ export default function SpendingAnalysis() {
 
               {/* ── Category Trends ── */}
               <div className="bg-white rounded-xl border border-[#D4E4D5] p-6 mb-10">
-                <div className="flex items-center justify-between mb-4">
-                  <p className="section-title">📊 Category Trends</p>
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-[#8BAE90]">Months:</span>
-                    <input
-                      type="range" min={1} max={allMonths.length} value={nMonths}
-                      onChange={e => setNMonths(Number(e.target.value))}
-                      className="w-28 accent-[#1B4D3E]"
-                    />
-                    <span className="text-xs font-bold text-[#1B4D3E] w-4">{nMonths}</span>
+                <div className="flex flex-col gap-3 mb-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="section-title">📊 Category Trends</p>
+                    <p className="text-xs text-[#8BAE90]">
+                      Comparing {monthsToShow.length} month{monthsToShow.length === 1 ? '' : 's'}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2" aria-label="Months to compare">
+                    {[...allMonths].reverse().map(month => {
+                      const selected = trendMonths.includes(month)
+                      const isOnlySelection = selected && trendMonths.length === 1
+                      return (
+                        <button
+                          key={month}
+                          type="button"
+                          onClick={() => toggleTrendMonth(month)}
+                          aria-pressed={selected}
+                          title={isOnlySelection ? 'At least one month must remain selected' : `${selected ? 'Remove' : 'Add'} ${monthLabel(month)}`}
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                            selected
+                              ? 'border-[#1B4D3E] bg-[#1B4D3E] text-white'
+                              : 'border-[#D4E4D5] bg-white text-[#7BAE8A] hover:border-[#4E9A7A] hover:text-[#1B4D3E]'
+                          } ${isOnlySelection ? 'cursor-not-allowed' : ''}`}
+                        >
+                          {monthShort(month)}
+                        </button>
+                      )
+                    })}
                   </div>
                 </div>
                 <ResponsiveContainer width="100%" height={360}>

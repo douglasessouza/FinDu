@@ -12,7 +12,7 @@ import json as auth_json
 import time
 import requests as http_requests
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
+from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from datetime import datetime
 from datetime import timedelta
 from fastapi.staticfiles import StaticFiles
@@ -647,6 +647,9 @@ class RecurringExpenseUpdate(BaseModel):
     valid_until: Optional[datetime] = None
     is_active: Optional[bool] = None
 
+class RecurringMonthlyOverrideUpsert(BaseModel):
+    amount: float = Field(gt=0)
+
 @app.get("/health")
 def health_check():
     return {"status": "ok", "app": "FinDu"}
@@ -957,6 +960,67 @@ def delete_recurring_expense(expense_id: int, db: Session = Depends(get_db)):
     db.delete(expense)
     db.commit()
     return {"message": f"Expense {expense_id} deleted"}
+
+def validate_month_key(month: str) -> None:
+    try:
+        parsed = datetime.strptime(month, "%Y-%m")
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Month must use YYYY-MM format")
+    if parsed.strftime("%Y-%m") != month:
+        raise HTTPException(status_code=422, detail="Month must use YYYY-MM format")
+
+@app.get("/recurring-monthly-overrides")
+def list_recurring_monthly_overrides(month: str, db: Session = Depends(get_db)):
+    validate_month_key(month)
+    return db.query(RecurringMonthlyOverride).filter(
+        RecurringMonthlyOverride.month == month
+    ).all()
+
+@app.put("/recurring-expenses/{expense_id}/monthly-overrides/{month}")
+def upsert_recurring_monthly_override(
+    expense_id: int,
+    month: str,
+    override: RecurringMonthlyOverrideUpsert,
+    db: Session = Depends(get_db),
+):
+    validate_month_key(month)
+    expense = db.query(RecurringExpense).filter(RecurringExpense.id == expense_id).first()
+    if not expense:
+        raise HTTPException(status_code=404, detail="Recurring item not found")
+
+    saved = db.query(RecurringMonthlyOverride).filter(
+        RecurringMonthlyOverride.recurring_id == expense_id,
+        RecurringMonthlyOverride.month == month,
+    ).first()
+    if saved:
+        saved.amount = override.amount
+    else:
+        saved = RecurringMonthlyOverride(
+            recurring_id=expense_id,
+            month=month,
+            amount=override.amount,
+        )
+        db.add(saved)
+    db.commit()
+    db.refresh(saved)
+    return saved
+
+@app.delete("/recurring-expenses/{expense_id}/monthly-overrides/{month}")
+def delete_recurring_monthly_override(
+    expense_id: int,
+    month: str,
+    db: Session = Depends(get_db),
+):
+    validate_month_key(month)
+    saved = db.query(RecurringMonthlyOverride).filter(
+        RecurringMonthlyOverride.recurring_id == expense_id,
+        RecurringMonthlyOverride.month == month,
+    ).first()
+    if not saved:
+        raise HTTPException(status_code=404, detail="Monthly override not found")
+    db.delete(saved)
+    db.commit()
+    return {"message": "Monthly override removed"}
 
 @app.get("/spending-by-category")
 def spending_by_category(currency: Optional[str] = None, db: Session = Depends(get_db)):

@@ -64,6 +64,13 @@ export interface RecurringExpense {
   valid_until?: string
 }
 
+export interface RecurringMonthlyOverride {
+  id: number
+  recurring_id: number
+  month: string
+  amount: number
+}
+
 export interface Category {
   id: number
   name: string
