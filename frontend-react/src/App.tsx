@@ -1,21 +1,22 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle, PiggyBank, ArrowLeftRight } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import MonthlyCashFlow from './pages/MonthlyCashFlow'
-import PlannedVsReal from './pages/PlannedVsReal'
-import SpendingAnalysis from './pages/SpendingAnalysis'
-import Transactions from './pages/Transactions'
-import ImportStatement from './pages/ImportStatement'
-import Accounts from './pages/Accounts'
-import CreditCards from './pages/CreditCards'
-import RecurringExpenses from './pages/RecurringExpenses'
-import Categories from './pages/Categories'
-import HowItWorks from './pages/HowItWorks'
-import FinancialChat from './pages/FinancialChat'
-import InvestmentPlanning from './pages/InvestmentPlanning'
-import CurrencyConverter from './pages/CurrencyConverter'
 import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
+
+const MonthlyCashFlow = lazy(() => import('./pages/MonthlyCashFlow'))
+const PlannedVsReal = lazy(() => import('./pages/PlannedVsReal'))
+const SpendingAnalysis = lazy(() => import('./pages/SpendingAnalysis'))
+const Transactions = lazy(() => import('./pages/Transactions'))
+const ImportStatement = lazy(() => import('./pages/ImportStatement'))
+const Accounts = lazy(() => import('./pages/Accounts'))
+const CreditCards = lazy(() => import('./pages/CreditCards'))
+const RecurringExpenses = lazy(() => import('./pages/RecurringExpenses'))
+const Categories = lazy(() => import('./pages/Categories'))
+const HowItWorks = lazy(() => import('./pages/HowItWorks'))
+const FinancialChat = lazy(() => import('./pages/FinancialChat'))
+const InvestmentPlanning = lazy(() => import('./pages/InvestmentPlanning'))
+const CurrencyConverter = lazy(() => import('./pages/CurrencyConverter'))
 
 type AuthStatus = {
   requires_auth: boolean
@@ -94,7 +95,7 @@ function Sidebar() {
   }, [])
 
   return (
-    <aside className="w-60 bg-white border-r border-[#D4E4D5] flex flex-col py-5 px-3 shrink-0">
+    <aside className="hidden lg:flex w-64 bg-white/95 border-r border-[#D4E4D5] flex-col py-5 px-3 shrink-0 overflow-y-auto">
       {/* Logo */}
       <div className="bg-[#1B4D3E] rounded-xl px-4 py-3 mb-3">
         <p className="text-[#E8C84A] font-bold text-base">💰 FinDu</p>
@@ -193,6 +194,36 @@ function Sidebar() {
         How FinDu Works
       </NavLink>
     </aside>
+  )
+}
+
+const mobileNav = [
+  { to: '/', icon: Banknote, label: 'Cash Flow' },
+  { to: '/planned-vs-real', icon: Target, label: 'Budget' },
+  { to: '/investments', icon: PiggyBank, label: 'Invest' },
+  { to: '/import', icon: Upload, label: 'Import' },
+  { to: '/recurring', icon: RefreshCw, label: 'Plan' },
+]
+
+function MobileNav() {
+  return (
+    <nav aria-label="Primary navigation" className="lg:hidden fixed inset-x-0 bottom-0 z-40 border-t border-[#D4E4D5] bg-white/95 backdrop-blur px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2">
+      <div className="grid grid-cols-5 gap-1">
+        {mobileNav.map(({ to, icon: Icon, label }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={to === '/'}
+            className={({ isActive }) => `flex min-h-12 flex-col items-center justify-center gap-1 rounded-lg text-[11px] font-semibold ${
+              isActive ? 'bg-[#EDF4EE] text-[#123D32]' : 'text-[#55705E]'
+            }`}
+          >
+            <Icon size={18} aria-hidden="true" />
+            <span>{label}</span>
+          </NavLink>
+        ))}
+      </div>
+    </nav>
   )
 }
 
@@ -303,10 +334,13 @@ function LoginScreen({ authStatus, onAuthenticated }: { authStatus: AuthStatus |
 
         {passwordEnabled && (
           <form onSubmit={submit}>
-            <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">
+            <label htmlFor="login-password" className="text-xs font-semibold text-[#55705E] uppercase tracking-widest block mb-2">
               Password
             </label>
             <input
+              id="login-password"
+              name="password"
+              autoComplete="current-password"
               autoFocus={!googleClientId}
               type="password"
               value={password}
@@ -327,7 +361,7 @@ function LoginScreen({ authStatus, onAuthenticated }: { authStatus: AuthStatus |
           <p className="text-sm text-[#B85050]">Authentication is not configured.</p>
         )}
 
-        {error && <p className="text-sm text-[#B85050] mt-3">{error}</p>}
+        {error && <p role="alert" aria-live="polite" className="text-sm text-[#B85050] mt-3">{error}</p>}
       </div>
     </div>
   )
@@ -377,9 +411,11 @@ export default function App() {
 
   return (
     <BrowserRouter>
-      <div className="flex h-screen bg-[#EDF4EE] text-[#2C3E2D]">
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-4 focus:py-2">Skip to content</a>
+      <div className="flex h-dvh bg-transparent text-[#24342C] overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto p-8">
+        <main id="main-content" className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-5 pb-24 sm:px-6 lg:p-8 lg:pb-8">
+          <Suspense fallback={<div role="status" className="grid min-h-[50vh] place-items-center text-sm font-semibold text-[#55705E]">Loading page…</div>}>
           <Routes>
             <Route path="/" element={<MonthlyCashFlow />} />
             <Route path="/planned-vs-real" element={<PlannedVsReal />} />
@@ -395,7 +431,9 @@ export default function App() {
             <Route path="/currency-converter" element={<CurrencyConverter />} />
             <Route path="/how-it-works" element={<HowItWorks />} />
           </Routes>
+          </Suspense>
         </main>
+        <MobileNav />
       </div>
     </BrowserRouter>
   )

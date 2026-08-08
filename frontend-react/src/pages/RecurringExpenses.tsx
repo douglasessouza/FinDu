@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarDays, ChevronDown, ChevronUp, Edit3, GitBranch, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Edit3, GitBranch, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import api from '../services/api'
 import type { Category, CategoryBudget, RecurringExpense } from '../services/api'
 
@@ -45,6 +46,23 @@ function startMonthLabel(value?: string | null): string {
 
 function itemVerb(type: RecurringType): string {
   return type === 'INCOME' ? 'Receive' : 'Due'
+}
+
+function activeInMonth(startMonth: string | null | undefined, validUntil: string | null | undefined, month: string): boolean {
+  if (startMonth && startMonth.slice(0, 7) > month) return false
+  if (validUntil && validUntil.slice(0, 7) < month) return false
+  return true
+}
+
+function shiftMonth(month: string, delta: number): string {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const date = new Date(year, monthNumber - 1 + delta, 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function monthName(month: string): string {
+  const [year, monthNumber] = month.split('-').map(Number)
+  return new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric' }).format(new Date(year, monthNumber - 1, 1))
 }
 
 interface RecurringForm {
@@ -103,6 +121,12 @@ function validDay(value: number): boolean {
 }
 
 export default function RecurringExpenses() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialMonth = /^\d{4}-\d{2}$/.test(searchParams.get('month') || '')
+    ? searchParams.get('month')!
+    : new Date().toISOString().slice(0, 7)
+  const requestedCurrency = searchParams.get('currency') as Currency | null
+  const initialCurrency = requestedCurrency && CURRENCIES.includes(requestedCurrency) ? requestedCurrency : 'CAD'
   const [items, setItems] = useState<RecurringExpense[]>([])
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [categories, setCategories] = useState<string[]>([])
@@ -122,9 +146,30 @@ export default function RecurringExpenses() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const [selectedMonth, setSelectedMonth] = useState(initialMonth)
+  const [selectedCurrency, setSelectedCurrency] = useState<Currency>(initialCurrency)
+  const [showPastSchedules, setShowPastSchedules] = useState(false)
 
-  const incomeItems = items.filter(item => item.type === 'INCOME')
-  const expenseItems = items.filter(item => item.type !== 'INCOME')
+  const monthItems = useMemo(
+    () => items.filter(item => item.currency === selectedCurrency && activeInMonth(item.start_month, item.valid_until, selectedMonth)),
+    [items, selectedCurrency, selectedMonth],
+  )
+  const incomeItems = monthItems.filter(item => item.type === 'INCOME')
+  const expenseItems = monthItems.filter(item => item.type !== 'INCOME')
+  const monthBudgets = useMemo(
+    () => budgets.filter(budget => budget.currency === selectedCurrency && activeInMonth(budget.start_month, budget.valid_until, selectedMonth)),
+    [budgets, selectedCurrency, selectedMonth],
+  )
+  const pastItems = items.filter(item => item.currency === selectedCurrency && item.valid_until && item.valid_until.slice(0, 7) < selectedMonth)
+  const pastBudgets = budgets.filter(budget => budget.currency === selectedCurrency && budget.valid_until && budget.valid_until.slice(0, 7) < selectedMonth)
+  const fixedIncomeTotal = incomeItems.reduce((sum, item) => sum + item.amount, 0)
+  const fixedExpenseTotal = expenseItems.reduce((sum, item) => sum + item.amount, 0)
+  const categoryBudgetTotal = monthBudgets.reduce((sum, budget) => sum + budget.amount, 0)
+  const totalMonthlyPlan = fixedExpenseTotal + categoryBudgetTotal
+
+  useEffect(() => {
+    setSearchParams({ month: selectedMonth, currency: selectedCurrency }, { replace: true })
+  }, [selectedCurrency, selectedMonth, setSearchParams])
   const expenseCategories = categories.length > 0 ? categories : ['Housing', 'Food', 'Transport', 'Other']
   const budgetFormTotal = budgetForm.items.reduce((sum, item) => {
     const amount = Number(item.amount || 0)
@@ -208,16 +253,6 @@ export default function RecurringExpenses() {
     loadInitialRecurring()
     return () => { active = false }
   }, [])
-
-  const totalsByCurrency = useMemo(() => {
-    return items.reduce<Record<string, { income: number; expenses: number }>>((totals, item) => {
-      const current = totals[item.currency] || { income: 0, expenses: 0 }
-      if (item.type === 'INCOME') current.income += item.amount
-      else current.expenses += item.amount
-      totals[item.currency] = current
-      return totals
-    }, {})
-  }, [items])
 
   async function deleteItem(item: RecurringExpense) {
     const confirmed = window.confirm(`Delete ${item.name}? This cannot be undone.`)
@@ -550,6 +585,7 @@ export default function RecurringExpenses() {
               disabled={saving}
               className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
               title="Delete category budget"
+              aria-label={`Delete ${budget.category} budget`}
             >
               <Trash2 size={16} />
             </button>
@@ -596,6 +632,7 @@ export default function RecurringExpenses() {
                         onClick={() => removeEditingBudgetItem(index)}
                         className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition"
                         title="Remove budget item"
+                        aria-label={`Remove ${item.name || `budget item ${index + 1}`}`}
                       >
                         <Trash2 size={14} className="mx-auto" />
                       </button>
@@ -702,6 +739,7 @@ export default function RecurringExpenses() {
               disabled={saving}
               className="p-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] hover:bg-[#F4FAF5] transition disabled:opacity-50"
               title={editingDates ? 'Cancel date edit' : 'Edit start and end dates'}
+              aria-label={editingDates ? `Cancel editing ${item.name}` : `Edit dates for ${item.name}`}
             >
               {editingDates ? <X size={16} /> : <Edit3 size={16} />}
             </button>
@@ -710,6 +748,7 @@ export default function RecurringExpenses() {
               disabled={saving}
               className="p-2 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-50"
               title="Delete recurring item"
+              aria-label={`Delete ${item.name}`}
             >
               <Trash2 size={16} />
             </button>
@@ -756,62 +795,66 @@ export default function RecurringExpenses() {
   const formCategories = activeForm === 'INCOME' ? INCOME_CATEGORIES : expenseCategories
 
   return (
-    <div className="w-full max-w-7xl mx-auto px-6">
-      <div className="flex items-center justify-between mb-6">
+    <div className="w-full max-w-7xl mx-auto">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#1B4D3E] flex items-center gap-2">
-            <RefreshCw size={24} />
-            Recurring Expenses & Income
-          </h1>
-          <p className="text-sm text-[#7BAE8A] mt-1">Track fixed monthly bills, payroll, and temporary recurring items.</p>
+          <p className="eyebrow mb-2">Monthly planning</p>
+          <h1 className="text-3xl font-bold text-[#123D32]">Income, Fixed Costs & Budgets</h1>
+          <p className="text-sm text-[#55705E] mt-1">See only what applies to the selected month. Past schedules stay in history.</p>
         </div>
         <button
           onClick={loadRecurring}
           disabled={loading || saving}
-          className="px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold hover:bg-[#F4FAF5] transition disabled:opacity-50"
+          className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#123D32] text-sm font-semibold hover:bg-[#F4FAF5] disabled:opacity-50"
         >
+          <RefreshCw size={15} aria-hidden="true" />
           Refresh
         </button>
       </div>
 
       {error && (
-        <div className="mb-4 px-4 py-3 bg-[#FDF5F5] border border-[#B85050] rounded-lg text-sm text-[#B85050]">
+        <div role="alert" aria-live="polite" className="mb-4 px-4 py-3 bg-[#FDF5F5] border border-[#B85050] rounded-lg text-sm text-[#B85050]">
           {error}
         </div>
       )}
 
       {message && (
-        <div className="mb-4 px-4 py-3 bg-[#F4FAF5] border border-[#D4E4D5] rounded-lg text-sm text-[#1B4D3E]">
+        <div role="status" aria-live="polite" className="mb-4 px-4 py-3 bg-[#F4FAF5] border border-[#D4E4D5] rounded-lg text-sm text-[#1B4D3E]">
           {message}
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {CURRENCIES.map(currency => {
-          const total = totalsByCurrency[currency] || { income: 0, expenses: 0 }
-          const net = total.income - total.expenses
-
-          return (
-            <div key={currency} className="bg-white border border-[#D4E4D5] rounded-xl p-4">
-              <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">{currency}</p>
-              <p className={`text-xl font-bold mt-1 ${net >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
-                {symbol(currency)} {fmt(net, currency)}
-              </p>
-              <div className="flex justify-between text-xs text-[#7BAE8A] mt-2">
-                <span>Income {symbol(currency)} {fmt(total.income, currency)}</span>
-                <span>Recurring expenses {symbol(currency)} {fmt(total.expenses, currency)}</span>
-              </div>
+      <section aria-label="Plan filters" className="surface-card mb-5 p-3 sm:p-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center justify-between gap-2 sm:justify-start">
+            <button type="button" onClick={() => setSelectedMonth(month => shiftMonth(month, -1))} aria-label="Previous month" className="grid size-10 place-items-center rounded-lg border border-[#D4E4D5] text-[#123D32] hover:bg-[#EDF4EE]"><ChevronLeft size={18} /></button>
+            <div className="min-w-44 text-center">
+              <p className="eyebrow">Plan for</p>
+              <h2 className="text-xl font-bold text-[#123D32]">{monthName(selectedMonth)}</h2>
             </div>
-          )
-        })}
+            <button type="button" onClick={() => setSelectedMonth(month => shiftMonth(month, 1))} aria-label="Next month" className="grid size-10 place-items-center rounded-lg border border-[#D4E4D5] text-[#123D32] hover:bg-[#EDF4EE]"><ChevronRight size={18} /></button>
+          </div>
+          <div className="flex flex-wrap gap-1 rounded-xl bg-[#EDF4EE] p-1" aria-label="Currency">
+            {CURRENCIES.map(currency => (
+              <button key={currency} type="button" onClick={() => setSelectedCurrency(currency)} aria-pressed={selectedCurrency === currency} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${selectedCurrency === currency ? 'bg-white text-[#123D32] shadow-sm' : 'text-[#55705E] hover:text-[#123D32]'}`}>{currency}</button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+        <div className="surface-card p-4"><p className="eyebrow">Fixed income</p><p className="money mt-2 text-xl font-bold text-[#236B4B]">+ {symbol(selectedCurrency)} {fmt(fixedIncomeTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{incomeItems.length} guaranteed source{incomeItems.length === 1 ? '' : 's'}</p></div>
+        <div className="surface-card p-4"><p className="eyebrow">Fixed expenses</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(fixedExpenseTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{expenseItems.length} recurring bill{expenseItems.length === 1 ? '' : 's'}</p></div>
+        <div className="surface-card p-4"><p className="eyebrow">Category budgets</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(categoryBudgetTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{monthBudgets.length} spending area{monthBudgets.length === 1 ? '' : 's'}</p></div>
+        <div className="rounded-2xl border border-[#123D32] bg-[#123D32] p-4 text-white"><p className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/70">Total planned outflow</p><p className="money mt-2 text-xl font-bold text-[#D8B541]">- {symbol(selectedCurrency)} {fmt(totalMonthlyPlan, selectedCurrency)}</p><p className="mt-1 text-xs text-white/70">Fixed costs + flexible budgets</p></div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 items-start">
         <div className="space-y-6">
-          <section className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
+          <section className="surface-card overflow-hidden">
             <div className="px-5 py-4 border-b border-[#EDF4EE]">
-              <p className="section-title">Income</p>
-              <p className="text-sm text-[#7BAE8A] mt-1">{incomeItems.length} active recurring income item{incomeItems.length === 1 ? '' : 's'}</p>
+              <h2 className="section-title">Guaranteed Income</h2>
+              <p className="text-sm text-[#55705E] mt-1">Expected every month during this schedule.</p>
             </div>
             {loading ? (
               <div className="px-5 py-10 text-center text-[#8BAE90]">Loading income...</div>
@@ -822,10 +865,10 @@ export default function RecurringExpenses() {
             )}
           </section>
 
-          <section className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
+          <section className="surface-card overflow-hidden">
             <div className="px-5 py-4 border-b border-[#EDF4EE]">
-              <p className="section-title">Expenses</p>
-              <p className="text-sm text-[#7BAE8A] mt-1">{expenseItems.length} active recurring expense{expenseItems.length === 1 ? '' : 's'}</p>
+              <h2 className="section-title">Fixed Monthly Expenses</h2>
+              <p className="text-sm text-[#55705E] mt-1">Bills with a predictable amount and due date.</p>
             </div>
             {loading ? (
               <div className="px-5 py-10 text-center text-[#8BAE90]">Loading expenses...</div>
@@ -836,23 +879,33 @@ export default function RecurringExpenses() {
             )}
           </section>
 
-          <section className="bg-white border border-[#D4E4D5] rounded-xl overflow-hidden">
+          <section className="surface-card overflow-hidden">
             <div className="px-5 py-4 border-b border-[#EDF4EE]">
-              <p className="section-title">Monthly Category Budgets</p>
-              <p className="text-sm text-[#7BAE8A] mt-1">{budgets.length} active category budget{budgets.length === 1 ? '' : 's'}</p>
+              <h2 className="section-title">Flexible Spending Budgets</h2>
+              <p className="text-sm text-[#55705E] mt-1">Monthly limits for spending areas such as food, coffee, and education.</p>
             </div>
             {loading ? (
               <div className="px-5 py-10 text-center text-[#8BAE90]">Loading budgets...</div>
-            ) : budgets.length === 0 ? (
+            ) : monthBudgets.length === 0 ? (
               <div className="px-5 py-10 text-center text-[#8BAE90]">No monthly category budgets yet.</div>
             ) : (
-              <div>{budgets.map(renderBudget)}</div>
+              <div>{monthBudgets.map(renderBudget)}</div>
             )}
           </section>
+
+          {(pastItems.length > 0 || pastBudgets.length > 0) && (
+            <section className="surface-card overflow-hidden">
+              <button type="button" onClick={() => setShowPastSchedules(value => !value)} aria-expanded={showPastSchedules} className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left hover:bg-[#F4FAF5]">
+                <div className="flex items-center gap-3"><Archive size={18} className="text-[#55705E]" /><div><h2 className="section-title">Past Schedules</h2><p className="text-sm text-[#55705E]">{pastItems.length + pastBudgets.length} ended before {monthName(selectedMonth)}</p></div></div>
+                {showPastSchedules ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+              </button>
+              {showPastSchedules && <div className="border-t border-[#EDF4EE]">{pastItems.map(renderItem)}{pastBudgets.map(renderBudget)}</div>}
+            </section>
+          )}
         </div>
 
         <div className="space-y-6">
-          <form onSubmit={createItem} className="bg-white border border-[#D4E4D5] rounded-xl p-5">
+          <form onSubmit={createItem} className="surface-card p-5">
             <div className="flex items-center gap-2 mb-5">
               <Plus size={18} className="text-[#1B4D3E]" />
               <p className="text-sm font-bold text-[#1B4D3E]">Add Recurring Item</p>
@@ -974,7 +1027,7 @@ export default function RecurringExpenses() {
             </button>
           </form>
 
-          <form onSubmit={createBudget} className="bg-white border border-[#D4E4D5] rounded-xl p-5">
+          <form onSubmit={createBudget} className="surface-card p-5">
             <div className="flex items-center gap-2 mb-5">
               <Plus size={18} className="text-[#1B4D3E]" />
               <p className="text-sm font-bold text-[#1B4D3E]">Add Category Budget</p>
@@ -1020,6 +1073,7 @@ export default function RecurringExpenses() {
                       onClick={() => removeBudgetItem(index)}
                       className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition"
                       title="Remove budget item"
+                      aria-label={`Remove budget item ${index + 1}`}
                     >
                       <Trash2 size={14} className="mx-auto" />
                     </button>

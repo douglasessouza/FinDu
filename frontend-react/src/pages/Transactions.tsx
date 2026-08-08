@@ -121,12 +121,12 @@ export default function Transactions() {
 
   useEffect(() => {
     if (!selectedAccId) return
-    setNewTx(prev => ({
-      ...prev,
-      category: categories.includes(prev.category) ? prev.category : categories[0] || 'Other',
-      statement: monthFilter || prev.statement,
-    }))
     queueMicrotask(() => {
+      setNewTx(prev => ({
+        ...prev,
+        category: categories.includes(prev.category) ? prev.category : categories[0] || 'Other',
+        statement: monthFilter || prev.statement,
+      }))
       void loadTxs()
     })
   }, [categories, loadTxs, monthFilter, selectedAccId])

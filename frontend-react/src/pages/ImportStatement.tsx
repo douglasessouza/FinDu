@@ -283,6 +283,8 @@ export default function ImportStatement() {
   }
 
   async function deleteImport(batchId: string) {
+    const confirmed = window.confirm('Delete this import batch and all of its transactions? This cannot be undone.')
+    if (!confirmed) return
     await api.delete(`/imports/${batchId}`)
     setImports(prev => prev.filter(i => i.import_batch_id !== batchId))
   }
@@ -418,7 +420,8 @@ export default function ImportStatement() {
           </div>
 
           {/* Preview table */}
-          <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden mb-4">
+          <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-x-auto mb-4">
+            <div className="min-w-[760px]">
             <div className="grid text-xs font-semibold text-[#8BAE90] uppercase tracking-widest px-4 py-2 border-b border-[#D4E4D5] bg-[#F9FCF9]"
               style={{ gridTemplateColumns: '100px 1fr 120px' }}>
               <span>Date</span>
@@ -436,6 +439,7 @@ export default function ImportStatement() {
                   </span>
                 </div>
               ))}
+            </div>
             </div>
           </div>
 
@@ -478,7 +482,8 @@ export default function ImportStatement() {
           )}
 
           {/* Review table */}
-          <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden mb-4">
+          <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-x-auto mb-4">
+            <div className="min-w-[760px]">
             <div className="grid text-xs font-semibold text-[#8BAE90] uppercase tracking-widest px-4 py-2 border-b border-[#D4E4D5] bg-[#F9FCF9]"
               style={{ gridTemplateColumns: '90px 1fr 110px 150px 90px 72px' }}>
               <span>Date</span>
@@ -495,6 +500,9 @@ export default function ImportStatement() {
                   style={{ gridTemplateColumns: '90px 1fr 110px 150px 90px 72px' }}>
                   <span className="text-[#8BAE90] text-xs">{t.date}</span>
                   <input
+                    aria-label={`Description for transaction on ${t.date}`}
+                    name={`transaction-description-${i}`}
+                    autoComplete="off"
                     value={t.description}
                     onChange={e => setReviewedTxs(prev => prev.map((tx, j) => j === i ? { ...tx, description: e.target.value } : tx))}
                     className="text-sm text-[#2C3E2D] bg-transparent border-0 focus:outline-none pr-2 truncate"
@@ -504,6 +512,8 @@ export default function ImportStatement() {
                   </span>
                   <div className="pl-2">
                     <select
+                      aria-label={`Category for ${t.description}`}
+                      name={`transaction-category-${i}`}
                       value={t.category || 'Other'}
                       onChange={e => setReviewedTxs(prev => prev.map((tx, j) => j === i ? { ...tx, category: e.target.value } : tx))}
                       className="text-xs px-2 py-1 border border-[#D4E4D5] rounded-lg focus:outline-none w-full bg-white"
@@ -522,12 +532,14 @@ export default function ImportStatement() {
                       onClick={() => startSplit(i)}
                       className="p-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] hover:bg-[#F4FAF5] transition"
                       title={t.amount > 0 ? 'Split income into salary and extra income' : 'Split transaction'}
+                      aria-label={t.amount > 0 ? `Split ${t.description} into salary and extra income` : `Split ${t.description}`}
                     >
                       <Split size={14} />
                     </button>
                   </div>
                 </div>
               ))}
+            </div>
             </div>
           </div>
 
@@ -600,13 +612,13 @@ export default function ImportStatement() {
       )}
 
       {splitSource && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0B1F18]/45 px-4">
-          <div className="w-full max-w-2xl rounded-xl border border-[#D4E4D5] bg-white shadow-xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto overscroll-contain bg-[#0B1F18]/45 px-4 py-6">
+          <div role="dialog" aria-modal="true" aria-labelledby="split-income-title" className="w-full max-w-2xl rounded-xl border border-[#D4E4D5] bg-white shadow-xl">
             <div className="flex items-start justify-between gap-4 border-b border-[#EDF4EE] px-5 py-4">
               <div>
-                <p className="text-lg font-bold text-[#1B4D3E]">
+                <h2 id="split-income-title" className="text-lg font-bold text-[#1B4D3E]">
                   {splitSource.amount > 0 ? 'Split Income' : 'Split Transaction'}
-                </p>
+                </h2>
                 <p className="mt-1 text-sm text-[#7BAE8A]">
                   {splitSource.description} · $ {fmt(Math.abs(splitSource.amount))}
                 </p>
@@ -621,6 +633,7 @@ export default function ImportStatement() {
                 onClick={cancelSplit}
                 className="rounded-lg p-2 text-[#8BAE90] hover:bg-[#F4FAF5] hover:text-[#1B4D3E] transition"
                 title="Close split dialog"
+                aria-label="Close split dialog"
               >
                 <X size={18} />
               </button>
@@ -638,12 +651,17 @@ export default function ImportStatement() {
                 {splitRows.map((row, index) => (
                   <div key={index} className="grid grid-cols-[1fr_150px_110px_34px] gap-2">
                     <input
+                      aria-label={`Split description ${index + 1}`}
+                      name={`split-description-${index}`}
+                      autoComplete="off"
                       type="text"
                       value={row.description}
                       onChange={e => updateSplitRow(index, { description: e.target.value })}
                       className="w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm font-semibold text-[#1B4D3E] focus:outline-none"
                     />
                     <select
+                      aria-label={`Split category ${index + 1}`}
+                      name={`split-category-${index}`}
                       value={row.category}
                       onChange={e => updateSplitRow(index, { category: e.target.value })}
                       className="w-full rounded-lg border border-[#D4E4D5] bg-white px-2 py-2 text-xs font-semibold text-[#1B4D3E] focus:outline-none"
@@ -651,6 +669,9 @@ export default function ImportStatement() {
                       {categories.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                     <input
+                      aria-label={`Split amount ${index + 1}`}
+                      name={`split-amount-${index}`}
+                      inputMode="decimal"
                       type="number"
                       step="0.01"
                       min={0}
@@ -664,6 +685,7 @@ export default function ImportStatement() {
                       disabled={splitRows.length <= 2}
                       className="h-10 rounded-lg border border-[#F0CCCC] text-[#B85050] hover:bg-[#FDF5F5] transition disabled:opacity-40"
                       title="Remove split row"
+                      aria-label={`Remove split row ${index + 1}`}
                     >
                       <Trash2 size={14} className="mx-auto" />
                     </button>

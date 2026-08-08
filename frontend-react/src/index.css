@@ -13,14 +13,77 @@
   --color-red: #B85050;
 }
 
+html {
+  background: #F4F7F2;
+  scroll-behavior: smooth;
+}
+
 body {
-  background-color: #EDF4EE;
-  color: #2C3E2D;
-  font-family: Georgia, serif;
+  margin: 0;
+  background:
+    radial-gradient(circle at 85% 0%, rgba(216, 181, 65, 0.09), transparent 24rem),
+    #F4F7F2;
+  color: #24342C;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: rgba(35, 107, 75, 0.14);
+}
+
+h1, h2, h3, .display-type, .section-title {
+  font-family: Georgia, "Times New Roman", serif;
+  text-wrap: balance;
+}
+
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}
+
+button, a {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: 160ms;
+}
+
+:focus-visible {
+  outline: 3px solid rgba(216, 181, 65, 0.9) !important;
+  outline-offset: 2px !important;
+}
+
+input, select, textarea {
+  font: inherit;
+}
+
+.money, .tabular-nums {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.025em;
+}
+
+.surface-card {
+  border: 1px solid #D7E2D8;
+  border-radius: 1rem;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 0 rgba(18, 61, 50, 0.04), 0 12px 32px rgba(18, 61, 50, 0.035);
+}
+
+.eyebrow {
+  color: #55705E;
+  font-size: 0.7rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 @layer components {
   .section-title {
-    @apply text-lg font-bold text-[#1B4D3E];
+    @apply text-lg font-bold text-[#123D32];
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

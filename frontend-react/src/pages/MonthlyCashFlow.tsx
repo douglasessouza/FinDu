@@ -531,32 +531,31 @@ export default function MonthlyCashFlow() {
 
             return (
               <div key={currency} className="mb-10">
-                <h2 className="text-lg font-bold text-[#1B4D3E] mb-4">{flag} {currency}</h2>
+                <h2 className="text-xl font-bold text-[#123D32] mb-4">{flag} {currency}</h2>
 
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
-                  <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Projected Income</p>
-                    <p className="text-xl font-bold text-[#1B6B3A] mt-1">+ {symbol} {fmt(projectedIncomeTotal)}</p>
-                    <p className="text-xs text-[#8BAE90] mt-1">Guaranteed income + extras received</p>
+                <section aria-label={`${currency} month story`} className="mb-5 overflow-hidden rounded-2xl border border-[#123D32] bg-white shadow-[0_18px_50px_rgba(18,61,50,0.06)]">
+                  <div className="flex flex-col gap-1 bg-[#123D32] px-5 py-4 text-white sm:flex-row sm:items-end sm:justify-between">
+                    <div><p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/65">Month story</p><h3 className="mt-1 text-xl font-bold">Where this month is expected to land</h3></div>
+                    <p className="money text-2xl font-bold text-[#D8B541]">{symbol} {fmt(projectedBalance)}</p>
                   </div>
-                  <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Planned Expenses</p>
-                    <p className="text-xl font-bold text-[#B85050] mt-1">- {symbol} {fmt(plannedFixedExpenses)}</p>
-                    <p className="text-xs text-[#8BAE90] mt-1">Recurring bills + cards due</p>
+                  <div className="grid grid-cols-1 divide-y divide-[#E6EEE7] sm:grid-cols-5 sm:divide-x sm:divide-y-0">
+                    {[
+                      { label: 'Current balance', value: inBank, sign: '', tone: 'text-[#123D32]' },
+                      { label: 'Projected income', value: projectedIncomeTotal, sign: '+', tone: 'text-[#236B4B]' },
+                      { label: 'Monthly expenses', value: plannedFixedExpenses, sign: '−', tone: 'text-[#B54B4B]' },
+                      { label: 'Planned savings', value: investmentSavings.plannedDue, sign: '−', tone: 'text-[#123D32]' },
+                      { label: 'End of month', value: projectedBalance, sign: '=', tone: 'text-[#B28E18]' },
+                    ].map((step, index) => (
+                      <div key={step.label} className="relative px-4 py-4">
+                        <div className="mb-3 flex items-center gap-2"><span className={`grid size-6 place-items-center rounded-full text-xs font-bold ${index === 4 ? 'bg-[#D8B541] text-[#123D32]' : 'bg-[#EDF4EE] text-[#55705E]'}`}>{index + 1}</span><p className="text-xs font-semibold text-[#55705E]">{step.label}</p></div>
+                        <p className={`money text-base font-bold ${step.tone}`}>{step.sign} {symbol} {fmt(step.value)}</p>
+                      </div>
+                    ))}
                   </div>
-                  <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Planned Savings</p>
-                    <p className="text-xl font-bold text-[#1B4D3E] mt-1">- {symbol} {fmt(investmentSavings.plannedDue)}</p>
-                    <p className="text-xs text-[#8BAE90] mt-1">
-                      {symbol} {fmt(investmentSavings.savedActual)} saved of {symbol} {fmt(investmentSavings.plannedDue)}
-                    </p>
+                  <div className="grid grid-cols-1 gap-2 border-t border-[#E6EEE7] bg-[#F8FBF8] px-5 py-3 text-xs text-[#55705E] sm:grid-cols-3">
+                    <span>Guaranteed income {symbol} {fmt(plannedIncomeTotal)}</span><span>Extra received {symbol} {fmt(actualOtherIncomeTotal)}</span><span>Still to pay {symbol} {fmt(openFixedExpenses)}</span>
                   </div>
-                  <div className="bg-[#2D6A4F] rounded-xl border border-[#2D6A4F] p-4">
-                    <p className="text-[10px] font-semibold text-white uppercase tracking-widest">Projected End-of-Month</p>
-                    <p className="text-xl font-bold text-[#E8C84A] mt-1">{symbol} {fmt(projectedBalance)}</p>
-                    <p className="text-xs text-white/80 mt-1">Current balance + monthly income - monthly expenses - planned savings</p>
-                  </div>
-                </div>
+                </section>
 
                 <section className="mb-5 rounded-xl border-2 border-[#1B4D3E] bg-[#F7FBF8] p-4">
                   <div className="flex items-center justify-between mb-2">
@@ -856,31 +855,18 @@ export default function MonthlyCashFlow() {
                 </div>
                 </section>
 
-                <div className="bg-white rounded-xl border border-[#D4E4D5] overflow-hidden">
-                  <p className="section-title px-5 pt-4 mb-3">Balance</p>
-                  <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#EDF4EE]">
-                    <div className="px-5 pb-5">
-                      <p className="text-xs text-[#8BAE90] mb-1">Current Bank Balance</p>
-                      <p className="text-2xl font-bold text-[#1B4D3E]">{symbol} {fmt(inBank)}</p>
-                      <p className="text-xs text-[#8BAE90] mt-1">Starting balance used in this monthly projection.</p>
-                    </div>
-                    <div className="px-5 py-5 md:pt-0 bg-[#F8FBF8]">
-                      <p className="text-xs text-[#8BAE90] mb-1">Total Savings</p>
-                      <p className="text-2xl font-bold text-[#1B6B3A]">{symbol} {fmt(investmentPortfolio.savedTotal)}</p>
-                      <p className="text-xs text-[#8BAE90] mt-1">
-                        Updated from {investmentPortfolio.openPlans} open investment plan{investmentPortfolio.openPlans === 1 ? '' : 's'}.
-                      </p>
-                    </div>
-                    <div className="px-5 py-5 md:pt-0 bg-[#2D6A4F] md:rounded-br-xl">
-                      <p className="text-xs text-white mb-1">Projected End-of-Month Balance</p>
-                      <p className="text-2xl font-bold text-[#E8C84A]">{symbol} {fmt(projectedBalance)}</p>
-                      <p className="text-xs text-white/80 mt-1">Based on all planned income, expenses, and savings for the month.</p>
-                    </div>
+                <details className="surface-card overflow-hidden">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-bold text-[#123D32] hover:bg-[#F4FAF5]">
+                    <span>How FinDu calculated this projection</span>
+                    <span className="money text-[#55705E]">Total savings {symbol} {fmt(investmentPortfolio.savedTotal)}</span>
+                  </summary>
+                  <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
+                    <p className="money text-sm text-[#55705E]">
+                      {symbol} {fmt(inBank)} + {fmt(projectedIncomeTotal)} income − {fmt(plannedFixedExpenses)} expenses − {fmt(investmentSavings.plannedDue)} savings = <strong className="text-[#123D32]">{symbol} {fmt(projectedBalance)}</strong>
+                    </p>
+                    <p className="mt-2 text-xs text-[#55705E]">Savings total comes from {investmentPortfolio.openPlans} open investment plan{investmentPortfolio.openPlans === 1 ? '' : 's'}.</p>
                   </div>
-                  <p className="text-xs text-[#8BAE90] text-center py-2 border-t border-[#EDF4EE]">
-                    {fmt(inBank)} + projected income {fmt(projectedIncomeTotal)} - monthly expenses {fmt(plannedFixedExpenses)} - planned savings {fmt(investmentSavings.plannedDue)} = {symbol} {fmt(projectedBalance)}
-                  </p>
-                </div>
+                </details>
 
                 <hr className="border-[#D4E4D5] my-8" />
               </div>
