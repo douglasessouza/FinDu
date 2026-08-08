@@ -502,8 +502,14 @@ export default function MonthlyCashFlow() {
             const monthRecurring = effectiveRecurring.filter(r => r.currency === currency && isValidThisMonth(r, year, month))
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
-            const matchedIncomeActual = incomeList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
-            const remainingIncome = incomeList.reduce((s, r) => s + (recurringMatches[r.id] ? 0 : r.amount), 0)
+            const matchedIncomeActual = incomeList.reduce((s, r) => {
+              const match = recurringMatches[r.id]
+              return s + (match?.actualAmount || (isPaid('income', r.id) ? r.amount : 0))
+            }, 0)
+            const remainingIncome = incomeList.reduce(
+              (s, r) => s + (recurringMatches[r.id] || isPaid('income', r.id) ? 0 : r.amount),
+              0,
+            )
             const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
             const matchedExpenseActual = expenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
             const remainingRecurringExpenses = expenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
@@ -584,18 +590,27 @@ export default function MonthlyCashFlow() {
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                           {payrollIncome.map(r => {
                             const match = recurringMatches[r.id]
-                            const received = Boolean(match)
+                            const manualReceipt = isPaid('income', r.id)
+                            const received = Boolean(match || manualReceipt)
+                            const toggleReceived = async () => {
+                              if (!received) {
+                                await togglePaid('income', r.id, r.name)
+                                return
+                              }
+                              if (match) await ignoreRecurringMatch(r, match)
+                              if (manualReceipt) await togglePaid('income', r.id, r.name)
+                            }
                             return (
                             <div key={r.id} className={`rounded-lg border border-[#D4E4D5] px-4 py-3 ${received ? 'bg-[#EDF4EE]' : 'bg-[#F4FAF5]'}`}>
                               <div className="flex items-start justify-between gap-3">
                                 <div className="flex items-start gap-2 min-w-0">
                                   <button
-                                    onClick={() => match && ignoreRecurringMatch(r, match)}
-                                    disabled={!match}
+                                    onClick={toggleReceived}
                                     className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
-                                      received ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white hover:bg-[#B85050] hover:border-[#B85050]' : 'border-[#D4E4D5]'
+                                      received ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white hover:bg-[#B85050] hover:border-[#B85050]' : 'border-[#D4E4D5] hover:border-[#1B6B3A]'
                                     }`}
-                                    title={match ? 'Unmark received for this month' : 'Not received yet'}
+                                    title={received ? 'Unmark received for this month' : 'Mark received for this month'}
+                                    aria-label={received ? `Unmark ${r.name} as received` : `Mark ${r.name} as received`}
                                   >
                                     {received && <Check size={13} />}
                                   </button>
@@ -615,6 +630,11 @@ export default function MonthlyCashFlow() {
                                       title={match.transaction.description}
                                     >
                                       Received {formatDueDate(match.transaction.date.slice(0, 10))}
+                                    </p>
+                                  )}
+                                  {!match && manualReceipt && (
+                                    <p className="text-xs text-[#1B6B3A] mt-1">
+                                      Marked received
                                     </p>
                                   )}
                                   </div>
