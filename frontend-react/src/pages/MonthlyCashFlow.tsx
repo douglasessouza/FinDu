@@ -177,7 +177,6 @@ export default function MonthlyCashFlow() {
   const [savingOverride, setSavingOverride] = useState(false)
   const [overrideError, setOverrideError] = useState('')
   const [statementTransactions, setStatementTransactions] = useState<Transaction[]>([])
-  const [actualOtherIncomeTransactions, setActualOtherIncomeTransactions] = useState<Transaction[]>([])
   const [cardCharges, setCardCharges] = useState<Record<string, number>>({})
   const [cardDueDates, setCardDueDates] = useState<Record<string, string>>({})
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
@@ -277,22 +276,6 @@ export default function MonthlyCashFlow() {
     load()
   }, [monthStr, month, year])
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadActualOtherIncome() {
-      try {
-        const res = await api.get(`/other-income-transactions?month=${monthStr}`)
-        if (!cancelled) setActualOtherIncomeTransactions(res.data as Transaction[])
-      } catch (error) {
-        console.error('Failed to load actual other income', error)
-        if (!cancelled) setActualOtherIncomeTransactions([])
-      }
-    }
-
-    loadActualOtherIncome()
-    return () => { cancelled = true }
-  }, [monthStr])
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
 
   const effectiveRecurring = useMemo(
@@ -502,18 +485,19 @@ export default function MonthlyCashFlow() {
             const monthRecurring = effectiveRecurring.filter(r => r.currency === currency && isValidThisMonth(r, year, month))
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
-            const matchedIncomeActual = incomeList.reduce((s, r) => {
-              const match = recurringMatches[r.id]
-              return s + (match?.actualAmount || (isPaid('income', r.id) ? r.amount : 0))
-            }, 0)
-            const remainingIncome = incomeList.reduce(
-              (s, r) => s + (recurringMatches[r.id] || isPaid('income', r.id) ? 0 : r.amount),
-              0,
-            )
             const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
             const matchedExpenseActual = expenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
             const remainingRecurringExpenses = expenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
-            const currencyActualOtherIncome = actualOtherIncomeTransactions.filter(tx => tx.currency === currency)
+            const currencyIncomeTransactions = statementTransactions.filter(tx => (
+              tx.currency === currency && tx.amount > 0 && tx.date.slice(0, 7) === monthStr
+            ))
+            const currencyActualSalaryIncome = currencyIncomeTransactions.filter(
+              tx => (tx.category || '').trim().toLowerCase() === 'salary',
+            )
+            const currencyActualOtherIncome = currencyIncomeTransactions.filter(
+              tx => (tx.category || '').trim().toLowerCase() === 'other income',
+            )
+            const actualSalaryIncomeTotal = currencyActualSalaryIncome.reduce((s, tx) => s + Number(tx.amount), 0)
             const actualOtherIncomeTotal = currencyActualOtherIncome.reduce((s, tx) => s + Number(tx.amount), 0)
             const cardEntries = Object.entries(cardCharges).filter(([name]) => {
               const card = accounts.find(a => a.name === name)
@@ -538,10 +522,10 @@ export default function MonthlyCashFlow() {
             })
             const otherIncome = incomeList.filter(item => !payrollIncome.some(payroll => payroll.id === item.id))
             const payrollIncomeTotal = payrollIncome.reduce((s, r) => s + r.amount, 0)
-            const plannedOtherIncomeTotal = otherIncome.reduce((s, r) => s + r.amount, 0)
-            const otherIncomeTotal = plannedOtherIncomeTotal + actualOtherIncomeTotal
             const plannedIncomeTotal = incomeList.reduce((s, r) => s + r.amount, 0)
-            const projectedBalance = inBank + plannedIncomeTotal - plannedFixedExpenses - investmentSavings.plannedDue
+            const projectedIncomeTotal = plannedIncomeTotal + actualOtherIncomeTotal
+            const receivedIncomeTotal = actualSalaryIncomeTotal + actualOtherIncomeTotal
+            const projectedBalance = inBank + projectedIncomeTotal - plannedFixedExpenses - investmentSavings.plannedDue
 
             if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0 && investmentSavings.plannedDue === 0) return null
 
@@ -551,9 +535,9 @@ export default function MonthlyCashFlow() {
 
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-5">
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
-                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Expected Income</p>
-                    <p className="text-xl font-bold text-[#1B6B3A] mt-1">+ {symbol} {fmt(remainingIncome)}</p>
-                    <p className="text-xs text-[#8BAE90] mt-1">Still to be received</p>
+                    <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Projected Income</p>
+                    <p className="text-xl font-bold text-[#1B6B3A] mt-1">+ {symbol} {fmt(projectedIncomeTotal)}</p>
+                    <p className="text-xs text-[#8BAE90] mt-1">Guaranteed income + extras received</p>
                   </div>
                   <div className="bg-white rounded-xl border border-[#D4E4D5] p-4">
                     <p className="text-[10px] font-semibold text-[#8BAE90] uppercase tracking-widest">Planned Expenses</p>
@@ -578,10 +562,10 @@ export default function MonthlyCashFlow() {
                   <div className="flex items-center justify-between mb-2">
                     <p className="section-title">Income</p>
                     <p className="text-xs text-[#8BAE90]">
-                      Expected {symbol} {fmt(remainingIncome)} · received {symbol} {fmt(matchedIncomeActual)}
+                      Guaranteed {symbol} {fmt(plannedIncomeTotal)} · received {symbol} {fmt(receivedIncomeTotal)}
                     </p>
                   </div>
-                  {incomeList.length === 0 && currencyActualOtherIncome.length === 0 ? (
+                  {incomeList.length === 0 && currencyIncomeTransactions.length === 0 ? (
                     <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 text-sm text-[#8BAE90]">
                       No recurring income registered.
                     </div>
@@ -589,34 +573,11 @@ export default function MonthlyCashFlow() {
                     <>
                       {payrollIncome.length > 0 && (
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                          {payrollIncome.map(r => {
-                            const match = recurringMatches[r.id]
-                            const manualReceipt = isPaid('income', r.id)
-                            const received = Boolean(match || manualReceipt)
-                            const toggleReceived = async () => {
-                              if (!received) {
-                                await togglePaid('income', r.id, r.name)
-                                return
-                              }
-                              if (match) await ignoreRecurringMatch(r, match)
-                              if (manualReceipt) await togglePaid('income', r.id, r.name)
-                            }
-                            return (
-                            <div key={r.id} className={`rounded-lg border border-[#D4E4D5] px-4 py-3 ${received ? 'bg-[#EDF4EE]' : 'bg-[#F4FAF5]'}`}>
+                          {payrollIncome.map(r => (
+                            <div key={r.id} className="rounded-lg border border-[#D4E4D5] bg-[#F4FAF5] px-4 py-3">
                               <div className="flex items-start justify-between gap-3">
-                                <div className="flex items-start gap-2 min-w-0">
-                                  <button
-                                    onClick={toggleReceived}
-                                    className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition ${
-                                      received ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white hover:bg-[#B85050] hover:border-[#B85050]' : 'border-[#D4E4D5] hover:border-[#1B6B3A]'
-                                    }`}
-                                    title={received ? 'Unmark received for this month' : 'Mark received for this month'}
-                                    aria-label={received ? `Unmark ${r.name} as received` : `Mark ${r.name} as received`}
-                                  >
-                                    {received && <Check size={13} />}
-                                  </button>
-                                  <div className="min-w-0">
-                                  <p className={`font-bold truncate ${received ? 'text-[#8BAE90] line-through' : 'text-[#1B4D3E]'}`}>{r.name}</p>
+                                <div className="min-w-0">
+                                  <p className="font-bold truncate text-[#1B4D3E]">{r.name}</p>
                                   <p className="text-xs text-[#7BAE8A] mt-1">
                                     day {r.due_day}
                                     {r.valid_until && (
@@ -625,27 +586,11 @@ export default function MonthlyCashFlow() {
                                       </span>
                                     )}
                                   </p>
-                                  {match && (
-                                    <p
-                                      className="text-xs text-[#1B6B3A] mt-1 truncate"
-                                      title={match.transaction.description}
-                                    >
-                                      Received {formatDueDate(match.transaction.date.slice(0, 10))}
-                                    </p>
-                                  )}
-                                  {!match && manualReceipt && (
-                                    <p className="text-xs text-[#1B6B3A] mt-1">
-                                      Marked received
-                                    </p>
-                                  )}
-                                  </div>
                                 </div>
-                                <p className={`font-bold whitespace-nowrap ${received ? 'text-[#8BAE90] line-through' : 'text-[#1B6B3A]'}`}>
-                                  + {symbol} {fmt(match?.actualAmount || r.amount)}
-                                </p>
+                                <p className="font-bold whitespace-nowrap text-[#1B6B3A]">+ {symbol} {fmt(r.amount)}</p>
                               </div>
                             </div>
-                          )})}
+                          ))}
                         </div>
                       )}
 
@@ -696,16 +641,16 @@ export default function MonthlyCashFlow() {
 
                       <div className="mt-3 bg-white rounded-lg border border-[#D4E4D5] overflow-hidden">
                         <div className="flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE]">
-                          <span className="text-[#1B4D3E] font-bold">Payroll Income</span>
+                          <span className="text-[#1B4D3E] font-bold">Guaranteed Payroll</span>
                           <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(payrollIncomeTotal)}</span>
                         </div>
                         <div className="flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE]">
-                          <span className="text-[#1B4D3E] font-bold">Other Incomes</span>
-                          <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(otherIncomeTotal)}</span>
+                          <span className="text-[#1B4D3E] font-bold">Extra Income Received</span>
+                          <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(actualOtherIncomeTotal)}</span>
                         </div>
                         <div className="flex justify-between items-center px-4 py-3 bg-[#F4FAF5]">
-                          <span className="text-[#1B4D3E] font-bold">Expected Income Remaining</span>
-                          <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(remainingIncome)}</span>
+                          <span className="text-[#1B4D3E] font-bold">Total Projected Income</span>
+                          <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(projectedIncomeTotal)}</span>
                         </div>
                       </div>
                     </>
@@ -933,7 +878,7 @@ export default function MonthlyCashFlow() {
                     </div>
                   </div>
                   <p className="text-xs text-[#8BAE90] text-center py-2 border-t border-[#EDF4EE]">
-                    {fmt(inBank)} + monthly income {fmt(plannedIncomeTotal)} - monthly expenses {fmt(plannedFixedExpenses)} - planned savings {fmt(investmentSavings.plannedDue)} = {symbol} {fmt(projectedBalance)}
+                    {fmt(inBank)} + projected income {fmt(projectedIncomeTotal)} - monthly expenses {fmt(plannedFixedExpenses)} - planned savings {fmt(investmentSavings.plannedDue)} = {symbol} {fmt(projectedBalance)}
                   </p>
                 </div>
 

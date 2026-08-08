@@ -457,7 +457,7 @@ export default function ImportStatement() {
           <div className="bg-white rounded-xl border border-[#D4E4D5] p-4 mb-4 flex flex-wrap gap-4 items-center justify-between">
             <div>
               <p className="text-sm font-bold text-[#1B4D3E]">📋 Review & confirm {reviewedTxs.length} transactions</p>
-              <p className="text-xs text-[#8BAE90]">Edit categories or split mixed purchases before importing.</p>
+              <p className="text-xs text-[#8BAE90]">Edit categories or split mixed purchases and income before importing.</p>
             </div>
             <div className="flex gap-4">
               {isCard ? (
@@ -521,7 +521,7 @@ export default function ImportStatement() {
                       type="button"
                       onClick={() => startSplit(i)}
                       className="p-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] hover:bg-[#F4FAF5] transition"
-                      title="Split transaction"
+                      title={t.amount > 0 ? 'Split income into salary and extra income' : 'Split transaction'}
                     >
                       <Split size={14} />
                     </button>
@@ -604,10 +604,17 @@ export default function ImportStatement() {
           <div className="w-full max-w-2xl rounded-xl border border-[#D4E4D5] bg-white shadow-xl">
             <div className="flex items-start justify-between gap-4 border-b border-[#EDF4EE] px-5 py-4">
               <div>
-                <p className="text-lg font-bold text-[#1B4D3E]">Split Transaction</p>
+                <p className="text-lg font-bold text-[#1B4D3E]">
+                  {splitSource.amount > 0 ? 'Split Income' : 'Split Transaction'}
+                </p>
                 <p className="mt-1 text-sm text-[#7BAE8A]">
                   {splitSource.description} · $ {fmt(Math.abs(splitSource.amount))}
                 </p>
+                {splitSource.amount > 0 && (
+                  <p className="mt-1 text-xs font-semibold text-[#3F6EA8]">
+                    Use Salary for the payroll portion and Other Income for the extra portion.
+                  </p>
+                )}
               </div>
               <button
                 type="button"
