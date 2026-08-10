@@ -76,6 +76,7 @@ interface RecurringForm {
 }
 
 interface RecurringDateForm {
+  amount: string
   start_month: string
   valid_until: string
 }
@@ -139,7 +140,7 @@ export default function RecurringExpenses() {
   const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null)
   const [editingBudgetItems, setEditingBudgetItems] = useState<{ name: string; amount: string }[]>([])
   const [editingItemId, setEditingItemId] = useState<number | null>(null)
-  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ start_month: '', valid_until: '' })
+  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ amount: '', start_month: '', valid_until: '' })
   const [adjustingBudgetId, setAdjustingBudgetId] = useState<number | null>(null)
   const [adjustmentStartMonth, setAdjustmentStartMonth] = useState(new Date().toISOString().slice(0, 7))
   const [loading, setLoading] = useState(true)
@@ -389,6 +390,7 @@ export default function RecurringExpenses() {
   function startEditingItemDates(item: RecurringExpense) {
     setEditingItemId(item.id)
     setEditingItemDates({
+      amount: String(item.amount),
       start_month: item.start_month || '',
       valid_until: item.valid_until ? item.valid_until.slice(0, 10) : '',
     })
@@ -398,10 +400,15 @@ export default function RecurringExpenses() {
 
   function cancelEditingItemDates() {
     setEditingItemId(null)
-    setEditingItemDates({ start_month: '', valid_until: '' })
+    setEditingItemDates({ amount: '', start_month: '', valid_until: '' })
   }
 
   async function saveItemDates(item: RecurringExpense) {
+    const amount = Number(editingItemDates.amount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError('Amount must be greater than zero.')
+      return
+    }
     if (!editingItemDates.start_month) {
       setError('Start month is required.')
       return
@@ -416,15 +423,16 @@ export default function RecurringExpenses() {
     setMessage('')
     try {
       const res = await api.patch(`/recurring-expenses/${item.id}`, {
+        amount,
         start_month: editingItemDates.start_month,
         valid_until: editingItemDates.valid_until ? `${editingItemDates.valid_until}T00:00:00` : null,
       })
       setItems(prev => prev.map(existing => existing.id === item.id ? res.data as RecurringExpense : existing))
       cancelEditingItemDates()
-      setMessage(`${item.name} dates updated.`)
+      setMessage(`${item.name} updated.`)
     } catch (e) {
       console.error(`Failed to update recurring item ${item.id}`, e)
-      setError('Could not update recurring item dates.')
+      setError('Could not update recurring item.')
     } finally {
       setSaving(false)
     }
@@ -738,8 +746,8 @@ export default function RecurringExpenses() {
               onClick={() => editingDates ? cancelEditingItemDates() : startEditingItemDates(item)}
               disabled={saving}
               className="p-2 rounded-lg border border-[#D4E4D5] text-[#1B4D3E] hover:bg-[#F4FAF5] transition disabled:opacity-50"
-              title={editingDates ? 'Cancel date edit' : 'Edit start and end dates'}
-              aria-label={editingDates ? `Cancel editing ${item.name}` : `Edit dates for ${item.name}`}
+              title={editingDates ? 'Cancel edit' : 'Edit amount and schedule'}
+              aria-label={editingDates ? `Cancel editing ${item.name}` : `Edit amount and schedule for ${item.name}`}
             >
               {editingDates ? <X size={16} /> : <Edit3 size={16} />}
             </button>
@@ -756,10 +764,29 @@ export default function RecurringExpenses() {
         </div>
         {editingDates && (
           <div className="mx-5 mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] p-3">
-            <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 sm:items-end">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[0.8fr_1fr_1fr_auto] gap-3 sm:items-end">
               <div>
-                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Start month</label>
+                <label htmlFor={`recurring-amount-${item.id}`} className="text-xs font-semibold text-[#55705E] uppercase tracking-widest block mb-2">Amount</label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-sm font-semibold text-[#55705E]">{symbol(item.currency)}</span>
+                  <input
+                    id={`recurring-amount-${item.id}`}
+                    name={`recurring-amount-${item.id}`}
+                    type="number"
+                    inputMode="decimal"
+                    step="0.01"
+                    min="0.01"
+                    value={editingItemDates.amount}
+                    onChange={e => setEditingItemDates(prev => ({ ...prev, amount: e.target.value }))}
+                    className="money w-full rounded-lg border border-[#D4E4D5] bg-white py-2 pl-14 pr-3 text-sm font-semibold text-[#1B4D3E] focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div>
+                <label htmlFor={`recurring-start-${item.id}`} className="text-xs font-semibold text-[#55705E] uppercase tracking-widest block mb-2">Start month</label>
                 <input
+                  id={`recurring-start-${item.id}`}
+                  name={`recurring-start-${item.id}`}
                   type="month"
                   value={editingItemDates.start_month}
                   onChange={e => setEditingItemDates(prev => ({ ...prev, start_month: e.target.value }))}
@@ -767,8 +794,10 @@ export default function RecurringExpenses() {
                 />
               </div>
               <div>
-                <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Valid until</label>
+                <label htmlFor={`recurring-until-${item.id}`} className="text-xs font-semibold text-[#55705E] uppercase tracking-widest block mb-2">Valid until</label>
                 <input
+                  id={`recurring-until-${item.id}`}
+                  name={`recurring-until-${item.id}`}
                   type="date"
                   value={editingItemDates.valid_until}
                   onChange={e => setEditingItemDates(prev => ({ ...prev, valid_until: e.target.value }))}
@@ -782,7 +811,7 @@ export default function RecurringExpenses() {
                 className="h-10 px-4 rounded-lg bg-[#1B4D3E] text-white text-sm font-semibold hover:bg-[#2D6A4F] transition disabled:opacity-50 flex items-center justify-center gap-2"
               >
                 <Save size={14} />
-                Save
+                Save Changes
               </button>
             </div>
           </div>

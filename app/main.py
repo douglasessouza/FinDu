@@ -767,6 +767,12 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
+    # A transaction may have been matched to a recurring income or expense.
+    # Remove those dependent records first so the transaction can be deleted
+    # without violating the recurring_matches foreign-key constraint.
+    db.query(RecurringMatch).filter(RecurringMatch.transaction_id == transaction_id).delete(
+        synchronize_session=False,
+    )
     db.delete(transaction)
     db.commit()
     return {"message": f"Transaction {transaction_id} deleted"}
