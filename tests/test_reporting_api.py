@@ -38,6 +38,7 @@ def add_transaction(
     category,
     description,
     *,
+    currency=None,
     statement_month=None,
     payment_due_date=None,
 ):
@@ -45,7 +46,7 @@ def add_transaction(
         account_id=account.id,
         description=description,
         amount=amount,
-        currency=account.currency,
+        currency=currency or account.currency,
         date=datetime.fromisoformat(date),
         category=category,
         statement_month=statement_month,
@@ -162,12 +163,120 @@ def test_legacy_unfiltered_reporting_shapes_are_unchanged(client, db_session):
     assert isinstance(spending.json(), dict)
     assert spending.json() == {
         "2026-01": {
-            "Dining": {"cards": 100.0, "debit": 0.0},
-            "Groceries": {"cards": 0.0, "debit": 30.0},
+            "Dining": {
+                "cards": 100.0,
+                "debit": 0.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 100.0, "debit": 0.0}},
+            },
+            "Groceries": {
+                "cards": 0.0,
+                "debit": 30.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 0.0, "debit": 30.0}},
+            },
         },
-        "2026-02": {"Dining": {"cards": 0.0, "debit": 12.0}},
-        "2026-03": {"Groceries": {"cards": 50.0, "debit": 0.0}},
+        "2026-02": {
+            "Dining": {
+                "cards": 0.0,
+                "debit": 12.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 0.0, "debit": 12.0}},
+            }
+        },
+        "2026-03": {
+            "Groceries": {
+                "cards": 50.0,
+                "debit": 0.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 50.0, "debit": 0.0}},
+            }
+        },
     }
+
+
+def test_legacy_spending_rounds_each_transaction_before_summing(client, db_session):
+    checking = add_account(db_session, "Chequing", AccountTypeEnum.CHECKING)
+    for index in range(2):
+        add_transaction(
+            db_session,
+            checking,
+            f"2026-01-0{index + 1}T08:00:00",
+            -0.004,
+            "Tiny",
+            f"Tiny {index}",
+        )
+    db_session.commit()
+
+    assert client.get("/spending-analysis").json() == {
+        "2026-01": {
+            "Tiny": {
+                "cards": 0.0,
+                "debit": 0.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 0.0, "debit": 0.0}},
+            }
+        }
+    }
+
+
+def test_spending_never_combines_incompatible_currencies(client, db_session):
+    checking_cad = add_account(db_session, "CAD", AccountTypeEnum.CHECKING)
+    checking_usd = add_account(
+        db_session, "USD", AccountTypeEnum.CHECKING, currency=CurrencyEnum.USD
+    )
+    add_transaction(
+        db_session,
+        checking_cad,
+        "2026-01-03T09:00:00",
+        -30,
+        "Groceries",
+        "CAD market",
+    )
+    add_transaction(
+        db_session,
+        checking_usd,
+        "2026-01-04T09:00:00",
+        -20,
+        "Groceries",
+        "USD market",
+    )
+    db_session.commit()
+
+    groceries = client.get(
+        "/spending-analysis",
+        params={"month_from": "2026-01", "month_to": "2026-01"},
+    ).json()["2026-01"]["Groceries"]
+    assert groceries == {
+        "cards": None,
+        "debit": None,
+        "currency": None,
+        "by_currency": {
+            "CAD": {"cards": 0.0, "debit": 30.0},
+            "USD": {"cards": 0.0, "debit": 20.0},
+        },
+    }
+
+
+def test_legacy_account_id_zero_remains_unfiltered(client, db_session):
+    checking = add_account(db_session, "Chequing", AccountTypeEnum.CHECKING)
+    rows = [
+        add_transaction(
+            db_session,
+            checking,
+            f"2026-01-0{index + 1}T08:00:00",
+            -(index + 1),
+            "Other",
+            f"Row {index}",
+        )
+        for index in range(2)
+    ]
+    db_session.commit()
+
+    response = client.get("/transactions", params={"account_id": 0})
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()] == [row.id for row in rows]
 
 
 def test_transaction_filters_and_cursor_are_bounded_stable_and_complete(
@@ -264,13 +373,99 @@ def test_card_cycle_and_bounded_spending_aggregates_preserve_financial_rules(
         "total_credits": 10.0,
         "total_payments": 40.0,
         "total_amount_due": 115.0,
+        "currency": "CAD",
+        "totals_by_currency": {
+            "CAD": {
+                "charges": 125.0,
+                "credits": 10.0,
+                "payments": 40.0,
+                "amount_due": 115.0,
+            }
+        },
     }
     assert spending_response.status_code == 200
     assert spending_response.json() == {
         "2026-01": {
-            "Dining": {"cards": 100.0, "debit": 0.0},
-            "Groceries": {"cards": 0.0, "debit": 30.0},
+            "Dining": {
+                "cards": 100.0,
+                "debit": 0.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 100.0, "debit": 0.0}},
+            },
+            "Groceries": {
+                "cards": 0.0,
+                "debit": 30.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 0.0, "debit": 30.0}},
+            },
         }
+    }
+
+
+def test_card_summary_uses_transaction_currency_and_currency_safe_totals(
+    client, db_session
+):
+    cad_card = add_account(db_session, "CAD Card", AccountTypeEnum.CREDIT_CARD)
+    usd_card = add_account(
+        db_session, "USD Card", AccountTypeEnum.CREDIT_CARD, currency=CurrencyEnum.USD
+    )
+    add_transaction(
+        db_session,
+        cad_card,
+        "2026-01-02T09:00:00",
+        -10,
+        "Dining",
+        "CAD charge",
+        statement_month="2026-01",
+    )
+    add_transaction(
+        db_session,
+        usd_card,
+        "2026-01-03T09:00:00",
+        -20,
+        "Dining",
+        "USD charge",
+        statement_month="2026-01",
+    )
+    add_transaction(
+        db_session,
+        cad_card,
+        "2026-01-04T09:00:00",
+        -5,
+        "Dining",
+        "USD charge on CAD account",
+        currency=CurrencyEnum.USD,
+        statement_month="2026-01",
+    )
+    db_session.commit()
+
+    body = client.get(
+        "/card-statements/summary", params={"month": "2026-01"}
+    ).json()
+
+    assert [(row["account_name"], row["currency"], row["charges"]) for row in body["cards"]] == [
+        ("CAD Card", "CAD", 10.0),
+        ("CAD Card", "USD", 5.0),
+        ("USD Card", "USD", 20.0),
+    ]
+    assert body["currency"] is None
+    assert body["total_charges"] is None
+    assert body["total_credits"] is None
+    assert body["total_payments"] is None
+    assert body["total_amount_due"] is None
+    assert body["totals_by_currency"] == {
+        "CAD": {
+            "charges": 10.0,
+            "credits": 0.0,
+            "payments": 0.0,
+            "amount_due": 10.0,
+        },
+        "USD": {
+            "charges": 25.0,
+            "credits": 0.0,
+            "payments": 0.0,
+            "amount_due": 25.0,
+        },
     }
 
 

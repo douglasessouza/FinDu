@@ -143,6 +143,9 @@ def spending_summary(
     if month_from is not None and month_to is not None and month_from > month_to:
         raise HTTPException(status_code=422, detail="month_from must not exceed month_to")
 
+    if month_from is None and month_to is None:
+        return _legacy_spending_summary(db)
+
     date_month = _database_month(db, Transaction.date)
     reporting_month = case(
         (
@@ -174,6 +177,7 @@ def spending_summary(
         db.query(
             reporting_month.label("month"),
             category.label("category"),
+            Transaction.currency.label("currency"),
             cards.label("cards"),
             debit.label("debit"),
         )
@@ -186,15 +190,70 @@ def spending_summary(
     if month_to is not None:
         query = query.filter(reporting_month <= month_to)
 
-    rows = query.group_by(reporting_month, category).order_by(
-        reporting_month, category
+    rows = query.group_by(reporting_month, category, Transaction.currency).order_by(
+        reporting_month, category, Transaction.currency
     )
-    result: dict[str, dict[str, dict[str, float]]] = {}
+    buckets = {}
     for row in rows.all():
-        result.setdefault(row.month, {})[row.category] = {
+        currency = row.currency.value
+        buckets.setdefault(row.month, {}).setdefault(row.category, {})[currency] = {
             "cards": round(float(row.cards or 0), 2),
             "debit": round(float(row.debit or 0), 2),
         }
+    return _spending_response(buckets)
+
+
+def _legacy_spending_summary(db: Session) -> dict:
+    """Preserve the original per-row Python rounding for unbounded requests."""
+    rows = (
+        db.query(Transaction, Account.account_type)
+        .join(Account, Account.id == Transaction.account_id)
+        .filter(Transaction.amount < 0)
+        .all()
+    )
+    buckets = {}
+    for transaction, account_type in rows:
+        category = transaction.category or "Other"
+        if category in EXCLUDED_SPENDING_CATEGORIES:
+            continue
+        month = (
+            transaction.statement_month or transaction.date.strftime("%Y-%m")
+            if account_type == AccountTypeEnum.CREDIT_CARD
+            else transaction.date.strftime("%Y-%m")
+        )
+        currency = transaction.currency.value
+        values = (
+            buckets.setdefault(month, {})
+            .setdefault(category, {})
+            .setdefault(currency, {"cards": 0.0, "debit": 0.0})
+        )
+        column = (
+            "cards"
+            if account_type == AccountTypeEnum.CREDIT_CARD
+            else "debit"
+        )
+        values[column] += round(abs(transaction.amount), 2)
+    return _spending_response(buckets)
+
+
+def _spending_response(buckets: dict) -> dict:
+    """Expose legacy totals only for single-currency category buckets."""
+    result = {}
+    for month in sorted(buckets):
+        result[month] = {}
+        for category in sorted(buckets[month]):
+            by_currency = {
+                currency: buckets[month][category][currency]
+                for currency in sorted(buckets[month][category])
+            }
+            only_currency = next(iter(by_currency)) if len(by_currency) == 1 else None
+            only_values = by_currency.get(only_currency) if only_currency else None
+            result[month][category] = {
+                "cards": only_values["cards"] if only_values else None,
+                "debit": only_values["debit"] if only_values else None,
+                "currency": only_currency,
+                "by_currency": by_currency,
+            }
     return result
 
 
@@ -206,7 +265,7 @@ def card_statement_summary(db: Session, month: str) -> dict:
         db.query(
             Account.id.label("account_id"),
             Account.name.label("account_name"),
-            Account.currency.label("currency"),
+            Transaction.currency.label("currency"),
             func.coalesce(
                 func.sum(case((Transaction.amount < 0, -Transaction.amount), else_=0.0)),
                 0.0,
@@ -247,8 +306,8 @@ def card_statement_summary(db: Session, month: str) -> dict:
         .join(Account, Account.id == Transaction.account_id)
         .filter(Account.account_type == AccountTypeEnum.CREDIT_CARD)
         .filter(Transaction.statement_month == month)
-        .group_by(Account.id, Account.name, Account.currency)
-        .order_by(Account.id)
+        .group_by(Account.id, Account.name, Transaction.currency)
+        .order_by(Account.id, Transaction.currency)
         .all()
     )
     cards = []
@@ -270,13 +329,32 @@ def card_statement_summary(db: Session, month: str) -> dict:
                 ),
             }
         )
+    totals_by_currency = {}
+    for card in cards:
+        totals = totals_by_currency.setdefault(
+            card["currency"],
+            {"charges": 0.0, "credits": 0.0, "payments": 0.0, "amount_due": 0.0},
+        )
+        for key in totals:
+            totals[key] += card[key]
+    totals_by_currency = {
+        currency: {key: round(value, 2) for key, value in totals.items()}
+        for currency, totals in sorted(totals_by_currency.items())
+    }
+    only_currency = (
+        next(iter(totals_by_currency)) if len(totals_by_currency) == 1 else None
+    )
+    only_totals = totals_by_currency.get(only_currency) if only_currency else None
+    no_cards = not totals_by_currency
     return {
         "month": month,
         "cards": cards,
-        "total_charges": round(sum(card["charges"] for card in cards), 2),
-        "total_credits": round(sum(card["credits"] for card in cards), 2),
-        "total_payments": round(sum(card["payments"] for card in cards), 2),
-        "total_amount_due": round(sum(card["amount_due"] for card in cards), 2),
+        "total_charges": only_totals["charges"] if only_totals else (0.0 if no_cards else None),
+        "total_credits": only_totals["credits"] if only_totals else (0.0 if no_cards else None),
+        "total_payments": only_totals["payments"] if only_totals else (0.0 if no_cards else None),
+        "total_amount_due": only_totals["amount_due"] if only_totals else (0.0 if no_cards else None),
+        "currency": only_currency,
+        "totals_by_currency": totals_by_currency,
     }
 
 

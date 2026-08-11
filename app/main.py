@@ -715,7 +715,7 @@ def list_transactions(
             cursor=cursor,
         )
     query = db.query(Transaction)
-    if account_id is not None:
+    if account_id:
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
 
