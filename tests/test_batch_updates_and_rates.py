@@ -101,6 +101,33 @@ def test_batch_category_update_rolls_back_every_change_when_any_id_is_unknown(cl
     assert db_session.get(Transaction, lunch.id).category == "Other"
 
 
+@pytest.mark.parametrize(
+    "duplicate_categories",
+    [("Groceries", "Groceries"), ("Groceries", "Dining")],
+)
+def test_batch_category_update_rejects_duplicate_ids_without_modifying_transactions(
+    client,
+    db_session,
+    duplicate_categories,
+):
+    groceries, lunch = seed_transactions(db_session)
+
+    response = client.patch(
+        "/transactions/categories",
+        json={
+            "updates": [
+                {"id": groceries.id, "category": duplicate_categories[0]},
+                {"id": groceries.id, "category": duplicate_categories[1]},
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    db_session.expire_all()
+    assert db_session.get(Transaction, groceries.id).category == "Other"
+    assert db_session.get(Transaction, lunch.id).category == "Other"
+
+
 @pytest.fixture(autouse=True)
 def reset_exchange_rate_cache():
     from app import main

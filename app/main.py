@@ -865,6 +865,8 @@ def update_transaction_categories(
     db: Session = Depends(get_db),
 ):
     transaction_ids = [update.id for update in request.updates]
+    if len(transaction_ids) != len(set(transaction_ids)):
+        raise HTTPException(status_code=422, detail="Duplicate transaction IDs are not allowed")
     transactions = db.query(Transaction).filter(Transaction.id.in_(transaction_ids)).all()
     transactions_by_id = {transaction.id: transaction for transaction in transactions}
     missing_ids = [transaction_id for transaction_id in transaction_ids if transaction_id not in transactions_by_id]
