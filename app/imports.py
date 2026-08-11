@@ -38,19 +38,33 @@ def transaction_fingerprint(
 
 
 def filter_unseen_occurrences(
-    parsed: list[dict], existing_counts: Mapping[str, int], account_id: int
+    parsed: list[dict],
+    existing_counts: Mapping[str, int],
+    account_id: int,
+    *,
+    include_identity: bool = False,
 ) -> list[dict]:
     """Keep source-order occurrences exceeding the existing count per fingerprint."""
-    consumed_counts: dict[str, int] = {}
+    statement_counts: dict[str, int] = {}
     unseen: list[dict] = []
 
     for row in parsed:
         fingerprint = transaction_fingerprint(
             account_id, row["date"], row["description"], row["amount"]
         )
-        consumed = consumed_counts.get(fingerprint, 0)
-        if consumed < existing_counts.get(fingerprint, 0):
-            consumed_counts[fingerprint] = consumed + 1
+        occurrence = statement_counts.get(fingerprint, 0) + 1
+        statement_counts[fingerprint] = occurrence
+        if occurrence <= existing_counts.get(fingerprint, 0):
+            continue
+
+        if include_identity:
+            unseen.append(
+                {
+                    **row,
+                    "import_fingerprint": fingerprint,
+                    "import_occurrence": occurrence,
+                }
+            )
         else:
             unseen.append(row)
 

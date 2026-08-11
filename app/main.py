@@ -13,8 +13,11 @@ import time
 import requests as http_requests
 from dotenv import load_dotenv
 from app.models import Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
+from app.imports import filter_unseen_occurrences, transaction_fingerprint
 from datetime import datetime
 from datetime import timedelta
+from collections import Counter
+import uuid
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -573,6 +576,20 @@ class TransactionCreate(BaseModel):
     category: Optional[str] = None
     import_batch_id: Optional[str] = None  # UUID from the import session
 
+class StatementImportTransaction(BaseModel):
+    description: str = Field(min_length=1)
+    amount: float
+    currency: CurrencyEnum
+    date: datetime
+    category: Optional[str] = None
+    import_fingerprint: Optional[str] = None
+    import_occurrence: Optional[int] = Field(default=None, ge=1)
+
+class StatementImportConfirm(BaseModel):
+    account_id: int
+    idempotency_key: str = Field(min_length=1)
+    transactions: List[StatementImportTransaction]
+
 class TransactionSplitLine(BaseModel):
     description: str = Field(min_length=1)
     amount: float = Field(gt=0)
@@ -831,6 +848,153 @@ def split_transaction(transaction_id: int, split: TransactionSplitRequest, db: S
     return split_transactions
 
 # --- Import batch endpoints ---
+
+def statement_fingerprint_counts(db: Session, account_id: int) -> Counter:
+    """Count imported identities, deriving identities for legacy untagged rows."""
+    counts = Counter(
+        dict(
+            db.query(Transaction.import_fingerprint, func.count(Transaction.id))
+            .filter(Transaction.account_id == account_id)
+            .filter(Transaction.import_fingerprint != None)
+            .group_by(Transaction.import_fingerprint)
+            .all()
+        )
+    )
+    legacy_rows = (
+        db.query(Transaction.date, Transaction.description, Transaction.amount)
+        .filter(Transaction.account_id == account_id)
+        .filter(Transaction.import_fingerprint == None)
+        .all()
+    )
+    for row in legacy_rows:
+        counts[
+            transaction_fingerprint(
+                account_id, row.date, row.description, row.amount
+            )
+        ] += 1
+    return counts
+
+
+def serialize_import_transaction(transaction: Transaction) -> dict:
+    return {
+        "id": transaction.id,
+        "account_id": transaction.account_id,
+        "description": transaction.description,
+        "amount": transaction.amount,
+        "currency": transaction.currency.value,
+        "date": transaction.date.isoformat(),
+        "category": transaction.category,
+        "statement_month": transaction.statement_month,
+        "payment_due_date": (
+            transaction.payment_due_date.isoformat()
+            if transaction.payment_due_date
+            else None
+        ),
+        "import_batch_id": transaction.import_batch_id,
+        "import_fingerprint": transaction.import_fingerprint,
+        "import_occurrence": transaction.import_occurrence,
+        "import_idempotency_key": transaction.import_idempotency_key,
+        "created_at": transaction.created_at.isoformat(),
+    }
+
+
+@app.post("/imports/confirm")
+def confirm_statement_import(
+    confirmation: StatementImportConfirm, db: Session = Depends(get_db)
+):
+    account = db.query(Account).filter(Account.id == confirmation.account_id).first()
+    if not account:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    prior_rows = (
+        db.query(Transaction)
+        .filter(Transaction.account_id == confirmation.account_id)
+        .filter(Transaction.import_idempotency_key == confirmation.idempotency_key)
+        .order_by(Transaction.id.asc())
+        .all()
+    )
+    if prior_rows:
+        return {
+            "import_batch_id": prior_rows[0].import_batch_id,
+            "inserted_count": len(prior_rows),
+            "skipped_count": len(confirmation.transactions) - len(prior_rows),
+            "transactions": [serialize_import_transaction(row) for row in prior_rows],
+        }
+
+    batch_id = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"findu:statement-import:{confirmation.account_id}:{confirmation.idempotency_key}",
+        )
+    )
+
+    try:
+        existing_counts = statement_fingerprint_counts(db, confirmation.account_id)
+        occupied_occurrences: dict[str, set[int]] = {}
+        for fingerprint, occurrence in (
+            db.query(Transaction.import_fingerprint, Transaction.import_occurrence)
+            .filter(Transaction.account_id == confirmation.account_id)
+            .filter(Transaction.import_fingerprint != None)
+            .filter(Transaction.import_occurrence != None)
+            .all()
+        ):
+            occupied_occurrences.setdefault(fingerprint, set()).add(occurrence)
+
+        request_counts: Counter = Counter()
+        inserted = []
+        skipped_count = 0
+
+        for transaction in confirmation.transactions:
+            data = transaction.model_dump()
+            supplied_fingerprint = data.pop("import_fingerprint", None)
+            supplied_occurrence = data.pop("import_occurrence", None)
+            fingerprint = transaction_fingerprint(
+                confirmation.account_id,
+                transaction.date,
+                transaction.description,
+                transaction.amount,
+            )
+            request_counts[fingerprint] += 1
+            occurrence = request_counts[fingerprint]
+            if supplied_fingerprint == fingerprint and supplied_occurrence is not None:
+                occurrence = supplied_occurrence
+
+            if occurrence <= existing_counts.get(fingerprint, 0):
+                skipped_count += 1
+                continue
+
+            occupied = occupied_occurrences.setdefault(fingerprint, set())
+            while occurrence in occupied:
+                occurrence += 1
+            occupied.add(occurrence)
+
+            data["account_id"] = confirmation.account_id
+            data["import_batch_id"] = batch_id
+            data["import_fingerprint"] = fingerprint
+            data["import_occurrence"] = occurrence
+            data["import_idempotency_key"] = confirmation.idempotency_key
+            apply_card_statement_fields(data, account, transaction.date)
+
+            db_transaction = Transaction(**data)
+            db.add(db_transaction)
+            inserted.append(db_transaction)
+
+        db.flush()
+        response = {
+            "import_batch_id": batch_id,
+            "inserted_count": len(inserted),
+            "skipped_count": skipped_count,
+            "transactions": [serialize_import_transaction(row) for row in inserted],
+        }
+        db.commit()
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Statement import failed")
 
 @app.get("/imports")
 def list_imports(db: Session = Depends(get_db)):
@@ -1418,9 +1582,10 @@ async def parse_statement_endpoint(
         .first()
     last_date = last_tx.date.strftime("%Y-%m-%d") if last_tx else None
 
-    # Filter out already-imported transactions
-    if last_date:
-        txs = [t for t in txs if t["date"] > last_date]
+    existing_counts = statement_fingerprint_counts(db, matched_account_id)
+    txs = filter_unseen_occurrences(
+        txs, existing_counts, matched_account_id, include_identity=True
+    )
 
     return {
         "transactions": txs,
