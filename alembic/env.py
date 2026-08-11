@@ -19,6 +19,7 @@ from app.models import Base
 target_metadata = Base.metadata
 
 TASK_2_REVISION = "9a7c2d4e6f80"
+TASK_3_REVISION = "d4e5f6a7b8c9"
 TASK_2_BASELINE_REVISION = "6c4e8a21f9d0"
 
 def prepare_empty_sqlite_baseline(connection) -> None:
@@ -35,13 +36,14 @@ def prepare_empty_sqlite_baseline(connection) -> None:
     Base.metadata.create_all(connection)
     migration_context = MigrationContext.configure(connection)
     script_directory = ScriptDirectory.from_config(config)
-    task_2_migration = script_directory.get_revision(TASK_2_REVISION).module
-    migration_op_proxy = task_2_migration.op
-    try:
-        task_2_migration.op = Operations(migration_context)
-        task_2_migration.downgrade()
-    finally:
-        task_2_migration.op = migration_op_proxy
+    for revision in (TASK_3_REVISION, TASK_2_REVISION):
+        migration = script_directory.get_revision(revision).module
+        migration_op_proxy = migration.op
+        try:
+            migration.op = Operations(migration_context)
+            migration.downgrade()
+        finally:
+            migration.op = migration_op_proxy
     migration_context.stamp(script_directory, TASK_2_BASELINE_REVISION)
 
 def run_migrations_offline() -> None:

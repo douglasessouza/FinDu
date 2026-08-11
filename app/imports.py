@@ -3,6 +3,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 import hashlib
+import hmac
 import json
 from typing import Mapping
 import unicodedata
@@ -35,6 +36,38 @@ def transaction_fingerprint(
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def create_occurrence_token(
+    secret: str, account_id: int, fingerprint: str, occurrence: int
+) -> str:
+    """Sign a server-calculated preview occurrence for later confirmation."""
+    message = f"{account_id}:{fingerprint}:{occurrence}".encode("utf-8")
+    signature = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return f"{occurrence}.{fingerprint}.{signature}"
+
+
+def verified_identity_from_token(
+    secret: str, account_id: int, token: str | None
+) -> tuple[str, int] | None:
+    """Return the server-signed source identity, or None for invalid input."""
+    if not token:
+        return None
+    try:
+        occurrence_text, fingerprint, provided_signature = token.split(".", 2)
+        occurrence = int(occurrence_text)
+        if occurrence < 1 or not fingerprint:
+            return None
+    except (TypeError, ValueError):
+        return None
+
+    message = f"{account_id}:{fingerprint}:{occurrence}".encode("utf-8")
+    expected_signature = hmac.new(
+        secret.encode("utf-8"), message, hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        return None
+    return fingerprint, occurrence
 
 
 def filter_unseen_occurrences(

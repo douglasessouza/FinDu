@@ -45,12 +45,25 @@ DEFAULT_CATEGORY_NAMES = {
     "Investments", "Other", "Salary", "Other Income", "Transfer",
 }
 
+IMPORT_BATCH_REVISION = "d4e5f6a7b8c9"
+
 
 def _load_migration_module():
     versions = Path("alembic/versions")
     matches = list(versions.glob("*_optimize_performance_and_imports.py"))
     assert len(matches) == 1
     spec = spec_from_file_location("performance_import_migration", matches[0])
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_import_batch_migration_module():
+    versions = Path("alembic/versions")
+    matches = list(versions.glob("*_add_statement_import_batches.py"))
+    assert len(matches) == 1
+    spec = spec_from_file_location("statement_import_batch_migration", matches[0])
     assert spec and spec.loader
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -142,6 +155,69 @@ def test_transaction_model_persists_import_identity():
     )
     assert str(identity_index.dialect_options["postgresql"]["where"]) == expected_predicate
     assert str(identity_index.dialect_options["sqlite"]["where"]) == expected_predicate
+
+
+def test_statement_import_batch_model_persists_idempotency_result():
+    table = Base.metadata.tables["statement_import_batches"]
+    columns = table.columns
+
+    assert columns["import_batch_id"].primary_key is True
+    assert columns["account_id"].nullable is False
+    assert columns["idempotency_key"].nullable is False
+    assert columns["payload_hash"].nullable is False
+    assert columns["inserted_count"].nullable is False
+    assert columns["skipped_count"].nullable is False
+    assert columns["result_json"].nullable is False
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    }
+    assert ("account_id", "idempotency_key") in unique_columns
+
+
+def test_statement_import_batch_migration_runs_on_sqlite_and_downgrades():
+    migration = _load_import_batch_migration_module()
+    engine = sa.create_engine("sqlite://")
+    metadata = sa.MetaData()
+    sa.Table("accounts", metadata, sa.Column("id", sa.Integer, primary_key=True))
+    metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        inspector = sa.inspect(connection)
+        assert "statement_import_batches" in inspector.get_table_names()
+        unique_constraints = inspector.get_unique_constraints(
+            "statement_import_batches"
+        )
+        assert any(
+            constraint["column_names"] == ["account_id", "idempotency_key"]
+            for constraint in unique_constraints
+        )
+
+        migration.downgrade()
+        assert "statement_import_batches" not in sa.inspect(connection).get_table_names()
+
+
+def test_statement_import_batch_postgresql_ddl_has_unique_claim_constraint():
+    migration = _load_import_batch_migration_module()
+    output = StringIO()
+    migration_context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    migration.op = Operations(migration_context)
+
+    migration.upgrade()
+
+    sql = output.getvalue()
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    head = script.get_revision(script.get_current_head())
+    assert head.revision == IMPORT_BATCH_REVISION
+    assert head.down_revision == "9a7c2d4e6f80"
+    assert "CREATE TABLE statement_import_batches" in sql
+    assert "UNIQUE (account_id, idempotency_key)" in sql
 
 
 def test_model_indexes_match_query_patterns():
@@ -386,9 +462,9 @@ def test_postgresql_upgrade_ddl_compiles_from_the_previous_head(monkeypatch):
 
     sql = output.getvalue()
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    head = script.get_revision(script.get_current_head())
-    assert head.revision == "9a7c2d4e6f80"
-    assert head.down_revision == "6c4e8a21f9d0"
+    task_2_revision = script.get_revision("9a7c2d4e6f80")
+    assert task_2_revision.revision == "9a7c2d4e6f80"
+    assert task_2_revision.down_revision == "6c4e8a21f9d0"
     assert "ALTER TABLE transactions ADD COLUMN import_fingerprint VARCHAR" in sql
     assert "ALTER TABLE transactions ADD COLUMN import_occurrence INTEGER" in sql
     assert "ALTER TABLE transactions ADD COLUMN import_idempotency_key VARCHAR" in sql
@@ -498,6 +574,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
     assert set(inspector.get_table_names()) >= {
         "accounts",
         "transactions",
+        "statement_import_batches",
         "categories",
         "category_budget_items",
         "alembic_version",
@@ -507,7 +584,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
     } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "9a7c2d4e6f80"
+            IMPORT_BATCH_REVISION
         )
         assert connection.scalar(sa.text("SELECT COUNT(*) FROM categories")) == len(
             DEFAULT_CATEGORY_NAMES

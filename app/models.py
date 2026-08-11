@@ -8,6 +8,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -87,6 +88,28 @@ class Transaction(Base):
     import_fingerprint = Column(String, nullable=True)
     import_occurrence = Column(Integer, nullable=True)
     import_idempotency_key = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class StatementImportBatch(Base):
+    __tablename__ = "statement_import_batches"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "idempotency_key",
+            name="uq_statement_import_batches_account_key",
+        ),
+    )
+
+    import_batch_id = Column(String, primary_key=True)
+    account_id = Column(
+        Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    idempotency_key = Column(String, nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    inserted_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    result_json = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class RecurringExpense(Base):

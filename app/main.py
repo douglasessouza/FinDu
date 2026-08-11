@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -12,8 +13,13 @@ import json as auth_json
 import time
 import requests as http_requests
 from dotenv import load_dotenv
-from app.models import Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
-from app.imports import filter_unseen_occurrences, transaction_fingerprint
+from app.models import Account, Transaction, StatementImportBatch, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
+from app.imports import (
+    create_occurrence_token,
+    filter_unseen_occurrences,
+    transaction_fingerprint,
+    verified_identity_from_token,
+)
 from datetime import datetime
 from datetime import timedelta
 from collections import Counter
@@ -584,6 +590,7 @@ class StatementImportTransaction(BaseModel):
     category: Optional[str] = None
     import_fingerprint: Optional[str] = None
     import_occurrence: Optional[int] = Field(default=None, ge=1)
+    import_identity_token: Optional[str] = None
 
 class StatementImportConfirm(BaseModel):
     account_id: int
@@ -898,29 +905,55 @@ def serialize_import_transaction(transaction: Transaction) -> dict:
     }
 
 
+def statement_import_payload_hash(confirmation: StatementImportConfirm) -> str:
+    """Hash only validated fields that can affect the confirmation result."""
+    canonical = {
+        "account_id": confirmation.account_id,
+        "transactions": [
+            {
+                "description": transaction.description,
+                "amount": transaction.amount,
+                "currency": transaction.currency.value,
+                "date": transaction.date.isoformat(),
+                "category": transaction.category,
+                "import_identity_token": transaction.import_identity_token,
+            }
+            for transaction in confirmation.transactions
+        ],
+    }
+    encoded = auth_json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def replay_statement_import(batch: StatementImportBatch, payload_hash: str) -> dict:
+    if batch.payload_hash != payload_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency key already used with a different payload",
+        )
+    return auth_json.loads(batch.result_json)
+
+
 @app.post("/imports/confirm")
 def confirm_statement_import(
     confirmation: StatementImportConfirm, db: Session = Depends(get_db)
 ):
+    payload_hash = statement_import_payload_hash(confirmation)
     account = db.query(Account).filter(Account.id == confirmation.account_id).first()
     if not account:
         db.rollback()
         raise HTTPException(status_code=404, detail="Account not found")
 
-    prior_rows = (
-        db.query(Transaction)
-        .filter(Transaction.account_id == confirmation.account_id)
-        .filter(Transaction.import_idempotency_key == confirmation.idempotency_key)
-        .order_by(Transaction.id.asc())
-        .all()
+    prior_batch = (
+        db.query(StatementImportBatch)
+        .filter(StatementImportBatch.account_id == confirmation.account_id)
+        .filter(StatementImportBatch.idempotency_key == confirmation.idempotency_key)
+        .first()
     )
-    if prior_rows:
-        return {
-            "import_batch_id": prior_rows[0].import_batch_id,
-            "inserted_count": len(prior_rows),
-            "skipped_count": len(confirmation.transactions) - len(prior_rows),
-            "transactions": [serialize_import_transaction(row) for row in prior_rows],
-        }
+    if prior_batch:
+        return replay_statement_import(prior_batch, payload_hash)
 
     batch_id = str(
         uuid.uuid5(
@@ -930,6 +963,18 @@ def confirm_statement_import(
     )
 
     try:
+        import_batch = StatementImportBatch(
+            import_batch_id=batch_id,
+            account_id=confirmation.account_id,
+            idempotency_key=confirmation.idempotency_key,
+            payload_hash=payload_hash,
+            inserted_count=0,
+            skipped_count=0,
+            result_json="{}",
+        )
+        db.add(import_batch)
+        db.flush()
+
         existing_counts = statement_fingerprint_counts(db, confirmation.account_id)
         occupied_occurrences: dict[str, set[int]] = {}
         for fingerprint, occurrence in (
@@ -942,29 +987,45 @@ def confirm_statement_import(
             occupied_occurrences.setdefault(fingerprint, set()).add(occurrence)
 
         request_counts: Counter = Counter()
+        accepted_source_occurrences: dict[str, set[int]] = {}
         inserted = []
         skipped_count = 0
 
         for transaction in confirmation.transactions:
             data = transaction.model_dump()
-            supplied_fingerprint = data.pop("import_fingerprint", None)
-            supplied_occurrence = data.pop("import_occurrence", None)
-            fingerprint = transaction_fingerprint(
+            data.pop("import_fingerprint", None)
+            data.pop("import_occurrence", None)
+            identity_token = data.pop("import_identity_token", None)
+            reviewed_fingerprint = transaction_fingerprint(
                 confirmation.account_id,
                 transaction.date,
                 transaction.description,
                 transaction.amount,
             )
+            signed_identity = verified_identity_from_token(
+                SECRET_KEY, confirmation.account_id, identity_token
+            )
+            if signed_identity:
+                fingerprint, source_occurrence = signed_identity
+            else:
+                fingerprint = reviewed_fingerprint
+                source_occurrence = None
             request_counts[fingerprint] += 1
-            occurrence = request_counts[fingerprint]
-            if supplied_fingerprint == fingerprint and supplied_occurrence is not None:
-                occurrence = supplied_occurrence
+            source_occurrence = source_occurrence or request_counts[fingerprint]
 
-            if occurrence <= existing_counts.get(fingerprint, 0):
+            accepted_sources = accepted_source_occurrences.setdefault(
+                fingerprint, set()
+            )
+            if (
+                source_occurrence <= existing_counts.get(fingerprint, 0)
+                or source_occurrence in accepted_sources
+            ):
                 skipped_count += 1
                 continue
+            accepted_sources.add(source_occurrence)
 
             occupied = occupied_occurrences.setdefault(fingerprint, set())
+            occurrence = existing_counts.get(fingerprint, 0) + 1
             while occurrence in occupied:
                 occurrence += 1
             occupied.add(occurrence)
@@ -987,11 +1048,30 @@ def confirm_statement_import(
             "skipped_count": skipped_count,
             "transactions": [serialize_import_transaction(row) for row in inserted],
         }
+        import_batch.inserted_count = response["inserted_count"]
+        import_batch.skipped_count = response["skipped_count"]
+        import_batch.result_json = auth_json.dumps(
+            response, ensure_ascii=False, separators=(",", ":")
+        )
         db.commit()
         return response
     except HTTPException:
         db.rollback()
         raise
+    except IntegrityError:
+        db.rollback()
+        winning_batch = (
+            db.query(StatementImportBatch)
+            .filter(StatementImportBatch.account_id == confirmation.account_id)
+            .filter(
+                StatementImportBatch.idempotency_key
+                == confirmation.idempotency_key
+            )
+            .first()
+        )
+        if winning_batch:
+            return replay_statement_import(winning_batch, payload_hash)
+        raise HTTPException(status_code=500, detail="Statement import failed")
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="Statement import failed")
@@ -1586,6 +1666,13 @@ async def parse_statement_endpoint(
     txs = filter_unseen_occurrences(
         txs, existing_counts, matched_account_id, include_identity=True
     )
+    for transaction in txs:
+        transaction["import_identity_token"] = create_occurrence_token(
+            SECRET_KEY,
+            matched_account_id,
+            transaction["import_fingerprint"],
+            transaction["import_occurrence"],
+        )
 
     return {
         "transactions": txs,
@@ -1630,7 +1717,14 @@ async def analyze_statement_endpoint(
     csv_buf = io.StringIO()
     writer = csv.DictWriter(csv_buf, fieldnames=["date", "description", "amount"])
     writer.writeheader()
-    writer.writerows(txs)
+    writer.writerows(
+        {
+            "date": transaction.get("date"),
+            "description": transaction.get("description"),
+            "amount": transaction.get("amount"),
+        }
+        for transaction in txs
+    )
     csv_str = csv_buf.getvalue()
 
     account_type_hint = "credit card" if is_credit else "chequing/debit"
@@ -1680,6 +1774,20 @@ Return ONLY the JSON array, no markdown, no backticks."""
 
         ai_text = resp_body["content"][0]["text"]
         analyzed = parse_ai_json_array(ai_text)
+        if len(analyzed) != len(txs):
+            raise HTTPException(
+                status_code=500,
+                detail="AI returned a different number of transactions",
+            )
+        identity_fields = (
+            "import_fingerprint",
+            "import_occurrence",
+            "import_identity_token",
+        )
+        for source, result in zip(txs, analyzed):
+            for field in identity_fields:
+                if field in source:
+                    result[field] = source[field]
         return {"transactions": analyzed}
     except HTTPException:
         raise
