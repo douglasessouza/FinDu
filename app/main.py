@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, func, inspect, or_, text
+from sqlalchemy import create_engine, func, or_
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -12,7 +12,7 @@ import json as auth_json
 import time
 import requests as http_requests
 from dotenv import load_dotenv
-from app.models import Base, Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
+from app.models import Account, Transaction, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from datetime import datetime
 from datetime import timedelta
 from fastapi.staticfiles import StaticFiles
@@ -229,51 +229,6 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
-    finally:
-        db.close()
-
-DEFAULT_CATEGORIES = [
-    ("Housing", "EXPENSE"), ("Rent", "EXPENSE"), ("Food", "EXPENSE"),
-    ("Restaurant", "EXPENSE"), ("Coffee", "EXPENSE"), ("Transport", "EXPENSE"),
-    ("Gas", "EXPENSE"), ("Health", "EXPENSE"), ("Wellness", "EXPENSE"),
-    ("Education", "EXPENSE"), ("Subscriptions", "EXPENSE"), ("Entertainment", "EXPENSE"),
-    ("Leisure", "EXPENSE"), ("Travel", "EXPENSE"), ("Clothing", "EXPENSE"),
-    ("Phone", "EXPENSE"), ("Car", "EXPENSE"), ("Insurance", "EXPENSE"),
-    ("Investments", "EXPENSE"), ("Other", "EXPENSE"),
-    ("Salary", "INCOME"), ("Other Income", "INCOME"),
-    ("Transfer", "TRANSFER"),
-]
-
-@app.on_event("startup")
-def initialize_reference_data():
-    """Create missing tables and seed reference data on startup."""
-    Base.metadata.create_all(bind=engine)
-    inspector = inspect(engine)
-    recurring_columns = {
-        column["name"]
-        for column in inspector.get_columns("recurring_expenses")
-    } if inspector.has_table("recurring_expenses") else set()
-    if "start_month" not in recurring_columns:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE recurring_expenses ADD COLUMN start_month VARCHAR"))
-
-    db = SessionLocal()
-    try:
-        for name, cat_type in DEFAULT_CATEGORIES:
-            exists = db.query(Category).filter(Category.name == name).first()
-            if not exists:
-                db.add(Category(name=name, type=CategoryTypeEnum[cat_type], is_default=True))
-
-        budgets_without_items = (
-            db.query(CategoryBudget)
-            .outerjoin(CategoryBudgetItem, CategoryBudgetItem.budget_id == CategoryBudget.id)
-            .filter(CategoryBudgetItem.id == None)
-            .all()
-        )
-        for budget in budgets_without_items:
-            if budget.amount > 0:
-                db.add(CategoryBudgetItem(budget_id=budget.id, name="General", amount=budget.amount))
-        db.commit()
     finally:
         db.close()
 

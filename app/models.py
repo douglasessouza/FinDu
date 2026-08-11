@@ -1,4 +1,16 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Boolean, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import declarative_base, relationship
 from datetime import datetime
 import enum
@@ -36,6 +48,31 @@ class Account(Base):
 
 class Transaction(Base):
     __tablename__ = "transactions"
+    __table_args__ = (
+        Index("ix_transactions_account_date", "account_id", "date"),
+        Index(
+            "ix_transactions_account_statement_month",
+            "account_id",
+            "statement_month",
+        ),
+        Index("ix_transactions_date", "date"),
+        Index("ix_transactions_statement_month", "statement_month"),
+        Index("ix_transactions_import_batch_id", "import_batch_id"),
+        Index("ix_transactions_category_date", "category", "date"),
+        Index(
+            "uq_transactions_import_identity",
+            "account_id",
+            "import_fingerprint",
+            "import_occurrence",
+            unique=True,
+            postgresql_where=text(
+                "import_fingerprint IS NOT NULL AND import_occurrence IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "import_fingerprint IS NOT NULL AND import_occurrence IS NOT NULL"
+            ),
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=False)
@@ -47,6 +84,9 @@ class Transaction(Base):
     statement_month = Column(String, nullable=True)
     payment_due_date = Column(DateTime, nullable=True)
     import_batch_id = Column(String, nullable=True)
+    import_fingerprint = Column(String, nullable=True)
+    import_occurrence = Column(Integer, nullable=True)
+    import_idempotency_key = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class RecurringExpense(Base):
@@ -68,6 +108,7 @@ class RecurringMonthlyOverride(Base):
     __tablename__ = "recurring_monthly_overrides"
     __table_args__ = (
         UniqueConstraint("recurring_id", "month", name="uq_recurring_monthly_override_item_month"),
+        Index("ix_recurring_monthly_overrides_month", "month"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -96,6 +137,7 @@ class Category(Base):
 
 class MonthlyPayment(Base):
     __tablename__ = "monthly_payments"
+    __table_args__ = (Index("ix_monthly_payments_month", "month"),)
     # Tracks which expenses/cards have been paid in a given month
     # item_type: "card" | "recurring"
     # item_id: account.id for cards, recurring_expense.id for recurring
@@ -111,6 +153,7 @@ class RecurringMatch(Base):
     __tablename__ = "recurring_matches"
     __table_args__ = (
         UniqueConstraint("month", "recurring_id", name="uq_recurring_match_month_item"),
+        Index("ix_recurring_matches_month", "month"),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -140,6 +183,7 @@ class CategoryBudget(Base):
 
 class CategoryBudgetItem(Base):
     __tablename__ = "category_budget_items"
+    __table_args__ = (Index("ix_category_budget_items_budget_id", "budget_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
     budget_id = Column(Integer, ForeignKey("category_budgets.id"), nullable=False)
