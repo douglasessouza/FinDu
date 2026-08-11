@@ -940,6 +940,17 @@ def replay_statement_import(batch: StatementImportBatch, payload_hash: str) -> d
 def confirm_statement_import(
     confirmation: StatementImportConfirm, db: Session = Depends(get_db)
 ):
+    return _confirm_statement_import(
+        confirmation, db, identity_retries_remaining=1
+    )
+
+
+def _confirm_statement_import(
+    confirmation: StatementImportConfirm,
+    db: Session,
+    *,
+    identity_retries_remaining: int,
+):
     payload_hash = statement_import_payload_hash(confirmation)
     account = db.query(Account).filter(Account.id == confirmation.account_id).first()
     if not account:
@@ -1071,6 +1082,12 @@ def confirm_statement_import(
         )
         if winning_batch:
             return replay_statement_import(winning_batch, payload_hash)
+        if identity_retries_remaining:
+            return _confirm_statement_import(
+                confirmation,
+                db,
+                identity_retries_remaining=identity_retries_remaining - 1,
+            )
         raise HTTPException(status_code=500, detail="Statement import failed")
     except Exception:
         db.rollback()
@@ -1092,10 +1109,11 @@ def list_imports(db: Session = Depends(get_db)):
      .all()
 
     accounts = {a.id: a for a in db.query(Account).all()}
-    result = []
+    result_by_batch = {}
+    sort_dates = {}
     for row in rows:
         acc = accounts.get(row.account_id)
-        result.append({
+        result_by_batch[row.import_batch_id] = {
             "import_batch_id": row.import_batch_id,
             "account_id": row.account_id,
             "account_name": acc.name if acc else "Unknown",
@@ -1104,21 +1122,68 @@ def list_imports(db: Session = Depends(get_db)):
             "first_date": row.first_date.strftime("%Y-%m-%d") if row.first_date else None,
             "last_date": row.last_date.strftime("%Y-%m-%d") if row.last_date else None,
             "imported_at": row.imported_at.strftime("%Y-%m-%d %H:%M") if row.imported_at else None,
-        })
-    return result
+        }
+        sort_dates[row.import_batch_id] = row.imported_at
+
+    persisted_batches = db.query(StatementImportBatch).all()
+    for batch in persisted_batches:
+        if batch.import_batch_id in result_by_batch:
+            continue
+        account = accounts.get(batch.account_id)
+        stored_transactions = auth_json.loads(batch.result_json).get(
+            "transactions", []
+        )
+        stored_dates = sorted(
+            transaction["date"][:10]
+            for transaction in stored_transactions
+            if transaction.get("date")
+        )
+        result_by_batch[batch.import_batch_id] = {
+            "import_batch_id": batch.import_batch_id,
+            "account_id": batch.account_id,
+            "account_name": account.name if account else "Unknown",
+            "account_currency": account.currency.value if account else "CAD",
+            "transaction_count": batch.inserted_count,
+            "first_date": stored_dates[0] if stored_dates else None,
+            "last_date": stored_dates[-1] if stored_dates else None,
+            "imported_at": (
+                batch.created_at.strftime("%Y-%m-%d %H:%M")
+                if batch.created_at
+                else None
+            ),
+        }
+        sort_dates[batch.import_batch_id] = batch.created_at
+
+    return [
+        result_by_batch[batch_id]
+        for batch_id in sorted(
+            result_by_batch,
+            key=lambda item: sort_dates[item] or datetime.min,
+            reverse=True,
+        )
+    ]
 
 @app.delete("/imports/{batch_id}")
 def delete_import_batch(batch_id: str, db: Session = Depends(get_db)):
-    """Deletes all transactions belonging to a specific import batch."""
+    """Atomically delete an import claim and all of its transactions."""
     transactions = db.query(Transaction)\
         .filter(Transaction.import_batch_id == batch_id)\
         .all()
-    if not transactions:
+    import_batch = db.query(StatementImportBatch).filter(
+        StatementImportBatch.import_batch_id == batch_id
+    ).first()
+    if not transactions and not import_batch:
         raise HTTPException(status_code=404, detail="Import batch not found")
     count = len(transactions)
-    for t in transactions:
-        db.delete(t)
-    db.commit()
+    try:
+        for transaction in transactions:
+            db.delete(transaction)
+        if import_batch:
+            db.delete(import_batch)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Could not delete import batch")
     return {"message": f"Deleted {count} transactions from batch {batch_id}"}
 
 # --- Recurring expenses ---
@@ -1714,16 +1779,24 @@ async def analyze_statement_endpoint(
 
     # Build CSV string for AI
     import csv
+    source_rows = [
+        {**transaction, "source_row_id": f"source-{index}"}
+        for index, transaction in enumerate(txs)
+    ]
     csv_buf = io.StringIO()
-    writer = csv.DictWriter(csv_buf, fieldnames=["date", "description", "amount"])
+    writer = csv.DictWriter(
+        csv_buf,
+        fieldnames=["source_row_id", "date", "description", "amount"],
+    )
     writer.writeheader()
     writer.writerows(
         {
+            "source_row_id": transaction["source_row_id"],
             "date": transaction.get("date"),
             "description": transaction.get("description"),
             "amount": transaction.get("amount"),
         }
-        for transaction in txs
+        for transaction in source_rows
     )
     csv_str = csv_buf.getvalue()
 
@@ -1743,6 +1816,7 @@ Transactions:
 Recurring expenses already registered: {recurring_names}
 
 Return a JSON array. Each item must have:
+- "source_row_id": original source row ID (keep exactly as-is)
 - "date": original date string (keep as-is)
 - "description": clean merchant name (remove codes like "CONTACTLESS INTERAC PURCHASE - 1234")
 - "amount": numeric (negative = expense, positive = income/payment)
@@ -1774,7 +1848,7 @@ Return ONLY the JSON array, no markdown, no backticks."""
 
         ai_text = resp_body["content"][0]["text"]
         analyzed = parse_ai_json_array(ai_text)
-        if len(analyzed) != len(txs):
+        if len(analyzed) != len(source_rows):
             raise HTTPException(
                 status_code=500,
                 detail="AI returned a different number of transactions",
@@ -1784,7 +1858,22 @@ Return ONLY the JSON array, no markdown, no backticks."""
             "import_occurrence",
             "import_identity_token",
         )
-        for source, result in zip(txs, analyzed):
+        sources_by_id = {
+            source["source_row_id"]: source for source in source_rows
+        }
+        seen_source_ids = set()
+        for result in analyzed:
+            source_row_id = result.pop("source_row_id", None)
+            if (
+                source_row_id not in sources_by_id
+                or source_row_id in seen_source_ids
+            ):
+                raise HTTPException(
+                    status_code=500,
+                    detail="AI returned invalid source row IDs",
+                )
+            seen_source_ids.add(source_row_id)
+            source = sources_by_id[source_row_id]
             for field in identity_fields:
                 if field in source:
                     result[field] = source[field]

@@ -1,10 +1,13 @@
 from concurrent.futures import ThreadPoolExecutor
+import csv
 from datetime import datetime
+import io
 import json
 from threading import Barrier, Lock, get_ident
 
 from sqlalchemy import event
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
@@ -152,6 +155,7 @@ def test_analysis_preserves_server_import_identity_metadata(
                                     "category": "Dining",
                                     "is_recurring": False,
                                     "recurring_match": None,
+                                    "source_row_id": "source-0",
                                 }
                             ]
                         )
@@ -178,6 +182,106 @@ def test_analysis_preserves_server_import_identity_metadata(
     assert analyzed["import_fingerprint"] == "server-fingerprint"
     assert analyzed["import_occurrence"] == 2
     assert analyzed["import_identity_token"] == "signed-token"
+
+
+def test_reordered_analysis_maps_identity_by_source_row_id_and_confirms(
+    client, db_session, monkeypatch
+):
+    account = add_account(db_session)
+    rows = [
+        STATEMENT_ROW.copy(),
+        {
+            "date": "2026-08-11",
+            "description": "Book Store",
+            "amount": -21.75,
+        },
+    ]
+    monkeypatch.setattr(
+        "app.main.parse_statement_file", lambda *_args: (rows, "TD", None)
+    )
+    preview = client.post(
+        "/parse-statement",
+        data={"account_id": account.id, "from_date": "2026-08-01"},
+        files={"file": ("statement.csv", b"ignored", "text/csv")},
+    )
+    preview_rows = preview.json()["transactions"]
+    expected_fingerprints = {
+        row["description"]: row["import_fingerprint"] for row in preview_rows
+    }
+
+    class ReorderedResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, analyzed):
+            self.analyzed = analyzed
+
+        def json(self):
+            return {"content": [{"text": json.dumps(self.analyzed)}]}
+
+    def reorder_from_prompt(*_args, **kwargs):
+        prompt = kwargs["json"]["messages"][0]["content"]
+        csv_text = prompt.split("Transactions:\n", 1)[1].split(
+            "\n\nRecurring expenses", 1
+        )[0]
+        prompt_rows = list(csv.DictReader(io.StringIO(csv_text)))
+        assert all(row.get("source_row_id") for row in prompt_rows)
+        analyzed = [
+            {
+                "source_row_id": row["source_row_id"],
+                "date": row["date"],
+                "description": f'Reviewed {row["description"]}',
+                "amount": float(row["amount"]),
+                "category": "Other",
+                "is_recurring": False,
+                "recurring_match": None,
+            }
+            for row in reversed(prompt_rows)
+        ]
+        return ReorderedResponse(analyzed)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("app.main.http_requests.post", reorder_from_prompt)
+    analyzed_response = client.post(
+        "/analyze-statement",
+        data={
+            "account_id": account.id,
+            "transactions_json": json.dumps(
+                [
+                    {**row, "source_row_id": "untrusted-duplicate"}
+                    for row in preview_rows
+                ]
+            ),
+        },
+    )
+
+    assert analyzed_response.status_code == 200
+    analyzed_rows = analyzed_response.json()["transactions"]
+    assert [row["description"] for row in analyzed_rows] == [
+        "Reviewed Book Store",
+        "Reviewed Coffee Shop",
+    ]
+    for row in analyzed_rows:
+        original_description = row["description"].removeprefix("Reviewed ")
+        assert row["import_fingerprint"] == expected_fingerprints[original_description]
+        assert "source_row_id" not in row
+
+    confirmation = client.post(
+        "/imports/confirm",
+        json={
+            "account_id": account.id,
+            "idempotency_key": "reordered-analysis",
+            "transactions": [
+                {**row, "currency": "CAD"} for row in analyzed_rows
+            ],
+        },
+    )
+
+    assert confirmation.status_code == 200
+    assert confirmation.json()["inserted_count"] == 2
+    for row in confirmation.json()["transactions"]:
+        original_description = row["description"].removeprefix("Reviewed ")
+        assert row["import_fingerprint"] == expected_fingerprints[original_description]
 
 
 def test_confirmation_preserves_identical_occurrences(client, db_session):
@@ -295,6 +399,97 @@ def test_empty_transaction_list_persists_an_idempotent_result(client, db_session
     assert batch.idempotency_key == "literally-empty-key"
 
 
+def test_zero_row_batch_is_visible_in_import_history(client, db_session):
+    account = add_account(db_session)
+    confirmation = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "zero-history", rows=[]),
+    )
+
+    history = client.get("/imports")
+
+    assert confirmation.status_code == 200
+    assert history.status_code == 200
+    assert len(history.json()) == 1
+    history_row = history.json()[0]
+    assert {
+        key: value for key, value in history_row.items() if key != "imported_at"
+    } == {
+        "import_batch_id": confirmation.json()["import_batch_id"],
+        "account_id": account.id,
+        "account_name": "Chequing",
+        "account_currency": "CAD",
+        "transaction_count": 0,
+        "first_date": None,
+        "last_date": None,
+    }
+    datetime.strptime(history_row["imported_at"], "%Y-%m-%d %H:%M")
+
+
+def test_delete_zero_row_batch_removes_persisted_claim(client, db_session):
+    account = add_account(db_session)
+    confirmation = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "delete-empty", rows=[]),
+    )
+
+    response = client.delete(
+        f'/imports/{confirmation.json()["import_batch_id"]}'
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "message": (
+            f'Deleted 0 transactions from batch '
+            f'{confirmation.json()["import_batch_id"]}'
+        )
+    }
+    assert db_session.query(StatementImportBatch).count() == 0
+    assert client.get("/imports").json() == []
+
+
+def test_delete_import_removes_claim_and_allows_same_key_to_import_again(
+    client, db_session
+):
+    account = add_account(db_session)
+    payload = import_payload(account.id, "delete-and-retry")
+    first = client.post("/imports/confirm", json=payload)
+
+    deleted = client.delete(f'/imports/{first.json()["import_batch_id"]}')
+    retried = client.post("/imports/confirm", json=payload)
+
+    assert deleted.status_code == 200
+    assert retried.status_code == 200
+    assert retried.json()["inserted_count"] == 1
+    assert db_session.query(Transaction).count() == 1
+    assert db_session.query(StatementImportBatch).count() == 1
+
+
+def test_delete_import_failure_rolls_back_transactions_and_claim(
+    client, db_session
+):
+    account = add_account(db_session)
+    confirmation = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "delete-rollback"),
+    )
+
+    def fail_batch_delete(_mapper, _connection, _target):
+        raise RuntimeError("forced delete failure")
+
+    event.listen(StatementImportBatch, "after_delete", fail_batch_delete)
+    try:
+        response = client.delete(
+            f'/imports/{confirmation.json()["import_batch_id"]}'
+        )
+    finally:
+        event.remove(StatementImportBatch, "after_delete", fail_batch_delete)
+
+    assert response.status_code == 500
+    assert db_session.query(Transaction).count() == 1
+    assert db_session.query(StatementImportBatch).count() == 1
+
+
 def test_same_idempotency_key_rejects_a_different_payload(client, db_session):
     account = add_account(db_session)
     original = import_payload(account.id, "bound-payload-key")
@@ -385,7 +580,7 @@ def test_invalid_account_leaves_database_unchanged(client, db_session):
     assert db_session.query(Transaction).count() == 0
 
 
-def test_concurrent_same_key_requests_return_the_winning_result(tmp_path):
+def run_concurrent_imports(tmp_path, idempotency_keys):
     database_path = tmp_path / "concurrent-import.db"
     local_engine = create_engine(
         f"sqlite:///{database_path}",
@@ -430,16 +625,19 @@ def test_concurrent_same_key_requests_return_the_winning_result(tmp_path):
             session.close()
 
     app.dependency_overrides[get_db] = override_get_db
-    payload = import_payload(account_id, "concurrent-key")
+    payloads = [
+        import_payload(account_id, idempotency_key)
+        for idempotency_key in idempotency_keys
+    ]
     try:
         with TestClient(app) as first_client, TestClient(app) as second_client:
             with ThreadPoolExecutor(max_workers=2) as executor:
                 responses = list(
                     executor.map(
-                        lambda test_client: test_client.post(
-                            "/imports/confirm", json=payload
+                        lambda item: item[0].post(
+                            "/imports/confirm", json=item[1]
                         ),
-                        (first_client, second_client),
+                        zip((first_client, second_client), payloads),
                     )
                 )
     finally:
@@ -448,12 +646,90 @@ def test_concurrent_same_key_requests_return_the_winning_result(tmp_path):
             local_engine, "after_cursor_execute", synchronize_first_idempotency_lookup
         )
 
+    with local_session() as verification_session:
+        transaction_count = verification_session.query(Transaction).count()
+        batch_count = verification_session.query(StatementImportBatch).count()
+    local_engine.dispose()
+    return responses, transaction_count, batch_count
+
+
+def test_concurrent_same_key_requests_return_the_winning_result(tmp_path):
+    responses, transaction_count, batch_count = run_concurrent_imports(
+        tmp_path, ("concurrent-key", "concurrent-key")
+    )
+
     assert [response.status_code for response in responses] == [200, 200]
     assert responses[0].json() == responses[1].json()
-    with local_session() as verification_session:
-        assert verification_session.query(Transaction).count() == 1
-        assert verification_session.query(StatementImportBatch).count() == 1
-    local_engine.dispose()
+    assert transaction_count == 1
+    assert batch_count == 1
+
+
+def test_concurrent_different_keys_for_same_rows_skip_the_loser(tmp_path):
+    responses, transaction_count, batch_count = run_concurrent_imports(
+        tmp_path, ("concurrent-first", "concurrent-second")
+    )
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert sorted(response.json()["inserted_count"] for response in responses) == [0, 1]
+    assert transaction_count == 1
+    assert batch_count == 2
+
+
+def test_identity_integrity_race_retries_as_a_skipped_batch(
+    client, db_session, monkeypatch
+):
+    account = add_account(db_session)
+    existing = add_legacy_transaction(db_session, account)
+    existing.import_fingerprint = transaction_fingerprint(
+        account.id,
+        existing.date,
+        existing.description,
+        existing.amount,
+    )
+    existing.import_occurrence = 1
+    existing.import_idempotency_key = "concurrent-winner"
+    db_session.commit()
+
+    from app.main import statement_fingerprint_counts as real_counts
+
+    count_calls = 0
+
+    def stale_counts_once(session, account_id):
+        nonlocal count_calls
+        count_calls += 1
+        if count_calls == 1:
+            return {}
+        return real_counts(session, account_id)
+
+    original_flush = db_session.flush
+    flush_calls = 0
+
+    def concurrent_identity_conflict(*args, **kwargs):
+        nonlocal flush_calls
+        flush_calls += 1
+        original_flush(*args, **kwargs)
+        if flush_calls == 2:
+            raise IntegrityError(
+                "INSERT INTO transactions",
+                {},
+                RuntimeError("simulated concurrent identity conflict"),
+            )
+
+    monkeypatch.setattr("app.main.statement_fingerprint_counts", stale_counts_once)
+    monkeypatch.setattr(db_session, "flush", concurrent_identity_conflict)
+
+    response = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "concurrent-loser"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["inserted_count"] == 0
+    assert response.json()["skipped_count"] == 1
+    assert count_calls == 2
+    assert db_session.query(Transaction).count() == 1
+    batch = db_session.query(StatementImportBatch).one()
+    assert batch.idempotency_key == "concurrent-loser"
 
 
 def test_mid_batch_failure_rolls_back_every_insert(client, db_session):
