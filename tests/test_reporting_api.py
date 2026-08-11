@@ -163,35 +163,11 @@ def test_legacy_unfiltered_reporting_shapes_are_unchanged(client, db_session):
     assert isinstance(spending.json(), dict)
     assert spending.json() == {
         "2026-01": {
-            "Dining": {
-                "cards": 100.0,
-                "debit": 0.0,
-                "currency": "CAD",
-                "by_currency": {"CAD": {"cards": 100.0, "debit": 0.0}},
-            },
-            "Groceries": {
-                "cards": 0.0,
-                "debit": 30.0,
-                "currency": "CAD",
-                "by_currency": {"CAD": {"cards": 0.0, "debit": 30.0}},
-            },
+            "Dining": {"cards": 100.0, "debit": 0.0},
+            "Groceries": {"cards": 0.0, "debit": 30.0},
         },
-        "2026-02": {
-            "Dining": {
-                "cards": 0.0,
-                "debit": 12.0,
-                "currency": "CAD",
-                "by_currency": {"CAD": {"cards": 0.0, "debit": 12.0}},
-            }
-        },
-        "2026-03": {
-            "Groceries": {
-                "cards": 50.0,
-                "debit": 0.0,
-                "currency": "CAD",
-                "by_currency": {"CAD": {"cards": 50.0, "debit": 0.0}},
-            }
-        },
+        "2026-02": {"Dining": {"cards": 0.0, "debit": 12.0}},
+        "2026-03": {"Groceries": {"cards": 50.0, "debit": 0.0}},
     }
 
 
@@ -210,13 +186,39 @@ def test_legacy_spending_rounds_each_transaction_before_summing(client, db_sessi
 
     assert client.get("/spending-analysis").json() == {
         "2026-01": {
-            "Tiny": {
-                "cards": 0.0,
-                "debit": 0.0,
-                "currency": "CAD",
-                "by_currency": {"CAD": {"cards": 0.0, "debit": 0.0}},
-            }
+            "Tiny": {"cards": 0.0, "debit": 0.0}
         }
+    }
+
+
+def test_legacy_spending_mixed_currency_keeps_exact_old_shape(client, db_session):
+    checking_cad = add_account(db_session, "CAD", AccountTypeEnum.CHECKING)
+    checking_usd = add_account(
+        db_session, "USD", AccountTypeEnum.CHECKING, currency=CurrencyEnum.USD
+    )
+    add_transaction(
+        db_session,
+        checking_cad,
+        "2026-01-03T09:00:00",
+        -30,
+        "Groceries",
+        "CAD market",
+    )
+    add_transaction(
+        db_session,
+        checking_usd,
+        "2026-01-04T09:00:00",
+        -20,
+        "Groceries",
+        "USD market",
+    )
+    db_session.commit()
+
+    response = client.get("/spending-analysis")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "2026-01": {"Groceries": {"cards": 0.0, "debit": 50.0}}
     }
 
 
@@ -467,6 +469,15 @@ def test_card_summary_uses_transaction_currency_and_currency_safe_totals(
             "amount_due": 25.0,
         },
     }
+
+    dashboard = client.get(
+        "/dashboard/monthly", params={"month": "2026-01"}
+    ).json()
+    assert dashboard["card_summaries"] == body
+    assert dashboard["card_summaries"]["total_amount_due"] is None
+    assert dashboard["card_summaries"]["totals_by_currency"] == body[
+        "totals_by_currency"
+    ]
 
 
 def test_monthly_dashboard_consolidates_legacy_collections(client, db_session):

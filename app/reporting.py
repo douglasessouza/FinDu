@@ -204,14 +204,14 @@ def spending_summary(
 
 
 def _legacy_spending_summary(db: Session) -> dict:
-    """Preserve the original per-row Python rounding for unbounded requests."""
+    """Preserve the exact old shape and arithmetic for unbounded requests."""
     rows = (
         db.query(Transaction, Account.account_type)
         .join(Account, Account.id == Transaction.account_id)
         .filter(Transaction.amount < 0)
         .all()
     )
-    buckets = {}
+    result = {}
     for transaction, account_type in rows:
         category = transaction.category or "Other"
         if category in EXCLUDED_SPENDING_CATEGORIES:
@@ -221,11 +221,8 @@ def _legacy_spending_summary(db: Session) -> dict:
             if account_type == AccountTypeEnum.CREDIT_CARD
             else transaction.date.strftime("%Y-%m")
         )
-        currency = transaction.currency.value
-        values = (
-            buckets.setdefault(month, {})
-            .setdefault(category, {})
-            .setdefault(currency, {"cards": 0.0, "debit": 0.0})
+        values = result.setdefault(month, {}).setdefault(
+            category, {"cards": 0.0, "debit": 0.0}
         )
         column = (
             "cards"
@@ -233,7 +230,7 @@ def _legacy_spending_summary(db: Session) -> dict:
             else "debit"
         )
         values[column] += round(abs(transaction.amount), 2)
-    return _spending_response(buckets)
+    return dict(sorted(result.items()))
 
 
 def _spending_response(buckets: dict) -> dict:
