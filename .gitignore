@@ -208,3 +208,6 @@ __marimo__/
 
 # Google Cloud credentials
 findu-github-key.json
+
+# Local isolated implementation worktrees
+.worktrees/
