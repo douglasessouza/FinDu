@@ -60,6 +60,8 @@ QUERY_INDEXES = (
     ),
 )
 
+BACKFILL_BATCH_SIZE = 500
+
 
 def _canonical_date(value: date | datetime | str) -> str:
     if isinstance(value, datetime):
@@ -100,7 +102,10 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
         sa.column("import_occurrence", sa.Integer),
         sa.column("import_idempotency_key", sa.String),
     )
-    imported_rows = connection.execute(
+    imported_rows = connection.execution_options(
+        stream_results=True,
+        max_row_buffer=BACKFILL_BATCH_SIZE,
+    ).execute(
         sa.select(
             transactions.c.id,
             transactions.c.account_id,
@@ -114,31 +119,39 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
     ).mappings()
 
     occurrences: dict[tuple[int, str], int] = defaultdict(int)
-    updates = []
-    for row in imported_rows:
-        fingerprint = _transaction_fingerprint(
-            row["account_id"], row["date"], row["description"], row["amount"]
+    occurrence_scope: tuple[int, str] | None = None
+    update_statement = (
+        transactions.update()
+        .where(transactions.c.id == sa.bindparam("transaction_id"))
+        .values(
+            import_fingerprint=sa.bindparam("fingerprint"),
+            import_occurrence=sa.bindparam("occurrence"),
+            import_idempotency_key=sa.bindparam("idempotency_key"),
         )
-        identity = (row["account_id"], fingerprint)
-        occurrences[identity] += 1
-        updates.append(
-            {
-                "transaction_id": row["id"],
-                "fingerprint": fingerprint,
-                "occurrence": occurrences[identity],
-                "idempotency_key": row["import_batch_id"],
-            }
-        )
+    )
+    for rows in imported_rows.partitions(BACKFILL_BATCH_SIZE):
+        updates = []
+        for row in rows:
+            row_scope = (row["account_id"], _canonical_date(row["date"]))
+            if row_scope != occurrence_scope:
+                occurrences.clear()
+                occurrence_scope = row_scope
+            fingerprint = _transaction_fingerprint(
+                row["account_id"], row["date"], row["description"], row["amount"]
+            )
+            identity = (row["account_id"], fingerprint)
+            occurrences[identity] += 1
+            updates.append(
+                {
+                    "transaction_id": row["id"],
+                    "fingerprint": fingerprint,
+                    "occurrence": occurrences[identity],
+                    "idempotency_key": row["import_batch_id"],
+                }
+            )
 
-    if updates:
         connection.execute(
-            transactions.update()
-            .where(transactions.c.id == sa.bindparam("transaction_id"))
-            .values(
-                import_fingerprint=sa.bindparam("fingerprint"),
-                import_occurrence=sa.bindparam("occurrence"),
-                import_idempotency_key=sa.bindparam("idempotency_key"),
-            ),
+            update_statement,
             updates,
         )
 
