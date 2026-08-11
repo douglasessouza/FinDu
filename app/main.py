@@ -20,7 +20,13 @@ from app.imports import (
     transaction_fingerprint,
     verified_identity_from_token,
 )
-from datetime import datetime
+from app.reporting import (
+    card_statement_summary,
+    monthly_dashboard,
+    spending_summary,
+    transaction_page,
+)
+from datetime import date, datetime
 from datetime import timedelta
 from collections import Counter
 import uuid
@@ -683,11 +689,45 @@ def create_transaction(transaction: TransactionCreate, db: Session = Depends(get
     return db_transaction
 
 @app.get("/transactions")
-def list_transactions(account_id: Optional[int] = None, db: Session = Depends(get_db)):
+def list_transactions(
+    account_id: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    month: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: Optional[int] = None,
+    cursor: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    has_bounded_query = any(
+        value is not None
+        for value in (date_from, date_to, month, category, limit, cursor)
+    )
+    if has_bounded_query:
+        return transaction_page(
+            db,
+            account_id=account_id,
+            date_from=date_from,
+            date_to=date_to,
+            month=month,
+            category=category,
+            limit=limit,
+            cursor=cursor,
+        )
     query = db.query(Transaction)
-    if account_id:
+    if account_id is not None:
         query = query.filter(Transaction.account_id == account_id)
     return query.all()
+
+
+@app.get("/card-statements/summary")
+def get_card_statement_summary(month: str, db: Session = Depends(get_db)):
+    return card_statement_summary(db, month)
+
+
+@app.get("/dashboard/monthly")
+def get_monthly_dashboard(month: str, db: Session = Depends(get_db)):
+    return monthly_dashboard(db, month)
 
 @app.get("/other-income-transactions")
 def list_other_income_transactions(month: str, db: Session = Depends(get_db)):
@@ -1305,46 +1345,18 @@ def spending_by_category(currency: Optional[str] = None, db: Session = Depends(g
         result[cat] += t.amount
     return result
 @app.get("/spending-analysis")
-def spending_analysis(db: Session = Depends(get_db)):
+def spending_analysis(
+    month_from: Optional[str] = None,
+    month_to: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
     """
     Returns spending by category grouped by spending cycle.
     - Credit cards: grouped by statement month (defined by closing day)
     - Checking accounts: grouped by transaction date month
     Separates card vs debit spending per category per month.
     """
-    # Fetch all accounts to classify them
-    all_accounts = db.query(Account).all()
-    card_ids = {a.id for a in all_accounts if a.account_type.value == "CREDIT_CARD"}
-    debit_ids = {a.id for a in all_accounts if a.account_type.value != "CREDIT_CARD"}
-
-    # Only expenses (negative amounts), exclude income and transfer categories
-    excluded_categories = {"Salary", "Other Income", "Transfer"}
-    transactions = db.query(Transaction).filter(Transaction.amount < 0).all()
-    transactions = [t for t in transactions if (t.category or "Other") not in excluded_categories]
-
-    # result[month][category] = {"cards": 0.0, "debit": 0.0}
-    result = {}
-
-    for t in transactions:
-        cat = t.category or "Other"
-        amount = abs(t.amount)
-
-        if t.account_id in card_ids:
-            month_key = t.statement_month or t.date.strftime("%Y-%m")
-            col = "cards"
-        elif t.account_id in debit_ids:
-            month_key = t.date.strftime("%Y-%m")
-            col = "debit"
-        else:
-            continue
-
-        if month_key not in result:
-            result[month_key] = {}
-        if cat not in result[month_key]:
-            result[month_key][cat] = {"cards": 0.0, "debit": 0.0}
-        result[month_key][cat][col] += round(amount, 2)
-
-    return dict(sorted(result.items()))
+    return spending_summary(db, month_from=month_from, month_to=month_to)
 
 def build_financial_snapshot(db: Session) -> dict:
     accounts = db.query(Account).order_by(Account.bank, Account.name).all()
