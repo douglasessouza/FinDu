@@ -8,6 +8,16 @@ const inFlight = new Map<string, Promise<unknown>>()
 const keyGenerations = new Map<string, number>()
 let cacheGeneration = 0
 
+export const REFERENCE_CACHE_KEYS = {
+  accounts: 'reference:accounts',
+  categories: 'reference:categories',
+  recurring: 'reference:recurring',
+} as const
+
+export type ReferenceDataKey = keyof typeof REFERENCE_CACHE_KEYS
+
+const MUTATION_METHODS = new Set(['post', 'put', 'patch', 'delete'])
+
 export async function cachedGet<T>(
   key: string,
   loader: () => Promise<T>,
@@ -46,6 +56,25 @@ export function invalidateCachedGet(key: string): void {
   keyGenerations.set(key, (keyGenerations.get(key) || 0) + 1)
   entries.delete(key)
   inFlight.delete(key)
+}
+
+export function invalidateReferenceData(key: ReferenceDataKey): void {
+  invalidateCachedGet(REFERENCE_CACHE_KEYS[key])
+}
+
+export function invalidateReferenceDataForMutation(method?: string, url?: string): void {
+  if (!method || !url || !MUTATION_METHODS.has(method.toLowerCase())) return
+
+  let path: string
+  try {
+    path = new URL(url, 'https://findu.local').pathname.replace(/^\/api(?=\/|$)/, '')
+  } catch {
+    return
+  }
+
+  if (/^\/accounts(?:\/|$)/.test(path)) invalidateReferenceData('accounts')
+  if (/^\/categories(?:\/|$)/.test(path)) invalidateReferenceData('categories')
+  if (/^\/recurring-expenses(?:\/|$)/.test(path)) invalidateReferenceData('recurring')
 }
 
 export function clearCachedGets(): void {

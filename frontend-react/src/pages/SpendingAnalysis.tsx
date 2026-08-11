@@ -20,6 +20,7 @@ import type {
   SpendingCategorySummary,
   Transaction,
 } from '../services/api'
+import { loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 
 // ── Helpers ─────────────────────────────────────────────────────
 function fmt(value: number): string {
@@ -140,6 +141,7 @@ export default function SpendingAnalysis() {
   const [openCategory, setOpenCategory] = useState<string | null>(null)
   const [categoryTxs, setCategoryTxs] = useState<DisplayTransaction[]>([])
   const [loadingTxs, setLoadingTxs] = useState(false)
+  const [categoryTxError, setCategoryTxError] = useState<string | null>(null)
   const [editingTx, setEditingTx] = useState<number | null>(null)
   const [editCat, setEditCat] = useState('')
   const [loading, setLoading] = useState(true)
@@ -254,18 +256,20 @@ export default function SpendingAnalysis() {
   tableTotals.total = Math.round(chartNumber(tableTotals.total) * 100) / 100
 
   // Transactions
-  async function loadTxsForCategory(category: string) {
+  async function loadTxsForCategory(category: string, previousRows = categoryTxs) {
     const EXCLUDED = ['Salary', 'Other Income', 'Transfer']
-    if (EXCLUDED.includes(category)) { setCategoryTxs([]); return }
     setLoadingTxs(true)
-    try {
+    setCategoryTxError(null)
+    const result = await loadRowsPreservingPrevious(async () => {
+      if (EXCLUDED.includes(category)) return []
+
       const categoryRows = await getTransactions({
         category,
         dateFrom: `${addMonths(selectedMonth, -1)}-01`,
         dateTo: lastDayOfMonth(selectedMonth),
       })
       const accountById = new Map(accounts.map(account => [account.id, account]))
-      const results: DisplayTransaction[] = categoryRows
+      const rows: DisplayTransaction[] = categoryRows
         .filter(transaction => transaction.amount < 0 && transaction.currency === selectedCurrency)
         .filter(transaction => {
           const account = accountById.get(transaction.account_id)
@@ -282,27 +286,35 @@ export default function SpendingAnalysis() {
             _is_card: account?.account_type === 'CREDIT_CARD',
           }
         })
-      results.sort((a, b) => b.date.localeCompare(a.date))
-      setCategoryTxs(results)
-    } catch {
-      setCategoryTxs([])
-    } finally {
-      setLoadingTxs(false)
-    }
+      rows.sort((a, b) => b.date.localeCompare(a.date))
+      return rows
+    }, previousRows)
+    setCategoryTxs(result.rows)
+    setCategoryTxError(result.error)
+    setLoadingTxs(false)
   }
 
   function toggleCategory(cat: string) {
-    if (openCategory === cat) { setOpenCategory(null); setCategoryTxs([]) }
-    else { setOpenCategory(cat); setEditingTx(null); loadTxsForCategory(cat) }
+    if (openCategory === cat) {
+      setOpenCategory(null)
+      setCategoryTxs([])
+      setCategoryTxError(null)
+    } else {
+      setOpenCategory(cat)
+      setEditingTx(null)
+      setCategoryTxs([])
+      setCategoryTxError(null)
+      loadTxsForCategory(cat, [])
+    }
   }
 
   async function saveCategory(txId: number, newCat: string) {
     try {
       await updateTransactionCategories([{ id: txId, category: newCat }])
       const updatedSpending = await getSpendingAnalysis(selectedMonth, selectedMonth)
-      setData(current => ({ ...current, ...updatedSpending }))
+      setData(current => replaceSelectedMonth(current, selectedMonth, updatedSpending))
       setEditingTx(null)
-      if (openCategory) loadTxsForCategory(openCategory)
+      if (openCategory) loadTxsForCategory(openCategory, categoryTxs)
     } catch (error) {
       console.error(`Failed to update transaction ${txId}`, error)
     }
@@ -310,6 +322,7 @@ export default function SpendingAnalysis() {
 
   async function refresh() {
     setCategoryTxs([])
+    setCategoryTxError(null)
     setOpenCategory(null)
     if (!selectedMonth) return
     const today = new Date()
@@ -432,10 +445,23 @@ export default function SpendingAnalysis() {
                           <div className="border-t border-[#EDF4EE] col-span-full">
                             {loadingTxs ? (
                               <p className="px-4 py-3 text-sm text-[#8BAE90]">Loading...</p>
-                            ) : categoryTxs.length === 0 ? (
-                              <p className="px-4 py-3 text-sm text-[#8BAE90]">No transactions found.</p>
                             ) : (
                               <>
+                                {categoryTxError && (
+                                  <div role="alert" className="flex items-center justify-between gap-3 border-b border-[#F0D6D6] bg-[#FFF7F7] px-4 py-3 text-sm text-[#9A3F3F]">
+                                    <span>{categoryTxError}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => loadTxsForCategory(d.name, categoryTxs)}
+                                      className="shrink-0 rounded-lg border border-[#D9A8A8] px-3 py-1 text-xs font-semibold hover:bg-white"
+                                    >
+                                      Retry
+                                    </button>
+                                  </div>
+                                )}
+                                {!categoryTxError && categoryTxs.length === 0 && (
+                                  <p className="px-4 py-3 text-sm text-[#8BAE90]">No transactions found.</p>
+                                )}
                                 {categoryTxs.map(t => {
                                   const amt = Math.abs(t.amount)
                                   const [y, mo, dy] = t.date.slice(0, 10).split('-').map(Number)
@@ -482,10 +508,12 @@ export default function SpendingAnalysis() {
                                     </div>
                                   )
                                 })}
-                                <div className="px-4 py-2 bg-[#F4FAF5] flex justify-between text-xs font-semibold">
-                                  <span className="text-[#1B4D3E]">{categoryTxs.length} transactions</span>
-                                  <span className="text-[#B85050]">{symbol} {fmt(categoryTxs.reduce((s, t) => s + Math.abs(t.amount), 0))}</span>
-                                </div>
+                                {categoryTxs.length > 0 && (
+                                  <div className="px-4 py-2 bg-[#F4FAF5] flex justify-between text-xs font-semibold">
+                                    <span className="text-[#1B4D3E]">{categoryTxs.length} transactions</span>
+                                    <span className="text-[#B85050]">{symbol} {fmt(categoryTxs.reduce((s, t) => s + Math.abs(t.amount), 0))}</span>
+                                  </div>
+                                )}
                               </>
                             )}
                           </div>

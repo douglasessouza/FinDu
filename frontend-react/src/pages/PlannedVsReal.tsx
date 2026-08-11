@@ -9,6 +9,7 @@ import api, {
   updateTransactionCategories,
 } from '../services/api'
 import type { Account, CategoryBudget, RecurringExpense, SpendingAnalysisResponse, Transaction } from '../services/api'
+import { loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
 
 interface Row {
@@ -197,6 +198,7 @@ export default function PlannedVsReal() {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categoryTransactions, setCategoryTransactions] = useState<Transaction[]>([])
   const [categoryTransactionsLoading, setCategoryTransactionsLoading] = useState(false)
+  const [categoryTransactionsError, setCategoryTransactionsError] = useState<string | null>(null)
   const [selectedMonth, setSelectedMonth] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
@@ -418,14 +420,15 @@ export default function PlannedVsReal() {
       getSpendingAnalysis(selectedMonth, selectedMonth),
       getTransactions({ month: selectedMonth }),
     ])
-    setSpending(current => ({ ...current, ...nextSpending }))
+    setSpending(current => replaceSelectedMonth(current, selectedMonth, nextSpending))
     setTransactions(monthlyTransactions)
   }
 
-  async function loadCategoryTransactions(category: string) {
+  async function loadCategoryTransactions(category: string, previousRows = categoryTransactions) {
     if (!selectedMonth) return
     setCategoryTransactionsLoading(true)
-    try {
+    setCategoryTransactionsError(null)
+    const result = await loadRowsPreservingPrevious(async () => {
       const categoryRows = await getTransactions({
         category,
         dateFrom: `${addMonths(selectedMonth, -1)}-01`,
@@ -441,10 +444,11 @@ export default function PlannedVsReal() {
           return reportingMonth === selectedMonth
         })
         .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-      setCategoryTransactions(filtered)
-    } finally {
-      setCategoryTransactionsLoading(false)
-    }
+      return filtered
+    }, previousRows)
+    setCategoryTransactions(result.rows)
+    setCategoryTransactionsError(result.error)
+    setCategoryTransactionsLoading(false)
   }
 
   function openCategoryDetails(category: string) {
@@ -452,12 +456,14 @@ export default function PlannedVsReal() {
     setEditedCats({})
     setSaveMsg('')
     setCategoryTransactions([])
-    loadCategoryTransactions(category)
+    setCategoryTransactionsError(null)
+    loadCategoryTransactions(category, [])
   }
 
   function closeModal() {
     setSelectedCategory(null)
     setCategoryTransactions([])
+    setCategoryTransactionsError(null)
     setEditedCats({})
     setSaveMsg('')
     cancelSplit()
@@ -473,7 +479,7 @@ export default function PlannedVsReal() {
         changes.map(([id, category]) => ({ id: Number(id), category })),
       )
       await refreshSpendingAndTransactions()
-      if (selectedCategory) await loadCategoryTransactions(selectedCategory)
+      if (selectedCategory) await loadCategoryTransactions(selectedCategory, categoryTransactions)
       setEditedCats({})
       setSaveMsg(`${result.updated_count} transaction${result.updated_count !== 1 ? 's' : ''} updated.`)
       setTimeout(() => setSaveMsg(''), 3000)
@@ -558,7 +564,7 @@ export default function PlannedVsReal() {
       })
       cancelSplit()
       await refreshSpendingAndTransactions()
-      if (selectedCategory) await loadCategoryTransactions(selectedCategory)
+      if (selectedCategory) await loadCategoryTransactions(selectedCategory, categoryTransactions)
       setEditedCats(prev => {
         const next = { ...prev }
         delete next[splitTx.id]
@@ -1003,12 +1009,26 @@ export default function PlannedVsReal() {
                         <div className="px-5 py-12 text-center text-[#8BAE90]">
                           Loading transactions...
                         </div>
-                      ) : categoryTransactions.length === 0 ? (
-                        <div className="px-5 py-12 text-center text-[#8BAE90]">
-                          No transactions found in this category for {monthLabel(selectedMonth)}.
-                        </div>
                       ) : (
-                        <div>
+                        <>
+                          {categoryTransactionsError && (
+                            <div role="alert" className="flex items-center justify-between gap-4 border-b border-[#F0D6D6] bg-[#FFF7F7] px-5 py-3 text-sm text-[#9A3F3F]">
+                              <span>{categoryTransactionsError}</span>
+                              <button
+                                type="button"
+                                onClick={() => loadCategoryTransactions(selectedCategory, categoryTransactions)}
+                                className="shrink-0 rounded-lg border border-[#D9A8A8] px-3 py-1.5 text-xs font-semibold transition hover:bg-white"
+                              >
+                                Retry
+                              </button>
+                            </div>
+                          )}
+                          {!categoryTransactionsError && categoryTransactions.length === 0 && (
+                            <div className="px-5 py-12 text-center text-[#8BAE90]">
+                              No transactions found in this category for {monthLabel(selectedMonth)}.
+                            </div>
+                          )}
+                          {categoryTransactions.length > 0 && <div>
                           <div className="grid grid-cols-[80px_150px_1fr_120px_180px_52px] gap-3 border-b border-[#D4E4D5] bg-[#F9FCF9] px-5 py-3 text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">
                             <span>Date</span>
                             <span>Source</span>
@@ -1077,7 +1097,8 @@ export default function PlannedVsReal() {
                               </div>
                             )
                           })}
-                        </div>
+                          </div>}
+                        </>
                       )}
                     </div>
                   </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Upload, Trash2, Bot, CheckCircle, RefreshCw, Split, Plus, X } from 'lucide-react'
-import api, { confirmStatementImport, getAccounts, getCategories, invalidateReferenceData } from '../services/api'
+import api, { confirmStatementImport, getAccounts, getCategories } from '../services/api'
 import type { Account, CurrencyCode } from '../services/api'
 
 function fmt(value: number): string {
@@ -295,7 +295,6 @@ export default function ImportStatement() {
   async function handleConfirmBalance() {
     if (confirmedBalance === null || !selectedAccId) return
     await api.patch(`/accounts/${selectedAccId}`, { balance: confirmedBalance })
-    invalidateReferenceData('accounts')
     setStep('done')
   }
 

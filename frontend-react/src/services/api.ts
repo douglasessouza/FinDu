@@ -1,10 +1,21 @@
 import axios from 'axios'
-import { cachedGet, clearCachedGets, invalidateCachedGet } from './cache'
+import {
+  cachedGet,
+  clearCachedGets,
+  invalidateReferenceData as invalidateReferenceDataCache,
+  invalidateReferenceDataForMutation,
+  REFERENCE_CACHE_KEYS,
+} from './cache'
 
 const AUTH_TOKEN_KEY = 'findu_auth_token'
 
 const api = axios.create({
   baseURL: '/api',
+})
+
+api.interceptors.response.use(response => {
+  invalidateReferenceDataForMutation(response.config.method, response.config.url)
+  return response
 })
 
 export function getAuthToken(): string | null {
@@ -243,12 +254,6 @@ export interface ExchangeRatesResponse {
   browser_cache_status?: 'fresh' | 'stale'
 }
 
-const REFERENCE_CACHE_KEYS = {
-  accounts: 'reference:accounts',
-  categories: 'reference:categories',
-  recurring: 'reference:recurring',
-} as const
-
 const REFERENCE_CACHE_TTL_MS = {
   accounts: 30_000,
   categories: 5 * 60_000,
@@ -280,7 +285,7 @@ export async function getRecurringExpenses(): Promise<RecurringExpense[]> {
 }
 
 export function invalidateReferenceData(key: keyof typeof REFERENCE_CACHE_KEYS): void {
-  invalidateCachedGet(REFERENCE_CACHE_KEYS[key])
+  invalidateReferenceDataCache(key)
 }
 
 export async function getMonthlyDashboard(month: string): Promise<MonthlyDashboardResponse> {
