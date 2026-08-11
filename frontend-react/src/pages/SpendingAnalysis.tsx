@@ -4,17 +4,38 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts'
 import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
-import api from '../services/api'
-import type { Account, Category } from '../services/api'
+import {
+  getAccounts,
+  getCardStatementSummary,
+  getCategories,
+  getSpendingAnalysis,
+  getTransactions,
+  updateTransactionCategories,
+} from '../services/api'
+import type {
+  Account,
+  CardStatementSummaryItem,
+  CurrencyCode,
+  SpendingAnalysisResponse,
+  SpendingCategorySummary,
+  Transaction,
+} from '../services/api'
 
 // ── Helpers ─────────────────────────────────────────────────────
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-function formatChartValue(value: unknown): string {
+function currencySymbol(currency: CurrencyCode): string {
+  if (currency === 'BRL') return 'R$'
+  if (currency === 'USD') return 'US$'
+  if (currency === 'EUR') return '€'
+  return 'CAD$'
+}
+
+function formatChartValue(value: unknown, currency: CurrencyCode): string {
   const numericValue = typeof value === 'number' ? value : Number(value ?? 0)
-  return `CAD$ ${fmt(Number.isFinite(numericValue) ? numericValue : 0)}`
+  return `${currencySymbol(currency)} ${fmt(Number.isFinite(numericValue) ? numericValue : 0)}`
 }
 
 // Parse "YYYY-MM" safely without timezone issues
@@ -28,6 +49,18 @@ function monthShort(m: string): string {
   return new Date(year, month - 1, 1).toLocaleString('en', { month: 'short', year: 'numeric' })
 }
 
+function addMonths(month: string, delta: number): string {
+  const [year, mo] = month.split('-').map(Number)
+  const date = new Date(year, mo - 1 + delta, 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function lastDayOfMonth(month: string): string {
+  const [year, mo] = month.split('-').map(Number)
+  const date = new Date(year, mo, 0)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
 const COLORS = [
   '#4E9A7A', '#E8B84B', '#6B8CBA', '#D4756B', '#7B9E6B',
   '#C17BB8', '#5BA8C4', '#D4964A', '#8B7BB8', '#6BB89E',
@@ -36,28 +69,12 @@ const COLORS = [
 ]
 
 const BAR_COLORS = ['#4E9A7A', '#E8B84B', '#6B8CBA', '#D4756B', '#7B9E6B', '#C17BB8']
+const EARLIEST_REPORTING_MONTH = '1000-01'
+const CURRENCY_ORDER: CurrencyCode[] = ['CAD', 'BRL', 'USD', 'EUR']
 
-interface SpendingData {
-  [month: string]: { [category: string]: { cards: number; debit: number } }
-}
-
-interface Transaction {
-  id: number
-  date: string
-  description: string
-  amount: number
-  category: string
-  account_id: number
-  statement_month?: string
-  payment_due_date?: string
+type DisplayTransaction = Transaction & {
   _account_name?: string
   _is_card?: boolean
-}
-
-interface StatementSummaryItem {
-  payment_due_date?: string | null
-  charges?: number | null
-  amount_due?: number | null
 }
 
 type ChartRow = { category: string } & Record<string, string | number | null>
@@ -66,62 +83,62 @@ function chartNumber(value: string | number | null | undefined): number {
   return typeof value === 'number' ? value : Number(value || 0)
 }
 
+function spendingValues(summary: SpendingCategorySummary | undefined, currency: CurrencyCode) {
+  return summary?.by_currency[currency] || { cards: 0, debit: 0 }
+}
+
 // ── Card Summary ─────────────────────────────────────────────────
-function CardSummary({ accounts, selectedMonth }: { accounts: Account[]; selectedMonth: string }) {
-  const [rows, setRows] = useState<{ name: string; amount: number }[]>([])
+function CardSummary({ selectedMonth }: { selectedMonth: string }) {
+  const [rows, setRows] = useState<CardStatementSummaryItem[]>([])
 
   useEffect(() => {
-    if (!accounts.length || !selectedMonth) return
+    if (!selectedMonth) return
     async function load() {
-      const cards = accounts.filter(a => a.account_type === 'CREDIT_CARD')
-      const result: { name: string; amount: number }[] = []
-      await Promise.all(cards.map(async card => {
-        try {
-          const res = await api.get(`/accounts/${card.id}/statement-summary`)
-          let total = 0
-          for (const [statementMonth, d] of Object.entries(res.data as Record<string, StatementSummaryItem>)) {
-            if (statementMonth === selectedMonth) total += d.amount_due ?? d.charges ?? 0
-          }
-          if (total > 0) result.push({ name: card.name, amount: Math.round(total * 100) / 100 })
-        } catch (error) {
-          console.error(`Failed to load statement summary for ${card.name}`, error)
-        }
-      }))
-      setRows(result)
+      try {
+        const summary = await getCardStatementSummary(selectedMonth)
+        setRows(summary.cards.filter(card => card.amount_due > 0))
+      } catch {
+        setRows([])
+      }
     }
     load()
-  }, [accounts, selectedMonth])
+  }, [selectedMonth])
 
   if (!rows.length) return null
-  const total = rows.reduce((s, r) => s + r.amount, 0)
+  const totals = rows.reduce<Partial<Record<CurrencyCode, number>>>((result, row) => {
+    result[row.currency] = (result[row.currency] || 0) + row.amount_due
+    return result
+  }, {})
 
   return (
     <div className="border-t border-[#EDF4EE] pt-3 mt-4">
       <p className="section-title mb-2">💳 Card spending in this cycle</p>
       {rows.map(r => (
-        <div key={r.name} className="flex justify-between text-sm py-1">
-          <span className="text-[#8BAE90]">↳ {r.name}</span>
-          <span className="text-[#B85050] font-semibold">CAD$ {fmt(r.amount)}</span>
+        <div key={`${r.account_id}-${r.currency}`} className="flex justify-between text-sm py-1">
+          <span className="text-[#8BAE90]">↳ {r.account_name}</span>
+          <span className="text-[#B85050] font-semibold">{currencySymbol(r.currency)} {fmt(r.amount_due)}</span>
         </div>
       ))}
-      <div className="flex justify-between text-sm font-bold pt-2 border-t border-[#EDF4EE] mt-1">
-        <span className="text-[#1B4D3E]">Total cards</span>
-        <span className="text-[#B85050]">CAD$ {fmt(total)}</span>
-      </div>
+      {CURRENCY_ORDER.filter(currency => totals[currency] !== undefined).map(currency => (
+        <div key={currency} className="flex justify-between text-sm font-bold pt-2 border-t border-[#EDF4EE] mt-1">
+          <span className="text-[#1B4D3E]">Total cards ({currency})</span>
+          <span className="text-[#B85050]">{currencySymbol(currency)} {fmt(totals[currency] || 0)}</span>
+        </div>
+      ))}
     </div>
   )
 }
 
 // ── Main ─────────────────────────────────────────────────────────
 export default function SpendingAnalysis() {
-  const [data, setData] = useState<SpendingData>({})
+  const [data, setData] = useState<SpendingAnalysisResponse>({})
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
+  const [selectedCurrency, setSelectedCurrency] = useState<CurrencyCode>('CAD')
   const [trendMonths, setTrendMonths] = useState<string[]>([])
-  const [txCache, setTxCache] = useState<Record<number, Transaction[]>>({})
   const [openCategory, setOpenCategory] = useState<string | null>(null)
-  const [categoryTxs, setCategoryTxs] = useState<Transaction[]>([])
+  const [categoryTxs, setCategoryTxs] = useState<DisplayTransaction[]>([])
   const [loadingTxs, setLoadingTxs] = useState(false)
   const [editingTx, setEditingTx] = useState<number | null>(null)
   const [editCat, setEditCat] = useState('')
@@ -131,17 +148,26 @@ export default function SpendingAnalysis() {
     async function load() {
       setLoading(true)
       try {
-        const [dataRes, accRes, catRes] = await Promise.all([
-          api.get('/spending-analysis'),
-          api.get('/accounts'),
-          api.get('/categories'),
+        const today = new Date()
+        const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+        const [nextData, loadedAccounts, loadedCategories] = await Promise.all([
+          getSpendingAnalysis(EARLIEST_REPORTING_MONTH, currentMonth),
+          getAccounts(),
+          getCategories(),
         ])
-        setData(dataRes.data)
-        setAccounts(accRes.data)
-        setCategories((catRes.data as Category[]).map(c => c.name).sort())
-        const months = Object.keys(dataRes.data).sort().reverse()
+        setData(nextData)
+        setAccounts(loadedAccounts)
+        setCategories(loadedCategories.map(c => c.name).sort())
+        const months = Object.keys(nextData).sort().reverse()
         if (months.length > 0) setSelectedMonth(months[0])
         setTrendMonths(months.slice(0, 2))
+        const available = new Set<CurrencyCode>()
+        Object.values(nextData).forEach(month => {
+          Object.values(month).forEach(summary => {
+            Object.keys(summary.by_currency).forEach(currency => available.add(currency as CurrencyCode))
+          })
+        })
+        setSelectedCurrency(available.has('CAD') ? 'CAD' : CURRENCY_ORDER.find(currency => available.has(currency)) || 'CAD')
       } finally {
         setLoading(false)
       }
@@ -152,9 +178,16 @@ export default function SpendingAnalysis() {
   const allMonths = Object.keys(data).sort()
   const months = [...allMonths].reverse()
   const monthData = data[selectedMonth] || {}
+  const availableCurrencies = CURRENCY_ORDER.filter(currency => (
+    Object.values(data).some(month => Object.values(month).some(summary => summary.by_currency[currency]))
+  ))
+  const symbol = currencySymbol(selectedCurrency)
 
   const pieData = Object.entries(monthData)
-    .map(([cat, vals]) => ({ name: cat, value: Math.round((vals.cards + vals.debit) * 100) / 100 }))
+    .map(([cat, vals]) => {
+      const currencyValues = spendingValues(vals, selectedCurrency)
+      return { name: cat, value: Math.round((currencyValues.cards + currencyValues.debit) * 100) / 100 }
+    })
     .filter(d => d.value > 0)
     .sort((a, b) => b.value - a.value)
 
@@ -167,7 +200,8 @@ export default function SpendingAnalysis() {
     const row: ChartRow = { category: cat }
     for (const m of monthsToShow) {
       const vals = data[m]?.[cat]
-      const total = vals ? Math.round((vals.cards + vals.debit) * 100) / 100 : 0
+      const currencyValues = spendingValues(vals, selectedCurrency)
+      const total = Math.round((currencyValues.cards + currencyValues.debit) * 100) / 100
       if (total > 0) row[monthShort(m)] = total
     }
     return row
@@ -198,7 +232,8 @@ export default function SpendingAnalysis() {
     let catTotal = 0
     for (const m of allMonths) {
       const vals = data[m]?.[cat]
-      const total = vals ? Math.round((vals.cards + vals.debit) * 100) / 100 : 0
+      const currencyValues = spendingValues(vals, selectedCurrency)
+      const total = Math.round((currencyValues.cards + currencyValues.debit) * 100) / 100
       row[m] = total > 0 ? total : null
       catTotal += total
     }
@@ -210,7 +245,8 @@ export default function SpendingAnalysis() {
   for (const m of allMonths) {
     const mTotal = allCatsTable.reduce((s, cat) => {
       const vals = data[m]?.[cat]
-      return s + (vals ? vals.cards + vals.debit : 0)
+      const currencyValues = spendingValues(vals, selectedCurrency)
+      return s + currencyValues.cards + currencyValues.debit
     }, 0)
     tableTotals[m] = Math.round(mTotal * 100) / 100
     tableTotals.total = Number(tableTotals.total || 0) + mTotal
@@ -222,34 +258,37 @@ export default function SpendingAnalysis() {
     const EXCLUDED = ['Salary', 'Other Income', 'Transfer']
     if (EXCLUDED.includes(category)) { setCategoryTxs([]); return }
     setLoadingTxs(true)
-    const cache = { ...txCache }
-    await Promise.all(accounts.map(async acc => {
-      if (cache[acc.id]) return
-      try {
-        const res = await api.get(`/accounts/${acc.id}/transactions`)
-        cache[acc.id] = res.data
-      } catch (error) {
-        console.error(`Failed to load transactions for ${acc.name}`, error)
-        cache[acc.id] = []
-      }
-    }))
-    setTxCache(cache)
-    const results: Transaction[] = []
-    for (const acc of accounts) {
-      const txs = cache[acc.id] || []
-      const isCard = acc.account_type === 'CREDIT_CARD'
-      for (const t of txs) {
-        if (t.amount >= 0) continue
-        if ((t.category || 'Other') !== category) continue
-        if (isCard && (t.statement_month || t.date?.slice(0, 7)) === selectedMonth)
-          results.push({ ...t, _account_name: acc.name, _is_card: true })
-        else if (!isCard && t.date?.slice(0, 7) === selectedMonth)
-          results.push({ ...t, _account_name: acc.name, _is_card: false })
-      }
+    try {
+      const categoryRows = await getTransactions({
+        category,
+        dateFrom: `${addMonths(selectedMonth, -1)}-01`,
+        dateTo: lastDayOfMonth(selectedMonth),
+      })
+      const accountById = new Map(accounts.map(account => [account.id, account]))
+      const results: DisplayTransaction[] = categoryRows
+        .filter(transaction => transaction.amount < 0 && transaction.currency === selectedCurrency)
+        .filter(transaction => {
+          const account = accountById.get(transaction.account_id)
+          const reportingMonth = account?.account_type === 'CREDIT_CARD'
+            ? transaction.statement_month || transaction.date.slice(0, 7)
+            : transaction.date.slice(0, 7)
+          return reportingMonth === selectedMonth
+        })
+        .map(transaction => {
+          const account = accountById.get(transaction.account_id)
+          return {
+            ...transaction,
+            _account_name: account?.name,
+            _is_card: account?.account_type === 'CREDIT_CARD',
+          }
+        })
+      results.sort((a, b) => b.date.localeCompare(a.date))
+      setCategoryTxs(results)
+    } catch {
+      setCategoryTxs([])
+    } finally {
+      setLoadingTxs(false)
     }
-    results.sort((a, b) => b.date.localeCompare(a.date))
-    setCategoryTxs(results)
-    setLoadingTxs(false)
   }
 
   function toggleCategory(cat: string) {
@@ -259,9 +298,9 @@ export default function SpendingAnalysis() {
 
   async function saveCategory(txId: number, newCat: string) {
     try {
-      await api.patch(`/transactions/${txId}`, { category: newCat })
-      const tx = categoryTxs.find(t => t.id === txId)
-      if (tx) setTxCache(prev => { const n = { ...prev }; delete n[tx.account_id]; return n })
+      await updateTransactionCategories([{ id: txId, category: newCat }])
+      const updatedSpending = await getSpendingAnalysis(selectedMonth, selectedMonth)
+      setData(current => ({ ...current, ...updatedSpending }))
       setEditingTx(null)
       if (openCategory) loadTxsForCategory(openCategory)
     } catch (error) {
@@ -269,7 +308,15 @@ export default function SpendingAnalysis() {
     }
   }
 
-  function refresh() { setTxCache({}); setCategoryTxs([]); setOpenCategory(null) }
+  async function refresh() {
+    setCategoryTxs([])
+    setOpenCategory(null)
+    if (!selectedMonth) return
+    const today = new Date()
+    const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+    const updatedSpending = await getSpendingAnalysis(EARLIEST_REPORTING_MONTH, currentMonth)
+    setData(updatedSpending)
+  }
 
   // ── Render ───────────────────────────────────────────────────
   return (
@@ -292,15 +339,27 @@ export default function SpendingAnalysis() {
       ) : (
         <>
           {/* Month selector */}
-          <select
-            value={selectedMonth}
-            onChange={e => { setSelectedMonth(e.target.value); setOpenCategory(null) }}
-            className="mb-6 px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
-          >
-            {months.map(m => (
-              <option key={m} value={m}>{monthLabel(m)}</option>
-            ))}
-          </select>
+          <div className="mb-6 flex flex-wrap gap-3">
+            <select
+              value={selectedMonth}
+              onChange={e => { setSelectedMonth(e.target.value); setOpenCategory(null) }}
+              className="px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+            >
+              {months.map(m => (
+                <option key={m} value={m}>{monthLabel(m)}</option>
+              ))}
+            </select>
+            {availableCurrencies.length > 1 && (
+              <select
+                aria-label="Reporting currency"
+                value={selectedCurrency}
+                onChange={e => { setSelectedCurrency(e.target.value as CurrencyCode); setOpenCategory(null) }}
+                className="px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none"
+              >
+                {availableCurrencies.map(currency => <option key={currency} value={currency}>{currency}</option>)}
+              </select>
+            )}
+          </div>
 
           {pieData.length === 0 ? (
             <div className="text-center text-[#8BAE90] py-10">No expenses for this month.</div>
@@ -332,15 +391,15 @@ export default function SpendingAnalysis() {
                         ))}
                       </Pie>
                       <Tooltip
-                        formatter={(value, name) => [formatChartValue(value), String(name)]}
+                        formatter={(value, name) => [formatChartValue(value, selectedCurrency), String(name)]}
                         contentStyle={{ borderRadius: '8px', border: '1px solid #D4E4D5', fontSize: '13px', backgroundColor: 'white' }}
                       />
                     </PieChart>
                   </ResponsiveContainer>
                   <p className="text-center text-sm text-[#8BAE90] mt-1">
-                    Total: <span className="font-bold text-[#1B4D3E]">CAD$ {fmt(grandTotal)}</span>
+                    Total: <span className="font-bold text-[#1B4D3E]">{symbol} {fmt(grandTotal)}</span>
                   </p>
-                  <CardSummary accounts={accounts} selectedMonth={selectedMonth} />
+                  <CardSummary selectedMonth={selectedMonth} />
                 </div>
 
                 {/* Right: category list — 2 columns when many */}
@@ -363,7 +422,7 @@ export default function SpendingAnalysis() {
                             <span className="text-xs text-[#8BAE90] shrink-0">{pct}%</span>
                           </div>
                           <div className="flex items-center gap-1 shrink-0 ml-1">
-                            <span className="text-xs font-bold text-[#B85050]">$ {fmt(d.value)}</span>
+                            <span className="text-xs font-bold text-[#B85050]">{symbol} {fmt(d.value)}</span>
                             {isOpen ? <ChevronUp size={12} className="text-[#8BAE90]" /> : <ChevronDown size={12} className="text-[#8BAE90]" />}
                           </div>
                         </button>
@@ -393,7 +452,7 @@ export default function SpendingAnalysis() {
                                             {t._is_card ? '💳' : '🏦'} {t._account_name}
                                           </span>
                                         </div>
-                                        <span className="text-sm font-semibold text-[#B85050] shrink-0">$ {fmt(amt)}</span>
+                                        <span className="text-sm font-semibold text-[#B85050] shrink-0">{symbol} {fmt(amt)}</span>
                                       </div>
 
                                       {isEditing ? (
@@ -425,7 +484,7 @@ export default function SpendingAnalysis() {
                                 })}
                                 <div className="px-4 py-2 bg-[#F4FAF5] flex justify-between text-xs font-semibold">
                                   <span className="text-[#1B4D3E]">{categoryTxs.length} transactions</span>
-                                  <span className="text-[#B85050]">CAD$ {fmt(categoryTxs.reduce((s, t) => s + Math.abs(t.amount), 0))}</span>
+                                  <span className="text-[#B85050]">{symbol} {fmt(categoryTxs.reduce((s, t) => s + Math.abs(t.amount), 0))}</span>
                                 </div>
                               </>
                             )}
@@ -473,9 +532,9 @@ export default function SpendingAnalysis() {
                   <BarChart data={barData} margin={{ top: 10, right: 20, left: 10, bottom: 70 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#EDF4EE" />
                     <XAxis dataKey="category" angle={-35} textAnchor="end" tick={{ fontSize: 11, fill: '#8BAE90' }} interval={0} />
-                    <YAxis tick={{ fontSize: 11, fill: '#8BAE90' }} tickFormatter={v => `$${v}`} />
+                    <YAxis tick={{ fontSize: 11, fill: '#8BAE90' }} tickFormatter={v => `${symbol}${v}`} />
                     <Tooltip
-                      formatter={(value, name) => [formatChartValue(value), String(name)]}
+                      formatter={(value, name) => [formatChartValue(value, selectedCurrency), String(name)]}
                       contentStyle={{ borderRadius: '8px', border: '1px solid #D4E4D5', fontSize: '12px' }}
                     />
                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '12px' }} />
@@ -506,23 +565,23 @@ export default function SpendingAnalysis() {
                           <td className="py-2 px-3 text-[#2C3E2D] font-medium">{row.category}</td>
                           {allMonths.map(m => (
                             <td key={m} className="text-right py-2 px-3 text-[#8BAE90]">
-                              {chartNumber(row[m]) ? `$ ${fmt(chartNumber(row[m]))}` : '—'}
+                              {chartNumber(row[m]) ? `${symbol} ${fmt(chartNumber(row[m]))}` : '—'}
                             </td>
                           ))}
-                          <td className="text-right py-2 px-3 font-semibold text-[#1B4D3E]">$ {fmt(chartNumber(row.total))}</td>
+                          <td className="text-right py-2 px-3 font-semibold text-[#1B4D3E]">{symbol} {fmt(chartNumber(row.total))}</td>
                         </tr>
                       ))}
                       <tr className="bg-[#1B4D3E] text-white font-bold">
                         <td className="py-3 px-3 rounded-bl-lg">💰 TOTAL</td>
                         {allMonths.map(m => (
-                          <td key={m} className="text-right py-3 px-3">$ {fmt(chartNumber(tableTotals[m]))}</td>
+                          <td key={m} className="text-right py-3 px-3">{symbol} {fmt(chartNumber(tableTotals[m]))}</td>
                         ))}
-                        <td className="text-right py-3 px-3 text-[#E8C84A] rounded-br-lg">$ {fmt(chartNumber(tableTotals.total))}</td>
+                        <td className="text-right py-3 px-3 text-[#E8C84A] rounded-br-lg">{symbol} {fmt(chartNumber(tableTotals.total))}</td>
                       </tr>
                     </tbody>
                   </table>
                 </div>
-                <p className="text-xs text-[#8BAE90] mt-3">Grand total: CAD$ {fmt(tableTotals.total)}</p>
+                <p className="text-xs text-[#8BAE90] mt-3">Grand total: {symbol} {fmt(tableTotals.total)}</p>
               </div>
             </>
           )}

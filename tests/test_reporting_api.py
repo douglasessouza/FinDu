@@ -543,6 +543,70 @@ def test_monthly_dashboard_consolidates_legacy_collections(client, db_session):
     }
 
 
+def test_monthly_dashboard_keeps_card_bills_in_their_payment_due_month(
+    client, db_session
+):
+    seed_reporting_data(db_session)
+    january_cycle = client.get(
+        "/card-statements/summary", params={"month": "2026-01"}
+    ).json()
+
+    february_dashboard = client.get(
+        "/dashboard/monthly", params={"month": "2026-02"}
+    )
+
+    assert february_dashboard.status_code == 200
+    body = february_dashboard.json()
+    assert body["card_summaries"]["month"] == "2026-02"
+    assert body["card_summaries_due"] == {
+        **january_cycle,
+        "month": "2026-02",
+    }
+
+
+def test_monthly_dashboard_includes_late_prior_month_checking_rows_for_payroll_matching(
+    client, db_session
+):
+    checking = add_account(db_session, "Chequing", AccountTypeEnum.CHECKING)
+    too_early = add_transaction(
+        db_session,
+        checking,
+        "2025-12-25T08:00:00",
+        100,
+        "Salary",
+        "Early payroll",
+    )
+    shifted_payroll = add_transaction(
+        db_session,
+        checking,
+        "2025-12-29T08:00:00",
+        100,
+        "Salary",
+        "Late payroll",
+    )
+    january = add_transaction(
+        db_session,
+        checking,
+        "2026-01-15T08:00:00",
+        -20,
+        "Other",
+        "January row",
+    )
+    db_session.commit()
+
+    body = client.get(
+        "/dashboard/monthly", params={"month": "2026-01"}
+    ).json()
+
+    assert {row["id"] for row in body["checking_transactions"]} == {
+        shifted_payroll.id,
+        january.id,
+    }
+    assert too_early.id not in {
+        row["id"] for row in body["checking_transactions"]
+    }
+
+
 def test_monthly_dashboard_query_count_is_independent_of_account_count(
     client, db_session
 ):

@@ -1,18 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ArrowLeftRight, RefreshCw } from 'lucide-react'
-import api from '../services/api'
+import { getExchangeRates } from '../services/api'
+import type { ExchangeCurrency as Currency, ExchangeRatesResponse } from '../services/api'
 
-type Currency = 'CAD' | 'USD' | 'BRL'
-
-interface RatesResponse {
-  base: Currency
-  rates: Record<Currency, number | null>
-  rate_last_updated_at?: string | null
-  rate_next_update_at?: string | null
-  fetched_at?: string | null
-  source?: string
-  update_frequency?: 'hourly' | 'daily'
-}
 
 const CURRENCIES: {
   code: Currency
@@ -51,30 +41,32 @@ export default function CurrencyConverter() {
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
   const [nextUpdateAt, setNextUpdateAt] = useState<string | null>(null)
   const [frequency, setFrequency] = useState<'hourly' | 'daily'>('daily')
+  const [usingStaleRates, setUsingStaleRates] = useState(false)
   const [baseCurrency, setBaseCurrency] = useState<Currency>('CAD')
   const [amountText, setAmountText] = useState('1')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  async function loadRates() {
+  async function loadRates(forceRefresh = false) {
     setLoading(true)
     setError('')
     try {
-      const res = await api.get<RatesResponse>('/exchange-rates', { params: { base: 'CAD' } })
-      const usdRate = Number(res.data.rates.USD)
-      const brlRate = Number(res.data.rates.BRL)
+      const response: ExchangeRatesResponse = await getExchangeRates('CAD', { forceRefresh })
+      const usdRate = Number(response.rates.USD)
+      const brlRate = Number(response.rates.BRL)
       if (!Number.isFinite(usdRate) || !Number.isFinite(brlRate) || usdRate <= 0 || brlRate <= 0) {
         throw new Error('Missing exchange rates')
       }
       setRates({
-        CAD: Number(res.data.rates.CAD || 1),
+        CAD: Number(response.rates.CAD || 1),
         USD: usdRate,
         BRL: brlRate,
       })
-      setUpdatedAt(res.data.rate_last_updated_at || null)
-      setFetchedAt(res.data.fetched_at || null)
-      setNextUpdateAt(res.data.rate_next_update_at || null)
-      setFrequency(res.data.update_frequency || 'daily')
+      setUpdatedAt(response.rate_last_updated_at || null)
+      setFetchedAt(response.fetched_at || null)
+      setNextUpdateAt(response.rate_next_update_at || null)
+      setFrequency(response.update_frequency || 'daily')
+      setUsingStaleRates(response.browser_cache_status === 'stale' || response.cache_status === 'stale')
     } catch {
       setError('Could not load live exchange rates.')
     } finally {
@@ -117,7 +109,7 @@ export default function CurrencyConverter() {
         </div>
         <button
           type="button"
-          onClick={loadRates}
+          onClick={() => loadRates(true)}
           disabled={loading}
           className="inline-flex items-center justify-center gap-2 rounded-lg border border-[#D4E4D5] bg-white px-4 py-2.5 text-sm font-bold text-[#1B4D3E] transition hover:bg-[#F4FAF5] disabled:opacity-50"
         >
@@ -161,6 +153,12 @@ export default function CurrencyConverter() {
         {frequency === 'daily' && !loading && (
           <div className="mb-4 rounded-lg border border-[#E8C84A] bg-[#FFF9D8] px-4 py-3 text-sm font-semibold text-[#7A6200]">
             Hourly refresh is ready in the app. Add the EXCHANGE_RATE_API_KEY secret to switch from daily fallback to hourly rates.
+          </div>
+        )}
+
+        {usingStaleRates && !loading && (
+          <div className="mb-4 rounded-lg border border-[#E8C84A] bg-[#FFF9D8] px-4 py-3 text-sm font-semibold text-[#7A6200]">
+            Live refresh is unavailable. Showing the last validated exchange rates saved in this browser.
           </div>
         )}
 

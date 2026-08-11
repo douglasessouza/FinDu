@@ -8,7 +8,7 @@ import json
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import and_, case, func, or_
+from sqlalchemy import and_, case, func, literal, or_
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -254,61 +254,76 @@ def _spending_response(buckets: dict) -> dict:
     return result
 
 
-def card_statement_summary(db: Session, month: str) -> dict:
-    """Aggregate statement-cycle totals for every card with rows in one month."""
-    month_bounds(month)
+def _card_summary_query(
+    db: Session,
+    month: str,
+    *,
+    by_payment_due_date: bool,
+    summary_kind: Optional[str] = None,
+):
+    start, end = month_bounds(month)
     normalized_category = func.lower(func.trim(func.coalesce(Transaction.category, "")))
-    rows = (
-        db.query(
-            Account.id.label("account_id"),
-            Account.name.label("account_name"),
-            Transaction.currency.label("currency"),
-            func.coalesce(
-                func.sum(case((Transaction.amount < 0, -Transaction.amount), else_=0.0)),
-                0.0,
-            ).label("charges"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                Transaction.amount >= 0,
-                                normalized_category != "transfer",
-                            ),
-                            Transaction.amount,
+    columns = [
+        Account.id.label("account_id"),
+        Account.name.label("account_name"),
+        Transaction.currency.label("currency"),
+        func.coalesce(
+            func.sum(case((Transaction.amount < 0, -Transaction.amount), else_=0.0)),
+            0.0,
+        ).label("charges"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            Transaction.amount >= 0,
+                            normalized_category != "transfer",
                         ),
-                        else_=0.0,
-                    )
-                ),
-                0.0,
-            ).label("credits"),
-            func.coalesce(
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                Transaction.amount >= 0,
-                                normalized_category == "transfer",
-                            ),
-                            Transaction.amount,
+                        Transaction.amount,
+                    ),
+                    else_=0.0,
+                )
+            ),
+            0.0,
+        ).label("credits"),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        and_(
+                            Transaction.amount >= 0,
+                            normalized_category == "transfer",
                         ),
-                        else_=0.0,
-                    )
-                ),
-                0.0,
-            ).label("payments"),
-            func.sum(case((Transaction.amount < 0, 1), else_=0)).label("count"),
-            func.max(Transaction.payment_due_date).label("payment_due_date"),
-        )
+                        Transaction.amount,
+                    ),
+                    else_=0.0,
+                )
+            ),
+            0.0,
+        ).label("payments"),
+        func.sum(case((Transaction.amount < 0, 1), else_=0)).label("count"),
+        func.max(Transaction.payment_due_date).label("payment_due_date"),
+    ]
+    if summary_kind is not None:
+        columns.insert(0, literal(summary_kind).label("summary_kind"))
+    query = (
+        db.query(*columns)
         .join(Account, Account.id == Transaction.account_id)
         .filter(Account.account_type == AccountTypeEnum.CREDIT_CARD)
-        .filter(Transaction.statement_month == month)
-        .group_by(Account.id, Account.name, Transaction.currency)
-        .order_by(Account.id, Transaction.currency)
-        .all()
     )
+    if by_payment_due_date:
+        query = query.filter(
+            Transaction.payment_due_date >= start,
+            Transaction.payment_due_date < end,
+        )
+    else:
+        query = query.filter(Transaction.statement_month == month)
+    return query.group_by(Account.id, Account.name, Transaction.currency)
+
+
+def _card_summary_response(month: str, rows) -> dict:
     cards = []
-    for row in rows:
+    for row in sorted(rows, key=lambda item: (item.account_id, item.currency.value)):
         charges = round(float(row.charges), 2)
         credits = round(float(row.credits), 2)
         cards.append(
@@ -353,6 +368,47 @@ def card_statement_summary(db: Session, month: str) -> dict:
         "currency": only_currency,
         "totals_by_currency": totals_by_currency,
     }
+
+
+def _card_summary(db: Session, month: str, *, by_payment_due_date: bool) -> dict:
+    rows = _card_summary_query(
+        db, month, by_payment_due_date=by_payment_due_date
+    ).all()
+    return _card_summary_response(month, rows)
+
+
+def card_statement_summary(db: Session, month: str) -> dict:
+    """Aggregate statement-cycle totals for every card with rows in one month."""
+    return _card_summary(db, month, by_payment_due_date=False)
+
+
+def card_payment_due_summary(db: Session, month: str) -> dict:
+    """Aggregate card bills whose persisted payment due date falls in one month."""
+    return _card_summary(db, month, by_payment_due_date=True)
+
+
+def card_dashboard_summaries(db: Session, month: str) -> tuple[dict, dict]:
+    statement_query = _card_summary_query(
+        db,
+        month,
+        by_payment_due_date=False,
+        summary_kind="statement",
+    )
+    due_query = _card_summary_query(
+        db,
+        month,
+        by_payment_due_date=True,
+        summary_kind="due",
+    )
+    rows = statement_query.union_all(due_query).all()
+    return (
+        _card_summary_response(
+            month, [row for row in rows if row.summary_kind == "statement"]
+        ),
+        _card_summary_response(
+            month, [row for row in rows if row.summary_kind == "due"]
+        ),
+    )
 
 
 def serialize_payment(payment: MonthlyPayment) -> dict:
@@ -404,6 +460,7 @@ def serialize_match(match: RecurringMatch, transaction: Optional[Transaction]) -
 def monthly_dashboard(db: Session, month: str) -> dict:
     """Load all monthly dashboard collections with a constant seven queries."""
     start, end = month_bounds(month)
+    matching_start = (start - timedelta(days=1)).replace(day=26)
     accounts = db.query(Account).all()
     recurring = db.query(RecurringExpense).order_by(
         RecurringExpense.due_day, RecurringExpense.name
@@ -422,11 +479,11 @@ def monthly_dashboard(db: Session, month: str) -> dict:
         db.query(Transaction)
         .join(Account, Account.id == Transaction.account_id)
         .filter(Account.account_type != AccountTypeEnum.CREDIT_CARD)
-        .filter(Transaction.date >= start, Transaction.date < end)
+        .filter(Transaction.date >= matching_start, Transaction.date < end)
         .order_by(Transaction.date.desc(), Transaction.id.desc())
         .all()
     )
-    cards = card_statement_summary(db, month)
+    cards, cards_due = card_dashboard_summaries(db, month)
     return {
         "month": month,
         "accounts": accounts,
@@ -438,4 +495,5 @@ def monthly_dashboard(db: Session, month: str) -> dict:
         "overrides": overrides,
         "checking_transactions": checking_transactions,
         "card_summaries": cards,
+        "card_summaries_due": cards_due,
     }

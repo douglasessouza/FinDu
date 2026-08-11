@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { CheckCircle2, ChevronLeft, ChevronRight, Plus, Save, Split, Target, Trash2, Wand2, X } from 'lucide-react'
-import api from '../services/api'
-import type { Account, Category, CategoryBudget, RecurringExpense, Transaction } from '../services/api'
+import api, {
+  getAccounts,
+  getCategories,
+  getRecurringExpenses,
+  getSpendingAnalysis,
+  getTransactions,
+  updateTransactionCategories,
+} from '../services/api'
+import type { Account, CategoryBudget, RecurringExpense, SpendingAnalysisResponse, Transaction } from '../services/api'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
-
-interface SpendingData {
-  [month: string]: { [category: string]: { cards: number; debit: number } }
-}
 
 interface Row {
   category: string
@@ -113,6 +116,7 @@ const DEFAULT_METHOD_STATE: BudgetMethodState = {
 
 const METHOD_STORAGE_KEY = 'findu_budget_methodology'
 const EXCLUDED_METHOD_CATEGORIES = new Set(['Salary', 'Other Income', 'Transfer'])
+const EARLIEST_REPORTING_MONTH = '1000-01'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -127,6 +131,12 @@ function addMonths(month: string, delta: number): string {
   const [year, mo] = month.split('-').map(Number)
   const date = new Date(year, mo - 1 + delta, 1)
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function lastDayOfMonth(month: string): string {
+  const [year, mo] = month.split('-').map(Number)
+  const date = new Date(year, mo, 0)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
 function defaultBucketForCategory(category: string): BudgetBucket {
@@ -179,12 +189,14 @@ function recurringIsActiveForMonth(item: RecurringExpense, month: string): boole
 }
 
 export default function PlannedVsReal() {
-  const [spending, setSpending] = useState<SpendingData>({})
+  const [spending, setSpending] = useState<SpendingAnalysisResponse>({})
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
+  const [categoryTransactions, setCategoryTransactions] = useState<Transaction[]>([])
+  const [categoryTransactionsLoading, setCategoryTransactionsLoading] = useState(false)
   const [selectedMonth, setSelectedMonth] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
@@ -205,19 +217,20 @@ export default function PlannedVsReal() {
       try {
         const today = new Date()
         const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
-        const [spendingRes, budgetRes, accountRes] = await Promise.all([
-          api.get('/spending-analysis'),
-          api.get('/category-budgets', { params: { month: currentMonth } }),
-          api.get('/accounts'),
+        const [nextSpending, loadedAccounts, loadedCategories, loadedRecurring] = await Promise.all([
+          getSpendingAnalysis(EARLIEST_REPORTING_MONTH, currentMonth),
+          getAccounts(),
+          getCategories(),
+          getRecurringExpenses(),
         ])
-        const nextSpending = spendingRes.data as SpendingData
         setSpending(nextSpending)
-        setBudgets(budgetRes.data as CategoryBudget[])
-        setAccounts(accountRes.data as Account[])
+        setAccounts(loadedAccounts)
+        setCategories(loadedCategories.map(category => category.name).sort())
+        setRecurring(loadedRecurring)
 
         const months = Object.keys(nextSpending).sort()
         setSelectedMonth(months.includes(currentMonth) ? currentMonth : months[months.length - 1] || currentMonth)
-      } finally {
+      } catch {
         setLoading(false)
       }
     }
@@ -227,29 +240,22 @@ export default function PlannedVsReal() {
   useEffect(() => {
     if (!selectedMonth) return
 
-    async function loadBudgetsForMonth() {
-      const budgetRes = await api.get('/category-budgets', { params: { month: selectedMonth } })
-      setBudgets(budgetRes.data as CategoryBudget[])
+    async function loadMonthContext() {
+      setLoading(true)
+      try {
+        const [budgetRes, monthlyTransactions] = await Promise.all([
+          api.get('/category-budgets', { params: { month: selectedMonth } }),
+          getTransactions({ month: selectedMonth }),
+        ])
+        setBudgets(budgetRes.data as CategoryBudget[])
+        setTransactions(monthlyTransactions)
+      } finally {
+        setLoading(false)
+      }
     }
 
-    loadBudgetsForMonth()
+    loadMonthContext()
   }, [selectedMonth])
-
-  useEffect(() => {
-    async function loadTransactionContext() {
-      const [accountRes, categoryRes, transactionRes, recurringRes] = await Promise.all([
-        api.get('/accounts'),
-        api.get('/categories'),
-        api.get('/transactions'),
-        api.get('/recurring-expenses'),
-      ])
-      setAccounts(accountRes.data as Account[])
-      setCategories((categoryRes.data as Category[]).map(category => category.name).sort())
-      setTransactions(transactionRes.data as Transaction[])
-      setRecurring(recurringRes.data as RecurringExpense[])
-    }
-    loadTransactionContext()
-  }, [])
 
   const accountById = useMemo(() => {
     return accounts.reduce<Record<number, Account>>((lookup, account) => {
@@ -271,26 +277,11 @@ export default function PlannedVsReal() {
         return totals
       }, {})
 
-    const excludedCategories = new Set(['Salary', 'Other Income', 'Transfer'])
-    const realByCategory = transactions
-      .filter(tx => tx.amount < 0)
-      .filter(tx => !excludedCategories.has(tx.category || 'Other'))
-      .filter(tx => {
-        const account = accountById[tx.account_id]
-        if (account?.account_type === 'CREDIT_CARD') {
-          return (tx.statement_month || tx.date)?.slice(0, 7) === selectedMonth
-        }
-        return tx.date?.slice(0, 7) === selectedMonth
-      })
-      .reduce<Record<string, number>>((totals, tx) => {
-        const category = tx.category || 'Other'
-        totals[category] = Math.round(((totals[category] || 0) + Math.abs(tx.amount)) * 100) / 100
-        return totals
-      }, {})
-
+    const realByCategory: Record<string, number> = {}
     Object.entries(spending[selectedMonth] || {}).forEach(([category, value]) => {
-      if (realByCategory[category] !== undefined) return
-      realByCategory[category] = Math.round(((value.cards || 0) + (value.debit || 0)) * 100) / 100
+      const cad = value.by_currency.CAD
+      if (!cad) return
+      realByCategory[category] = Math.round((cad.cards + cad.debit) * 100) / 100
     })
 
     return Array.from(new Set([...Object.keys(plannedByCategory), ...Object.keys(realByCategory)]))
@@ -317,7 +308,7 @@ export default function PlannedVsReal() {
 
         return b.variance - a.variance
       })
-  }, [accountById, budgets, selectedMonth, spending, transactions])
+  }, [budgets, selectedMonth, spending])
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -327,22 +318,6 @@ export default function PlannedVsReal() {
     }),
     { planned: 0, real: 0, variance: 0 },
   )
-  const categoryTransactions = useMemo(() => {
-    if (!selectedCategory || !selectedMonth) return []
-
-    return transactions
-      .filter(tx => tx.amount < 0)
-      .filter(tx => (tx.category || 'Other') === selectedCategory)
-      .filter(tx => {
-        const account = accountById[tx.account_id]
-        if (account?.account_type === 'CREDIT_CARD') {
-          return (tx.statement_month || tx.date)?.slice(0, 7) === selectedMonth
-        }
-        return tx.date?.slice(0, 7) === selectedMonth
-      })
-      .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-  }, [accountById, selectedCategory, selectedMonth, transactions])
-
   const selectedRow = rows.find(row => row.category === selectedCategory)
   const plannedBudgetItems = useMemo(() => {
     if (!selectedCategory || !selectedMonth) return []
@@ -438,16 +413,51 @@ export default function PlannedVsReal() {
   }
 
   async function refreshSpendingAndTransactions() {
-    const [spendingRes, transactionRes] = await Promise.all([
-      api.get('/spending-analysis'),
-      api.get('/transactions'),
+    if (!selectedMonth) return
+    const [nextSpending, monthlyTransactions] = await Promise.all([
+      getSpendingAnalysis(selectedMonth, selectedMonth),
+      getTransactions({ month: selectedMonth }),
     ])
-    setSpending(spendingRes.data as SpendingData)
-    setTransactions(transactionRes.data as Transaction[])
+    setSpending(current => ({ ...current, ...nextSpending }))
+    setTransactions(monthlyTransactions)
+  }
+
+  async function loadCategoryTransactions(category: string) {
+    if (!selectedMonth) return
+    setCategoryTransactionsLoading(true)
+    try {
+      const categoryRows = await getTransactions({
+        category,
+        dateFrom: `${addMonths(selectedMonth, -1)}-01`,
+        dateTo: lastDayOfMonth(selectedMonth),
+      })
+      const filtered = categoryRows
+        .filter(transaction => transaction.amount < 0 && transaction.currency === 'CAD')
+        .filter(transaction => {
+          const account = accountById[transaction.account_id]
+          const reportingMonth = account?.account_type === 'CREDIT_CARD'
+            ? transaction.statement_month || transaction.date.slice(0, 7)
+            : transaction.date.slice(0, 7)
+          return reportingMonth === selectedMonth
+        })
+        .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+      setCategoryTransactions(filtered)
+    } finally {
+      setCategoryTransactionsLoading(false)
+    }
+  }
+
+  function openCategoryDetails(category: string) {
+    setSelectedCategory(category)
+    setEditedCats({})
+    setSaveMsg('')
+    setCategoryTransactions([])
+    loadCategoryTransactions(category)
   }
 
   function closeModal() {
     setSelectedCategory(null)
+    setCategoryTransactions([])
     setEditedCats({})
     setSaveMsg('')
     cancelSplit()
@@ -458,15 +468,14 @@ export default function PlannedVsReal() {
     if (changes.length === 0) return
 
     setSaving(true)
-    let updated = 0
     try {
-      for (const [id, category] of changes) {
-        await api.patch(`/transactions/${id}`, { category })
-        updated++
-      }
+      const result = await updateTransactionCategories(
+        changes.map(([id, category]) => ({ id: Number(id), category })),
+      )
       await refreshSpendingAndTransactions()
+      if (selectedCategory) await loadCategoryTransactions(selectedCategory)
       setEditedCats({})
-      setSaveMsg(`${updated} transaction${updated !== 1 ? 's' : ''} updated.`)
+      setSaveMsg(`${result.updated_count} transaction${result.updated_count !== 1 ? 's' : ''} updated.`)
       setTimeout(() => setSaveMsg(''), 3000)
     } finally {
       setSaving(false)
@@ -549,6 +558,7 @@ export default function PlannedVsReal() {
       })
       cancelSplit()
       await refreshSpendingAndTransactions()
+      if (selectedCategory) await loadCategoryTransactions(selectedCategory)
       setEditedCats(prev => {
         const next = { ...prev }
         delete next[splitTx.id]
@@ -885,11 +895,7 @@ export default function PlannedVsReal() {
                   <button
                     key={row.category}
                     type="button"
-                    onClick={() => {
-                      setSelectedCategory(row.category)
-                      setEditedCats({})
-                      setSaveMsg('')
-                    }}
+                    onClick={() => openCategoryDetails(row.category)}
                     className={`rounded-lg border px-4 py-3 text-left transition hover:-translate-y-0.5 hover:shadow-sm focus:outline-none focus:ring-2 focus:ring-[#1B4D3E]/30 ${cardClass}`}
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -993,7 +999,11 @@ export default function PlannedVsReal() {
                         <p className="text-right text-lg font-bold text-[#B85050]">CAD$ {fmt(modalTotal)}</p>
                       </div>
 
-                      {categoryTransactions.length === 0 ? (
+                      {categoryTransactionsLoading ? (
+                        <div className="px-5 py-12 text-center text-[#8BAE90]">
+                          Loading transactions...
+                        </div>
+                      ) : categoryTransactions.length === 0 ? (
                         <div className="px-5 py-12 text-center text-[#8BAE90]">
                           No transactions found in this category for {monthLabel(selectedMonth)}.
                         </div>

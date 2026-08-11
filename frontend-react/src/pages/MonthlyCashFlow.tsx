@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, CircleHelp, Pencil, RotateCcw, Save, Sparkles, X } from 'lucide-react'
-import api from '../services/api'
+import api, { getMonthlyDashboard } from '../services/api'
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
 import type {
   Account,
+  CurrencyCode,
+  MonthlyPayment,
   RecurringExpense,
   RecurringMonthlyOverride,
   RecurringMatch as SavedRecurringMatch,
@@ -15,19 +17,12 @@ function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-interface MonthlyPayment {
-  id: number
-  month: string
-  item_type: string
-  item_id: number
-  item_name: string
-  paid_at: string
-}
-
-interface StatementSummaryItem {
-  payment_due_date?: string | null
-  charges?: number | null
-  amount_due?: number | null
+interface CardChargeEntry {
+  accountId: number
+  name: string
+  currency: CurrencyCode
+  amount: number
+  dueDate?: string
 }
 
 interface RecurringMatchCandidate {
@@ -156,6 +151,20 @@ function formatDueDate(dateStr: string): string {
   return new Date(y, mo - 1, dy).toLocaleDateString('en', { month: 'short', day: 'numeric' })
 }
 
+function currencySymbol(currency: CurrencyCode): string {
+  if (currency === 'BRL') return 'R$'
+  if (currency === 'USD') return 'US$'
+  if (currency === 'EUR') return '€'
+  return 'CAD$'
+}
+
+function currencyFlag(currency: CurrencyCode): string {
+  if (currency === 'BRL') return '🇧🇷'
+  if (currency === 'USD') return '🇺🇸'
+  if (currency === 'EUR') return '🇪🇺'
+  return '🇨🇦'
+}
+
 function isValidThisMonth(item: RecurringExpense, year: number, month: number): boolean {
   const monthKey = `${year}-${String(month).padStart(2, '0')}`
   const startOfMonth = new Date(year, month - 1, 1)
@@ -177,14 +186,22 @@ export default function MonthlyCashFlow() {
   const [savingOverride, setSavingOverride] = useState(false)
   const [overrideError, setOverrideError] = useState('')
   const [statementTransactions, setStatementTransactions] = useState<Transaction[]>([])
-  const [cardCharges, setCardCharges] = useState<Record<string, number>>({})
-  const [cardDueDates, setCardDueDates] = useState<Record<string, string>>({})
+  const [cardCharges, setCardCharges] = useState<CardChargeEntry[]>([])
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
   const [savedMatches, setSavedMatches] = useState<SavedRecurringMatch[]>([])
   const [loading, setLoading] = useState(true)
 
   const monthStr = `${year}-${String(month).padStart(2, '0')}`
   const monthLabel = new Date(year, month - 1, 1).toLocaleString('en', { month: 'long', year: 'numeric' })
+  const visibleCurrencies = useMemo(() => {
+    const available = new Set<CurrencyCode>()
+    accounts.forEach(account => available.add(account.currency))
+    recurring.forEach(item => available.add(item.currency))
+    statementTransactions.forEach(transaction => available.add(transaction.currency))
+    cardCharges.forEach(card => available.add(card.currency))
+    const order: CurrencyCode[] = ['CAD', 'BRL', 'USD', 'EUR']
+    return order.filter(currency => available.has(currency))
+  }, [accounts, cardCharges, recurring, statementTransactions])
 
   function prevMonth() {
     if (month === 1) { setMonth(12); setYear(y => y - 1) }
@@ -199,21 +216,14 @@ export default function MonthlyCashFlow() {
   async function load() {
     setLoading(true)
     try {
-      const [accRes, recRes, payRes, matchRes, overrideRes] = await Promise.all([
-        api.get('/accounts'),
-        api.get('/recurring-expenses'),
-        api.get(`/monthly-payments?month=${monthStr}`),
-        api.get(`/recurring-matches?month=${monthStr}`).catch(() => ({ data: [] })),
-        api.get(`/recurring-monthly-overrides?month=${monthStr}`).catch(() => ({ data: [] })),
-      ])
-
-      const loadedAccounts = accRes.data as Account[]
+      const dashboard = await getMonthlyDashboard(monthStr)
+      const loadedAccounts = dashboard.accounts
       setAccounts(loadedAccounts)
-      setRecurring(recRes.data as RecurringExpense[])
-      setPayments(payRes.data as MonthlyPayment[])
-      setSavedMatches(matchRes.data as SavedRecurringMatch[])
+      setRecurring(dashboard.recurring)
+      setPayments(dashboard.payments)
+      setSavedMatches(dashboard.matches)
       setMonthlyOverrides(
-        (overrideRes.data as RecurringMonthlyOverride[]).reduce<Record<number, RecurringMonthlyOverride>>(
+        dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
           (result, override) => ({ ...result, [override.recurring_id]: override }),
           {},
         ),
@@ -221,51 +231,18 @@ export default function MonthlyCashFlow() {
       setEditingRecurringId(null)
       setOverrideError('')
 
-      const cards = loadedAccounts.filter(a => a.account_type === 'CREDIT_CARD')
-      const checking = loadedAccounts.filter(a => a.account_type !== 'CREDIT_CARD')
-      const charges: Record<string, number> = {}
-      const dueDates: Record<string, string> = {}
-
-      const txResults = await Promise.all(checking.map(async account => {
-        try {
-          const res = await api.get(`/accounts/${account.id}/transactions`)
-          return res.data as Transaction[]
-        } catch (error) {
-          console.error(`Failed to load transactions for ${account.name}`, error)
-          return []
-        }
-      }))
-
-      await Promise.all(cards.map(async card => {
-        try {
-          const res = await api.get(`/accounts/${card.id}/statement-summary`)
-          let total = 0
-          for (const data of Object.values(res.data as Record<string, StatementSummaryItem>)) {
-            const due = (data.payment_due_date || '').slice(0, 7)
-            if (due === monthStr) {
-              total += data.amount_due ?? data.charges ?? 0
-              const dueDate = (data.payment_due_date || '').slice(0, 10)
-              if (dueDate) dueDates[card.name] = dueDate
-            }
-          }
-          if (total > 0) charges[card.name] = total
-        } catch (error) {
-          console.error(`Failed to load statement summary for ${card.name}`, error)
-        }
-      }))
-
-      cards.forEach(card => {
-        if (!dueDates[card.name] && card.due_day) {
-          const nextDueMonth = month === 12 ? 1 : month + 1
-          const nextDueYear = month === 12 ? year + 1 : year
-          dueDates[card.name] = `${nextDueYear}-${String(nextDueMonth).padStart(2, '0')}-${String(card.due_day).padStart(2, '0')}`
-        }
-      })
-
-      const loadedStatementTransactions = txResults.flat()
-      setStatementTransactions(loadedStatementTransactions)
-      setCardCharges(charges)
-      setCardDueDates(dueDates)
+      setStatementTransactions(dashboard.checking_transactions)
+      setCardCharges(
+        dashboard.card_summaries_due.cards
+          .filter(card => card.amount_due > 0)
+          .map(card => ({
+            accountId: card.account_id,
+            name: card.account_name,
+            currency: card.currency,
+            amount: card.amount_due,
+            dueDate: card.payment_due_date?.slice(0, 10),
+          })),
+      )
     } finally {
       setLoading(false)
     }
@@ -477,9 +454,9 @@ export default function MonthlyCashFlow() {
             <CardCycleSummary accounts={accounts} month={monthStr} />
           </div>
 
-          {(['CAD', 'BRL'] as const).map(currency => {
-            const symbol = currency === 'CAD' ? 'CAD$' : 'R$'
-            const flag = currency === 'CAD' ? '🇨🇦' : '🇧🇷'
+          {visibleCurrencies.map(currency => {
+            const symbol = currencySymbol(currency)
+            const flag = currencyFlag(currency)
             const checking = accounts.filter(a => a.currency === currency && a.account_type !== 'CREDIT_CARD')
             const inBank = checking.reduce((s, a) => s + a.balance, 0)
             const monthRecurring = effectiveRecurring.filter(r => r.currency === currency && isValidThisMonth(r, year, month))
@@ -499,14 +476,10 @@ export default function MonthlyCashFlow() {
             )
             const actualSalaryIncomeTotal = currencyActualSalaryIncome.reduce((s, tx) => s + Number(tx.amount), 0)
             const actualOtherIncomeTotal = currencyActualOtherIncome.reduce((s, tx) => s + Number(tx.amount), 0)
-            const cardEntries = Object.entries(cardCharges).filter(([name]) => {
-              const card = accounts.find(a => a.name === name)
-              return card?.currency === currency
-            })
-            const totalCardsPlanned = cardEntries.reduce((s, [, v]) => s + v, 0)
-            const remainingCards = cardEntries.reduce((s, [name, v]) => {
-              const card = accounts.find(a => a.name === name)
-              return s + (card && isPaid('card', card.id) ? 0 : v)
+            const cardEntries = cardCharges.filter(card => card.currency === currency)
+            const totalCardsPlanned = cardEntries.reduce((sum, card) => sum + card.amount, 0)
+            const remainingCards = cardEntries.reduce((sum, card) => {
+              return sum + (isPaid('card', card.accountId) ? 0 : card.amount)
             }, 0)
             const plannedFixedExpenses = totalRecurringExpensesPlanned + totalCardsPlanned
             const openFixedExpenses = remainingRecurringExpenses + remainingCards
@@ -683,19 +656,18 @@ export default function MonthlyCashFlow() {
                         <p className="text-[#1B6B3A] font-bold mt-3">{symbol} {fmt(0)}</p>
                       </div>
                     ) : (
-                      cardEntries.map(([name, amount]) => {
-                        const card = accounts.find(a => a.name === name)
-                        const paid = isPaid('card', card?.id ?? 0)
-                        const dueDate = cardDueDates[name]
+                      cardEntries.map(cardCharge => {
+                        const card = accounts.find(account => account.id === cardCharge.accountId)
+                        const paid = isPaid('card', cardCharge.accountId)
 
                         return (
-                          <div key={name} className={`rounded-lg border px-4 py-3 transition ${
+                          <div key={`${cardCharge.accountId}-${cardCharge.currency}`} className={`rounded-lg border px-4 py-3 transition ${
                             paid ? 'bg-[#F4FAF5] border-[#D4E4D5]' : 'bg-white border-[#D4E4D5]'
                           }`}>
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex items-start gap-3 min-w-0">
                                 <button
-                                  onClick={() => card && togglePaid('card', card.id, name)}
+                                  onClick={() => card && togglePaid('card', card.id, cardCharge.name)}
                                   className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
                                     paid ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white' : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
                                   }`}
@@ -704,12 +676,12 @@ export default function MonthlyCashFlow() {
                                   {paid && <Check size={13} />}
                                 </button>
                                 <div className="min-w-0">
-                                  <p className={`text-sm font-semibold transition truncate ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>{name}</p>
-                                  {dueDate && <p className="text-xs text-[#8BAE90] mt-1">due {formatDueDate(dueDate)}</p>}
+                                  <p className={`text-sm font-semibold transition truncate ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>{cardCharge.name}</p>
+                                  {cardCharge.dueDate && <p className="text-xs text-[#8BAE90] mt-1">due {formatDueDate(cardCharge.dueDate)}</p>}
                                 </div>
                               </div>
                               <span className={`font-bold text-sm transition whitespace-nowrap ${paid ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
-                                - {symbol} {fmt(amount)}
+                                - {symbol} {fmt(cardCharge.amount)}
                               </span>
                             </div>
                           </div>

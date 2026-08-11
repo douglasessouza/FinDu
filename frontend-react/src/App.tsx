@@ -2,7 +2,7 @@ import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle, PiggyBank, ArrowLeftRight } from 'lucide-react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import api, { clearAuthToken, getAuthToken, setAuthToken } from './services/api'
+import api, { clearAuthToken, getAuthToken, getExchangeRates, setAuthToken } from './services/api'
 
 const MonthlyCashFlow = lazy(() => import('./pages/MonthlyCashFlow'))
 const PlannedVsReal = lazy(() => import('./pages/PlannedVsReal'))
@@ -77,9 +77,9 @@ function Sidebar() {
   useEffect(() => {
     async function loadFx() {
       try {
-        const res = await api.get('/exchange-rates', { params: { base: 'CAD' } })
-        const usdRate = Number(res.data.rates.USD)
-        const brlRate = Number(res.data.rates.BRL)
+        const rates = await getExchangeRates('CAD')
+        const usdRate = Number(rates.rates.USD)
+        const brlRate = Number(rates.rates.BRL)
         if (!Number.isFinite(usdRate) || !Number.isFinite(brlRate) || usdRate <= 0 || brlRate <= 0) {
           throw new Error('Missing exchange rates')
         }

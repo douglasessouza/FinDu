@@ -1,10 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Upload, Trash2, Bot, CheckCircle, RefreshCw, Split, Plus, X } from 'lucide-react'
-import api from '../services/api'
-import type { Account, Category } from '../services/api'
+import api, { confirmStatementImport, getAccounts, getCategories, invalidateReferenceData } from '../services/api'
+import type { Account, CurrencyCode } from '../services/api'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function currencySymbol(currency: CurrencyCode): string {
+  if (currency === 'BRL') return 'R$'
+  if (currency === 'USD') return 'US$'
+  if (currency === 'EUR') return '€'
+  return 'CAD$'
 }
 
 interface ImportBatch {
@@ -24,6 +31,9 @@ interface ParsedTransaction {
   category?: string
   is_recurring?: boolean
   recurring_match?: string | null
+  import_fingerprint?: string
+  import_occurrence?: number
+  import_identity_token?: string
 }
 
 interface SplitRow {
@@ -67,6 +77,7 @@ export default function ImportStatement() {
   const [loading, setLoading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [importing, setImporting] = useState(false)
+  const importIdempotencyKeyRef = useRef<string | null>(null)
   const [error, setError] = useState('')
 
   // Balance confirmation
@@ -74,21 +85,22 @@ export default function ImportStatement() {
   const [confirmedBalance, setConfirmedBalance] = useState<number | null>(null)
 
   const selectedAcc = accounts.find(a => a.id === selectedAccId)
+  const selectedSymbol = currencySymbol(selectedAcc?.currency || 'CAD')
   const isCard = selectedAcc?.account_type === 'CREDIT_CARD'
   const debitAccounts = accounts.filter(a => a.account_type !== 'CREDIT_CARD')
   const cardAccounts = accounts.filter(a => a.account_type === 'CREDIT_CARD')
 
   useEffect(() => {
     async function load() {
-      const [accRes, catRes, impRes] = await Promise.all([
-        api.get('/accounts'),
-        api.get('/categories'),
+      const [loadedAccounts, loadedCategories, impRes] = await Promise.all([
+        getAccounts(),
+        getCategories(),
         api.get('/imports'),
       ])
-      setAccounts(accRes.data)
-      setCategories((catRes.data as Category[]).map(c => c.name).sort())
+      setAccounts(loadedAccounts)
+      setCategories(loadedCategories.map(c => c.name).sort())
       setImports(impRes.data)
-      if (accRes.data.length > 0) setSelectedAccId(accRes.data[0].id)
+      if (loadedAccounts.length > 0) setSelectedAccId(loadedAccounts[0].id)
     }
     load()
   }, [])
@@ -112,6 +124,7 @@ export default function ImportStatement() {
       setBank(detectedBank)
       setLastDate(last_date)
       setParsedTxs(transactions)
+      importIdempotencyKeyRef.current = null
       setStep('preview')
     } catch (e: unknown) {
       setError(errorDetail(e, 'Error parsing file.'))
@@ -132,6 +145,7 @@ export default function ImportStatement() {
         headers: { 'Content-Type': 'multipart/form-data' }
       })
       setReviewedTxs(res.data.transactions)
+      importIdempotencyKeyRef.current = null
       setStep('review')
     } catch (e: unknown) {
       setError(errorDetail(e, 'AI analysis failed.'))
@@ -144,38 +158,43 @@ export default function ImportStatement() {
     if (!reviewedTxs.length || !selectedAccId) return
     setImporting(true)
     setError('')
-    const batchId = crypto.randomUUID()
-    for (const t of reviewedTxs) {
-      try {
-        await api.post('/transactions', {
-          account_id: selectedAccId,
+    const idempotencyKey = importIdempotencyKeyRef.current ?? crypto.randomUUID()
+    importIdempotencyKeyRef.current = idempotencyKey
+
+    try {
+      const result = await confirmStatementImport({
+        account_id: selectedAccId,
+        idempotency_key: idempotencyKey,
+        transactions: reviewedTxs.map(t => ({
           description: t.description,
           amount: t.amount,
           currency: selectedAcc?.currency || 'CAD',
-          date: `${t.date}T12:00:00`,
+          date: t.date.includes('T') ? t.date : `${t.date}T12:00:00`,
           category: t.category || 'Other',
-          import_batch_id: batchId,
-        })
-      } catch (e) {
-        console.error('Failed to import transaction', e)
+          import_fingerprint: t.import_fingerprint,
+          import_occurrence: t.import_occurrence,
+          import_identity_token: t.import_identity_token,
+        })),
+      })
+
+      const impRes = await api.get('/imports')
+      setImports(impRes.data)
+
+      if (!isCard && selectedAcc) {
+        const net = result.transactions.reduce((sum, transaction) => sum + transaction.amount, 0)
+        const newBalance = Math.round((selectedAcc.balance + net) * 100) / 100
+        setCalculatedBalance(newBalance)
+        setConfirmedBalance(newBalance)
+        setStep('balance')
+      } else {
+        setStep('done')
       }
-    }
 
-    // For debit accounts: calculate new balance
-    if (!isCard && selectedAcc) {
-      const net = reviewedTxs.reduce((s, t) => s + t.amount, 0)
-      const newBal = Math.round((selectedAcc.balance + net) * 100) / 100
-      setCalculatedBalance(newBal)
-      setConfirmedBalance(newBal)
-      setStep('balance')
-    } else {
-      setStep('done')
+    } catch (e: unknown) {
+      setError(errorDetail(e, 'Import failed. Review your transactions and retry.'))
+    } finally {
+      setImporting(false)
     }
-
-    // Refresh imports list
-    const impRes = await api.get('/imports')
-    setImports(impRes.data)
-    setImporting(false)
   }
 
   function startSplit(index: number) {
@@ -243,30 +262,40 @@ export default function ImportStatement() {
 
     const splitCents = rows.reduce((sum, row) => sum + row.amountCents, 0)
     if (splitCents !== originalCents) {
-      setSplitError(`Split total must equal $ ${fmt(Math.abs(original.amount))}. Remaining: $ ${fmt(Math.abs(originalCents - splitCents) / 100)}.`)
+      setSplitError(`Split total must equal ${selectedSymbol} ${fmt(Math.abs(original.amount))}. Remaining: ${selectedSymbol} ${fmt(Math.abs(originalCents - splitCents) / 100)}.`)
       return
     }
 
-    const splitTransactions: ParsedTransaction[] = rows.map(row => ({
-      ...original,
-      description: row.description,
-      category: row.category,
-      amount: sign * (row.amountCents / 100),
-      is_recurring: false,
-      recurring_match: null,
-    }))
+    const splitTransactions: ParsedTransaction[] = rows.map((row, index) => {
+      const transaction = {
+        ...original,
+        description: row.description,
+        category: row.category,
+        amount: sign * (row.amountCents / 100),
+        is_recurring: false,
+        recurring_match: null,
+      }
+      if (index > 0) {
+        delete transaction.import_fingerprint
+        delete transaction.import_occurrence
+        delete transaction.import_identity_token
+      }
+      return transaction
+    })
 
     setReviewedTxs(prev => [
       ...prev.slice(0, splitIndex),
       ...splitTransactions,
       ...prev.slice(splitIndex + 1),
     ])
+    importIdempotencyKeyRef.current = null
     cancelSplit()
   }
 
   async function handleConfirmBalance() {
     if (confirmedBalance === null || !selectedAccId) return
     await api.patch(`/accounts/${selectedAccId}`, { balance: confirmedBalance })
+    invalidateReferenceData('accounts')
     setStep('done')
   }
 
@@ -280,6 +309,7 @@ export default function ImportStatement() {
     setError('')
     setCalculatedBalance(null)
     setConfirmedBalance(null)
+    importIdempotencyKeyRef.current = null
   }
 
   async function deleteImport(batchId: string) {
@@ -413,7 +443,7 @@ export default function ImportStatement() {
             <div>
               <p className="text-sm font-bold text-[#1B4D3E]">✅ {bank} — {parsedTxs.length} new transactions found</p>
               {lastDate && (
-                <p className="text-xs text-[#8BAE90] mt-0.5">Last imported: {lastDate} (older transactions filtered out)</p>
+                <p className="text-xs text-[#8BAE90] mt-0.5">Last stored transaction: {lastDate} (previously imported occurrences filtered out)</p>
               )}
             </div>
             <button onClick={reset} className="text-xs text-[#8BAE90] hover:text-[#B85050]">Start over</button>
@@ -435,7 +465,7 @@ export default function ImportStatement() {
                   <span className="text-[#8BAE90] text-xs">{t.date}</span>
                   <span className="text-[#2C3E2D] truncate pr-2">{t.description}</span>
                   <span className={`text-right font-semibold tabular-nums ${t.amount < 0 ? 'text-[#B85050]' : 'text-[#1B6B3A]'}`}>
-                    {t.amount < 0 ? '-' : '+'}$ {fmt(Math.abs(t.amount))}
+                    {t.amount < 0 ? '-' : '+'}{selectedSymbol} {fmt(Math.abs(t.amount))}
                   </span>
                 </div>
               ))}
@@ -465,11 +495,11 @@ export default function ImportStatement() {
             </div>
             <div className="flex gap-4">
               {isCard ? (
-                <span className="text-sm font-semibold text-[#B85050]">Total charges: CAD$ {fmt(totalExpenses)}</span>
+                <span className="text-sm font-semibold text-[#B85050]">Total charges: {selectedSymbol} {fmt(totalExpenses)}</span>
               ) : (
                 <>
-                  <span className="text-sm font-semibold text-[#B85050]">Spent: CAD$ {fmt(totalExpenses)}</span>
-                  {totalIncome > 0 && <span className="text-sm font-semibold text-[#1B6B3A]">Received: CAD$ {fmt(totalIncome)}</span>}
+                  <span className="text-sm font-semibold text-[#B85050]">Spent: {selectedSymbol} {fmt(totalExpenses)}</span>
+                  {totalIncome > 0 && <span className="text-sm font-semibold text-[#1B6B3A]">Received: {selectedSymbol} {fmt(totalIncome)}</span>}
                 </>
               )}
             </div>
@@ -504,18 +534,24 @@ export default function ImportStatement() {
                     name={`transaction-description-${i}`}
                     autoComplete="off"
                     value={t.description}
-                    onChange={e => setReviewedTxs(prev => prev.map((tx, j) => j === i ? { ...tx, description: e.target.value } : tx))}
+                    onChange={e => {
+                      setReviewedTxs(prev => prev.map((tx, j) => j === i ? { ...tx, description: e.target.value } : tx))
+                      importIdempotencyKeyRef.current = null
+                    }}
                     className="text-sm text-[#2C3E2D] bg-transparent border-0 focus:outline-none pr-2 truncate"
                   />
                   <span className={`text-right text-sm font-semibold tabular-nums ${t.amount < 0 ? 'text-[#B85050]' : 'text-[#1B6B3A]'}`}>
-                    {t.amount < 0 ? '-' : '+'}$ {fmt(Math.abs(t.amount))}
+                    {t.amount < 0 ? '-' : '+'}{selectedSymbol} {fmt(Math.abs(t.amount))}
                   </span>
                   <div className="pl-2">
                     <select
                       aria-label={`Category for ${t.description}`}
                       name={`transaction-category-${i}`}
                       value={t.category || 'Other'}
-                      onChange={e => setReviewedTxs(prev => prev.map((tx, j) => j === i ? { ...tx, category: e.target.value } : tx))}
+                      onChange={e => {
+                        setReviewedTxs(prev => prev.map((tx, j) => j === i ? { ...tx, category: e.target.value } : tx))
+                        importIdempotencyKeyRef.current = null
+                      }}
                       className="text-xs px-2 py-1 border border-[#D4E4D5] rounded-lg focus:outline-none w-full bg-white"
                     >
                       {categories.map(c => <option key={c} value={c}>{c}</option>)}
@@ -570,7 +606,7 @@ export default function ImportStatement() {
           <p className="text-sm text-[#2C3E2D] mb-4">Account: <strong>{selectedAcc?.name}</strong></p>
           <div className="bg-[#EDF4EE] rounded-lg px-4 py-3 mb-4">
             <p className="text-xs text-[#8BAE90] mb-1">Calculated new balance</p>
-            <p className="text-2xl font-bold text-[#1B4D3E]">CAD$ {fmt(calculatedBalance ?? 0)}</p>
+            <p className="text-2xl font-bold text-[#1B4D3E]">{selectedSymbol} {fmt(calculatedBalance ?? 0)}</p>
           </div>
           <div className="mb-4">
             <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Confirm or correct balance</label>
@@ -620,7 +656,7 @@ export default function ImportStatement() {
                   {splitSource.amount > 0 ? 'Split Income' : 'Split Transaction'}
                 </h2>
                 <p className="mt-1 text-sm text-[#7BAE8A]">
-                  {splitSource.description} · $ {fmt(Math.abs(splitSource.amount))}
+                  {splitSource.description} · {selectedSymbol} {fmt(Math.abs(splitSource.amount))}
                 </p>
                 {splitSource.amount > 0 && (
                   <p className="mt-1 text-xs font-semibold text-[#3F6EA8]">
@@ -705,12 +741,12 @@ export default function ImportStatement() {
               <div className="mt-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] px-4 py-3">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-semibold text-[#7BAE8A]">Split total</span>
-                  <span className="font-bold tabular-nums text-[#1B4D3E]">$ {fmt(splitTotal)}</span>
+                  <span className="font-bold tabular-nums text-[#1B4D3E]">{selectedSymbol} {fmt(splitTotal)}</span>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-sm">
                   <span className="font-semibold text-[#7BAE8A]">Remaining</span>
                   <span className={`font-bold tabular-nums ${Math.round(splitRemaining * 100) === 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
-                    $ {fmt(Math.abs(splitRemaining))}
+                    {selectedSymbol} {fmt(Math.abs(splitRemaining))}
                   </span>
                 </div>
               </div>
