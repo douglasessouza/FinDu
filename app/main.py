@@ -26,6 +26,7 @@ from app.reporting import (
     spending_summary,
     transaction_page,
 )
+from app.exchange_rates import ExchangeRateCache
 from datetime import date, datetime
 from datetime import timedelta
 from collections import Counter
@@ -39,6 +40,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 APP_PASSWORD = os.getenv("FINDU_APP_PASSWORD")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 EXCHANGE_RATE_API_KEY = os.getenv("EXCHANGE_RATE_API_KEY")
+try:
+    EXCHANGE_RATE_CACHE_TTL_SECONDS = float(
+        os.getenv("EXCHANGE_RATE_CACHE_TTL_SECONDS", "300")
+    )
+except ValueError:
+    EXCHANGE_RATE_CACHE_TTL_SECONDS = 300.0
 ALLOWED_GOOGLE_EMAILS = {
     email.strip().lower()
     for email in os.getenv("ALLOWED_GOOGLE_EMAILS", "").split(",")
@@ -58,6 +65,7 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+exchange_rate_cache = ExchangeRateCache()
 
 app = FastAPI(
     title="FinDu API",
@@ -187,6 +195,14 @@ def exchange_rates(base: str = "CAD"):
     if base_currency not in supported:
         raise HTTPException(status_code=400, detail="Unsupported currency")
 
+    return exchange_rate_cache.get_or_fetch(
+        base_currency,
+        lambda: load_exchange_rates(base_currency, supported),
+        EXCHANGE_RATE_CACHE_TTL_SECONDS,
+    )
+
+
+def load_exchange_rates(base_currency: str, supported: set[str]) -> dict:
     fetched_at = datetime.utcnow().isoformat() + "Z"
 
     if EXCHANGE_RATE_API_KEY:
@@ -833,6 +849,44 @@ def get_statement_summary(account_id: int, db: Session = Depends(get_db)):
     for item in summary.values():
         item["amount_due"] = max(0, item["charges"] - item["credits"])
     return dict(sorted(summary.items()))
+
+class TransactionCategoryUpdate(BaseModel):
+    id: int
+    category: str
+
+
+class TransactionCategoryBatchUpdate(BaseModel):
+    updates: list[TransactionCategoryUpdate] = Field(min_length=1)
+
+
+@app.patch("/transactions/categories")
+def update_transaction_categories(
+    request: TransactionCategoryBatchUpdate,
+    db: Session = Depends(get_db),
+):
+    transaction_ids = [update.id for update in request.updates]
+    transactions = db.query(Transaction).filter(Transaction.id.in_(transaction_ids)).all()
+    transactions_by_id = {transaction.id: transaction for transaction in transactions}
+    missing_ids = [transaction_id for transaction_id in transaction_ids if transaction_id not in transactions_by_id]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Transaction {missing_ids[0]} not found")
+
+    try:
+        for update in request.updates:
+            transactions_by_id[update.id].category = update.category
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    return {
+        "updated_count": len(request.updates),
+        "transactions": [
+            {"id": update.id, "category": update.category}
+            for update in request.updates
+        ],
+    }
+
 
 @app.patch("/transactions/{transaction_id}")
 def update_transaction(transaction_id: int, updates: dict, db: Session = Depends(get_db)):
