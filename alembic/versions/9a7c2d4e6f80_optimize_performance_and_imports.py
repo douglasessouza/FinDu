@@ -111,10 +111,9 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
         sa.column("import_idempotency_key", sa.String),
     )
     reserved_occurrences: dict[tuple[int, str], set[int]] = defaultdict(set)
-    stored_identities = connection.execution_options(
-        stream_results=True,
-        max_row_buffer=BACKFILL_BATCH_SIZE,
-    ).execute(
+    # Keep this connection on a regular cursor: the backfill also performs
+    # executemany UPDATEs, which psycopg2 forbids on named/server cursors.
+    stored_identities = connection.execute(
         sa.select(
             transactions.c.account_id,
             transactions.c.import_fingerprint,
@@ -129,10 +128,7 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
                 (row["account_id"], row["import_fingerprint"])
             ].add(row["import_occurrence"])
 
-    imported_rows = connection.execution_options(
-        stream_results=True,
-        max_row_buffer=BACKFILL_BATCH_SIZE,
-    ).execute(
+    imported_rows = connection.execute(
         sa.select(
             transactions.c.id,
             transactions.c.account_id,
