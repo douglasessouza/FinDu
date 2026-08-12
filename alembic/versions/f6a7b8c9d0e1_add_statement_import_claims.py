@@ -125,10 +125,9 @@ def _backfill_claims(connection: sa.Connection) -> None:
             connection.execute(claims.insert(), pending)
             pending.clear()
 
-    batch_rows = connection.execution_options(
-        stream_results=True,
-        max_row_buffer=BACKFILL_BATCH_SIZE,
-    ).execute(
+    # Keep this cursor client-side: PostgreSQL named/server-side cursors cannot
+    # execute the batched INSERTs performed by collect() on this connection.
+    batch_rows = connection.execute(
         sa.select(
             batches.c.import_batch_id,
             batches.c.account_id,
@@ -147,10 +146,7 @@ def _backfill_claims(connection: sa.Connection) -> None:
                     occurrence,
                 )
 
-    transaction_rows = connection.execution_options(
-        stream_results=True,
-        max_row_buffer=BACKFILL_BATCH_SIZE,
-    ).execute(
+    transaction_rows = connection.execute(
         sa.select(
             transactions.c.account_id,
             transactions.c.import_batch_id,
