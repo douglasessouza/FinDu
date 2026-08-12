@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Check, ChevronLeft, ChevronRight, CircleHelp, Pencil, RotateCcw, Save, Sparkles, X } from 'lucide-react'
 import api, { getMonthlyDashboard } from '../services/api'
+import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/reportingData'
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
 import type {
@@ -190,9 +191,15 @@ export default function MonthlyCashFlow() {
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
   const [savedMatches, setSavedMatches] = useState<SavedRecurringMatch[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadedMonth, setLoadedMonth] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<{ month: string, message: string } | null>(null)
+  const monthlyRequestRef = useRef(createLatestRequestRunner())
 
   const monthStr = `${year}-${String(month).padStart(2, '0')}`
   const monthLabel = new Date(year, month - 1, 1).toLocaleString('en', { month: 'long', year: 'numeric' })
+  const currentLoadError = loadError?.month === monthStr ? loadError.message : null
+  const currentMonthData = hasCurrentMonthlyData(monthStr, loadedMonth, loading)
+  const monthIsPending = !currentMonthData && !currentLoadError
   const visibleCurrencies = useMemo(() => {
     const available = new Set<CurrencyCode>()
     accounts.forEach(account => available.add(account.currency))
@@ -213,47 +220,58 @@ export default function MonthlyCashFlow() {
     else setMonth(m => m + 1)
   }
 
-  async function load() {
-    setLoading(true)
-    try {
-      const dashboard = await getMonthlyDashboard(monthStr)
-      const loadedAccounts = dashboard.accounts
-      setAccounts(loadedAccounts)
-      setRecurring(dashboard.recurring)
-      setPayments(dashboard.payments)
-      setSavedMatches(dashboard.matches)
-      setMonthlyOverrides(
-        dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
-          (result, override) => ({ ...result, [override.recurring_id]: override }),
-          {},
-        ),
-      )
-      setEditingRecurringId(null)
-      setOverrideError('')
-
-      setStatementTransactions(dashboard.checking_transactions)
-      setCardCharges(
-        dashboard.card_summaries_due.cards
-          .filter(card => card.amount_due > 0)
-          .map(card => ({
-            accountId: card.account_id,
-            name: card.account_name,
-            currency: card.currency,
-            amount: card.amount_due,
-            dueDate: card.payment_due_date?.slice(0, 10),
-          })),
-      )
-    } finally {
-      setLoading(false)
-    }
+  async function load(requestedMonth: string) {
+    await monthlyRequestRef.current.run(
+      () => getMonthlyDashboard(requestedMonth),
+      {
+        onStart: () => {
+          setLoading(true)
+          setLoadedMonth(null)
+          setLoadError(null)
+        },
+        onSuccess: dashboard => {
+          setAccounts(dashboard.accounts)
+          setRecurring(dashboard.recurring)
+          setPayments(dashboard.payments)
+          setSavedMatches(dashboard.matches)
+          setMonthlyOverrides(
+            dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
+              (result, override) => ({ ...result, [override.recurring_id]: override }),
+              {},
+            ),
+          )
+          setEditingRecurringId(null)
+          setOverrideError('')
+          setStatementTransactions(dashboard.checking_transactions)
+          setCardCharges(
+            dashboard.card_summaries_due.cards
+              .filter(card => card.amount_due > 0)
+              .map(card => ({
+                accountId: card.account_id,
+                name: card.account_name,
+                currency: card.currency,
+                amount: card.amount_due,
+                dueDate: card.payment_due_date?.slice(0, 10),
+              })),
+          )
+          setLoadedMonth(requestedMonth)
+        },
+        onError: () => {
+          setLoadError({
+            month: requestedMonth,
+            message: 'Could not load this month. Please try again.',
+          })
+        },
+        onFinish: () => { setLoading(false) },
+      },
+    )
   }
 
-  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
-    load()
-  }, [monthStr, month, year])
-
-  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+    const requestRunner = monthlyRequestRef.current
+    void load(monthStr)
+    return () => { requestRunner.invalidate() }
+  }, [monthStr])
 
   const effectiveRecurring = useMemo(
     () => recurring.map(item => ({
@@ -264,12 +282,14 @@ export default function MonthlyCashFlow() {
   )
 
   const autoRecurringMatches = useMemo(
-    () => findRecurringMatches(
-      effectiveRecurring.filter(item => isValidThisMonth(item, year, month)),
-      statementTransactions,
-      monthStr,
-    ),
-    [effectiveRecurring, month, statementTransactions, monthStr, year],
+    () => loadedMonth === monthStr
+      ? findRecurringMatches(
+          effectiveRecurring.filter(item => isValidThisMonth(item, year, month)),
+          statementTransactions,
+          monthStr,
+        )
+      : {},
+    [effectiveRecurring, loadedMonth, month, statementTransactions, monthStr, year],
   )
 
   const recurringMatches = useMemo(() => {
@@ -299,7 +319,7 @@ export default function MonthlyCashFlow() {
   }, [autoRecurringMatches, effectiveRecurring, monthStr, savedMatches])
 
   useEffect(() => {
-    if (loading) return
+    if (!currentMonthData) return
 
     const savedRecurringIds = new Set(savedMatches.map(match => match.recurring_id))
     const matchesToSave = Object.entries(autoRecurringMatches)
@@ -342,7 +362,7 @@ export default function MonthlyCashFlow() {
 
     saveMatches()
     return () => { cancelled = true }
-  }, [autoRecurringMatches, effectiveRecurring, loading, monthStr, savedMatches])
+  }, [autoRecurringMatches, currentMonthData, effectiveRecurring, monthStr, savedMatches])
 
   function startEditingRecurring(item: RecurringExpense) {
     setEditingRecurringId(item.id)
@@ -446,9 +466,13 @@ export default function MonthlyCashFlow() {
         </button>
       </div>
 
-      {loading && <div className="text-center text-[#8BAE90] py-20">Loading...</div>}
+      {(loading || monthIsPending) && <div className="text-center text-[#8BAE90] py-20">Loading...</div>}
 
-      {!loading && (
+      {!loading && currentLoadError && (
+        <div className="text-center text-red-600 py-20">{currentLoadError}</div>
+      )}
+
+      {currentMonthData && (
         <div>
           <div className="mb-6">
             <CardCycleSummary accounts={accounts} month={monthStr} />

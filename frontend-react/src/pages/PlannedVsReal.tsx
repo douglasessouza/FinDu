@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ChevronLeft, ChevronRight, Plus, Save, Split, Target, Trash2, Wand2, X } from 'lucide-react'
 import api, {
   getAccounts,
@@ -9,7 +9,7 @@ import api, {
   updateTransactionCategories,
 } from '../services/api'
 import type { Account, CategoryBudget, RecurringExpense, SpendingAnalysisResponse, Transaction } from '../services/api'
-import { loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
+import { createLatestRequestRunner, hasCurrentMonthlyData, loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
 
 interface Row {
@@ -203,6 +203,8 @@ export default function PlannedVsReal() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(true)
+  const [loadedMonth, setLoadedMonth] = useState<string | null>(null)
+  const [monthLoadError, setMonthLoadError] = useState<{ month: string, message: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveMsg, setSaveMsg] = useState('')
   const [methodState, setMethodState] = useState<BudgetMethodState>(() => loadMethodState())
@@ -212,6 +214,10 @@ export default function PlannedVsReal() {
   const [splitRows, setSplitRows] = useState<SplitRow[]>([])
   const [splitError, setSplitError] = useState('')
   const [splitting, setSplitting] = useState(false)
+  const monthlyRequestRef = useRef(createLatestRequestRunner())
+  const currentMonthLoadError = monthLoadError?.month === selectedMonth ? monthLoadError.message : null
+  const currentMonthData = hasCurrentMonthlyData(selectedMonth, loadedMonth, loading)
+  const monthIsPending = Boolean(selectedMonth) && !currentMonthData && !currentMonthLoadError
 
   useEffect(() => {
     async function load() {
@@ -242,21 +248,41 @@ export default function PlannedVsReal() {
   useEffect(() => {
     if (!selectedMonth) return
 
-    async function loadMonthContext() {
-      setLoading(true)
-      try {
+    const requestedMonth = selectedMonth
+    const requestRunner = monthlyRequestRef.current
+    void requestRunner.run(
+      async () => {
         const [budgetRes, monthlyTransactions] = await Promise.all([
-          api.get('/category-budgets', { params: { month: selectedMonth } }),
-          getTransactions({ month: selectedMonth }),
+          api.get('/category-budgets', { params: { month: requestedMonth } }),
+          getTransactions({ month: requestedMonth }),
         ])
-        setBudgets(budgetRes.data as CategoryBudget[])
-        setTransactions(monthlyTransactions)
-      } finally {
-        setLoading(false)
-      }
-    }
+        return {
+          budgets: budgetRes.data as CategoryBudget[],
+          transactions: monthlyTransactions,
+        }
+      },
+      {
+        onStart: () => {
+          setLoading(true)
+          setLoadedMonth(null)
+          setMonthLoadError(null)
+        },
+        onSuccess: result => {
+          setBudgets(result.budgets)
+          setTransactions(result.transactions)
+          setLoadedMonth(requestedMonth)
+        },
+        onError: () => {
+          setMonthLoadError({
+            month: requestedMonth,
+            message: 'Could not load this month. Please try again.',
+          })
+        },
+        onFinish: () => { setLoading(false) },
+      },
+    )
 
-    loadMonthContext()
+    return () => { requestRunner.invalidate() }
   }, [selectedMonth])
 
   const accountById = useMemo(() => {
@@ -665,8 +691,10 @@ export default function PlannedVsReal() {
         </div>
       </div>
 
-      {loading ? (
+      {(loading || monthIsPending) ? (
         <div className="text-center text-[#8BAE90] py-20">Loading planned vs real...</div>
+      ) : currentMonthLoadError ? (
+        <div className="text-center text-red-600 py-20">{currentMonthLoadError}</div>
       ) : (
         <>
           <section className="bg-white border border-[#D4E4D5] rounded-xl p-5 mb-6">

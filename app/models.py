@@ -112,6 +112,29 @@ class StatementImportBatch(Base):
     result_json = Column(Text, nullable=False, default="{}")
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class StatementImportClaim(Base):
+    __tablename__ = "statement_import_claims"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "fingerprint",
+            "occurrence",
+            name="uq_statement_import_claim_identity",
+        ),
+        Index("ix_statement_import_claims_import_batch_id", "import_batch_id"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    account_id = Column(
+        Integer, ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False
+    )
+    fingerprint = Column(String(64), nullable=False)
+    occurrence = Column(Integer, nullable=False)
+    import_batch_id = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class RecurringExpense(Base):
     __tablename__ = "recurring_expenses"
 

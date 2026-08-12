@@ -5,7 +5,7 @@ from decimal import Decimal
 import hashlib
 import hmac
 import json
-from typing import Mapping
+from typing import Collection, Mapping
 import unicodedata
 
 
@@ -72,12 +72,12 @@ def verified_identity_from_token(
 
 def filter_unseen_occurrences(
     parsed: list[dict],
-    existing_counts: Mapping[str, int],
+    existing_identity: Mapping[str, int | Collection[int]],
     account_id: int,
     *,
     include_identity: bool = False,
 ) -> list[dict]:
-    """Keep source-order occurrences exceeding the existing count per fingerprint."""
+    """Keep source-order occurrences not represented by existing import identity."""
     statement_counts: dict[str, int] = {}
     unseen: list[dict] = []
 
@@ -87,7 +87,13 @@ def filter_unseen_occurrences(
         )
         occurrence = statement_counts.get(fingerprint, 0) + 1
         statement_counts[fingerprint] = occurrence
-        if occurrence <= existing_counts.get(fingerprint, 0):
+        existing = existing_identity.get(fingerprint, 0)
+        already_seen = (
+            occurrence <= existing
+            if isinstance(existing, int)
+            else occurrence in existing
+        )
+        if already_seen:
             continue
 
         if include_identity:

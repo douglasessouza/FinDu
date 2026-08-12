@@ -46,6 +46,7 @@ DEFAULT_CATEGORY_NAMES = {
 }
 
 IMPORT_BATCH_REVISION = "d4e5f6a7b8c9"
+IMPORT_CLAIM_REVISION = "f6a7b8c9d0e1"
 
 
 def _load_migration_module():
@@ -64,6 +65,17 @@ def _load_import_batch_migration_module():
     matches = list(versions.glob("*_add_statement_import_batches.py"))
     assert len(matches) == 1
     spec = spec_from_file_location("statement_import_batch_migration", matches[0])
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_import_claim_migration_module():
+    versions = Path("alembic/versions")
+    matches = list(versions.glob("*_add_statement_import_claims.py"))
+    assert len(matches) == 1
+    spec = spec_from_file_location("statement_import_claim_migration", matches[0])
     assert spec and spec.loader
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -176,6 +188,30 @@ def test_statement_import_batch_model_persists_idempotency_result():
     assert ("account_id", "idempotency_key") in unique_columns
 
 
+def test_statement_import_claim_model_persists_source_lineage():
+    table = Base.metadata.tables["statement_import_claims"]
+    columns = table.columns
+
+    assert columns["id"].primary_key is True
+    assert columns["account_id"].nullable is False
+    assert columns["fingerprint"].nullable is False
+    assert columns["occurrence"].nullable is False
+    assert columns["import_batch_id"].nullable is False
+    assert not columns["import_batch_id"].foreign_keys
+    unique_columns = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in table.constraints
+        if isinstance(constraint, sa.UniqueConstraint)
+    }
+    assert ("account_id", "fingerprint", "occurrence") in unique_columns
+    batch_index = next(
+        index
+        for index in table.indexes
+        if index.name == "ix_statement_import_claims_import_batch_id"
+    )
+    assert tuple(column.name for column in batch_index.columns) == ("import_batch_id",)
+
+
 def test_statement_import_batch_migration_runs_on_sqlite_and_downgrades():
     migration = _load_import_batch_migration_module()
     engine = sa.create_engine("sqlite://")
@@ -213,11 +249,165 @@ def test_statement_import_batch_postgresql_ddl_has_unique_claim_constraint():
 
     sql = output.getvalue()
     script = ScriptDirectory.from_config(Config("alembic.ini"))
-    head = script.get_revision(script.get_current_head())
-    assert head.revision == IMPORT_BATCH_REVISION
-    assert head.down_revision == "9a7c2d4e6f80"
+    revision = script.get_revision(IMPORT_BATCH_REVISION)
+    assert revision.revision == IMPORT_BATCH_REVISION
+    assert revision.down_revision == "9a7c2d4e6f80"
     assert "CREATE TABLE statement_import_batches" in sql
     assert "UNIQUE (account_id, idempotency_key)" in sql
+
+
+def test_statement_import_claim_migration_recovers_split_lineage_and_downgrades():
+    migration = _load_import_claim_migration_module()
+    engine = sa.create_engine("sqlite://")
+    metadata = sa.MetaData()
+    accounts = sa.Table(
+        "accounts", metadata, sa.Column("id", sa.Integer, primary_key=True)
+    )
+    transactions = sa.Table(
+        "transactions",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("account_id", sa.Integer, nullable=False),
+        sa.Column("description", sa.String, nullable=False),
+        sa.Column("amount", sa.Float, nullable=False),
+        sa.Column("date", sa.DateTime, nullable=False),
+        sa.Column("import_batch_id", sa.String),
+        sa.Column("import_fingerprint", sa.String),
+        sa.Column("import_occurrence", sa.Integer),
+    )
+    batches = sa.Table(
+        "statement_import_batches",
+        metadata,
+        sa.Column("import_batch_id", sa.String, primary_key=True),
+        sa.Column("account_id", sa.Integer, nullable=False),
+        sa.Column("idempotency_key", sa.String, nullable=False),
+        sa.Column("payload_hash", sa.String(64), nullable=False),
+        sa.Column("inserted_count", sa.Integer, nullable=False),
+        sa.Column("skipped_count", sa.Integer, nullable=False),
+        sa.Column("result_json", sa.Text, nullable=False),
+        sa.Column("created_at", sa.DateTime),
+    )
+    metadata.create_all(engine)
+    grocery_fingerprint = transaction_fingerprint(
+        1, "2026-08-10", "Grocery", -100
+    )
+    legacy_fingerprint = transaction_fingerprint(
+        1, "2026-08-11", "Coffee Shop", -4.5
+    )
+
+    with engine.begin() as connection:
+        connection.execute(accounts.insert(), {"id": 1})
+        connection.execute(
+            batches.insert(),
+            {
+                "import_batch_id": "split-batch",
+                "account_id": 1,
+                "idempotency_key": "split-key",
+                "payload_hash": "a" * 64,
+                "inserted_count": 1,
+                "skipped_count": 0,
+                "result_json": (
+                    '{"transactions":[{"import_fingerprint":"'
+                    + grocery_fingerprint
+                    + '","import_occurrence":1}]}'
+                ),
+                "created_at": datetime(2026, 8, 10, 12),
+            },
+        )
+        connection.execute(
+            transactions.insert(),
+            [
+                {
+                    "id": 1,
+                    "account_id": 1,
+                    "description": "Food",
+                    "amount": -60,
+                    "date": datetime(2026, 8, 10, 12),
+                    "import_batch_id": "split-batch",
+                    "import_fingerprint": None,
+                    "import_occurrence": None,
+                },
+                {
+                    "id": 2,
+                    "account_id": 1,
+                    "description": "House",
+                    "amount": -40,
+                    "date": datetime(2026, 8, 10, 12),
+                    "import_batch_id": "split-batch",
+                    "import_fingerprint": None,
+                    "import_occurrence": None,
+                },
+                {
+                    "id": 3,
+                    "account_id": 1,
+                    "description": "Coffee Shop",
+                    "amount": -4.5,
+                    "date": datetime(2026, 8, 11, 12),
+                    "import_batch_id": "legacy-batch",
+                    "import_fingerprint": legacy_fingerprint,
+                    "import_occurrence": 1,
+                },
+                {
+                    "id": 4,
+                    "account_id": 1,
+                    "description": "Manual transaction",
+                    "amount": -20,
+                    "date": datetime(2026, 8, 12, 12),
+                    "import_batch_id": None,
+                    "import_fingerprint": None,
+                    "import_occurrence": None,
+                },
+            ],
+        )
+
+        migration.op = Operations(MigrationContext.configure(connection))
+        migration.upgrade()
+        claims = connection.execute(
+            sa.text(
+                "SELECT account_id, fingerprint, occurrence, import_batch_id "
+                "FROM statement_import_claims ORDER BY import_batch_id"
+            )
+        ).mappings().all()
+
+        assert claims == [
+            {
+                "account_id": 1,
+                "fingerprint": legacy_fingerprint,
+                "occurrence": 1,
+                "import_batch_id": "legacy-batch",
+            },
+            {
+                "account_id": 1,
+                "fingerprint": grocery_fingerprint,
+                "occurrence": 1,
+                "import_batch_id": "split-batch",
+            },
+        ]
+
+        migration.downgrade()
+        assert "statement_import_claims" not in sa.inspect(connection).get_table_names()
+
+
+def test_statement_import_claim_postgresql_ddl_is_the_alembic_head(monkeypatch):
+    migration = _load_import_claim_migration_module()
+    output = StringIO()
+    migration_context = MigrationContext.configure(
+        dialect_name="postgresql",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    migration.op = Operations(migration_context)
+    monkeypatch.setattr(migration, "_backfill_claims", lambda connection: None)
+
+    migration.upgrade()
+
+    sql = output.getvalue()
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    head = script.get_revision(script.get_current_head())
+    assert head.revision == IMPORT_CLAIM_REVISION
+    assert head.down_revision == IMPORT_BATCH_REVISION
+    assert "CREATE TABLE statement_import_claims" in sql
+    assert "UNIQUE (account_id, fingerprint, occurrence)" in sql
+    assert "CREATE INDEX ix_statement_import_claims_import_batch_id" in sql
 
 
 def test_model_indexes_match_query_patterns():
@@ -575,6 +765,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
         "accounts",
         "transactions",
         "statement_import_batches",
+        "statement_import_claims",
         "categories",
         "category_budget_items",
         "alembic_version",
@@ -584,7 +775,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
     } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            IMPORT_BATCH_REVISION
+            IMPORT_CLAIM_REVISION
         )
         assert connection.scalar(sa.text("SELECT COUNT(*) FROM categories")) == len(
             DEFAULT_CATEGORY_NAMES

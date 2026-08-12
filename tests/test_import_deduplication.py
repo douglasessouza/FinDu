@@ -54,3 +54,10 @@ def test_multiset_deduplication_preserves_surplus_occurrence():
     fingerprint = transaction_fingerprint(7, ROW["date"], ROW["description"], ROW["amount"])
 
     assert filter_unseen_occurrences(rows, {fingerprint: 1}, 7) == [ROW]
+
+
+def test_occurrence_sets_preserve_an_unclaimed_earlier_slot():
+    rows = [ROW.copy(), ROW.copy()]
+    fingerprint = transaction_fingerprint(7, ROW["date"], ROW["description"], ROW["amount"])
+
+    assert filter_unseen_occurrences(rows, {fingerprint: {2}}, 7) == [ROW]

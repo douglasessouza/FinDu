@@ -13,7 +13,7 @@ import json as auth_json
 import time
 import requests as http_requests
 from dotenv import load_dotenv
-from app.models import Account, Transaction, StatementImportBatch, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
+from app.models import Account, Transaction, StatementImportBatch, StatementImportClaim, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
 from app.imports import (
     create_occurrence_token,
     filter_unseen_occurrences,
@@ -952,30 +952,84 @@ def split_transaction(transaction_id: int, split: TransactionSplitRequest, db: S
 
 # --- Import batch endpoints ---
 
-def statement_fingerprint_counts(db: Session, account_id: int) -> Counter:
-    """Count imported identities, deriving identities for legacy untagged rows."""
-    counts = Counter(
-        dict(
-            db.query(Transaction.import_fingerprint, func.count(Transaction.id))
-            .filter(Transaction.account_id == account_id)
-            .filter(Transaction.import_fingerprint != None)
-            .group_by(Transaction.import_fingerprint)
-            .all()
+def statement_fingerprint_occurrences(
+    db: Session, account_id: int
+) -> dict[str, set[int]]:
+    """Return claimed source occurrences plus deterministic legacy fallbacks."""
+    claim_rows = (
+        db.query(
+            StatementImportClaim.fingerprint,
+            StatementImportClaim.occurrence,
+            StatementImportClaim.import_batch_id,
         )
-    )
-    legacy_rows = (
-        db.query(Transaction.date, Transaction.description, Transaction.amount)
-        .filter(Transaction.account_id == account_id)
-        .filter(Transaction.import_fingerprint == None)
+        .filter(StatementImportClaim.account_id == account_id)
         .all()
     )
-    for row in legacy_rows:
-        counts[
-            transaction_fingerprint(
-                account_id, row.date, row.description, row.amount
+    occurrences: dict[str, set[int]] = {}
+    for row in claim_rows:
+        occurrences.setdefault(row.fingerprint, set()).add(row.occurrence)
+    claimed_identities = {
+        (row.fingerprint, row.occurrence) for row in claim_rows
+    }
+    claimed_batch_ids = {row.import_batch_id for row in claim_rows}
+
+    explicit_rows = (
+        db.query(Transaction.import_fingerprint, Transaction.import_occurrence)
+        .filter(Transaction.account_id == account_id)
+        .filter(Transaction.import_fingerprint != None)
+        .filter(Transaction.import_occurrence != None)
+        .all()
+    )
+    for row in explicit_rows:
+        if (row.import_fingerprint, row.import_occurrence) in claimed_identities:
+            continue
+        occurrences.setdefault(row.import_fingerprint, set()).add(
+            row.import_occurrence
+        )
+
+    fallback_rows = (
+        db.query(
+            Transaction.id,
+            Transaction.date,
+            Transaction.description,
+            Transaction.amount,
+            Transaction.import_batch_id,
+            Transaction.import_fingerprint,
+        )
+        .filter(Transaction.account_id == account_id)
+        .filter(
+            or_(
+                Transaction.import_fingerprint == None,
+                Transaction.import_occurrence == None,
             )
-        ] += 1
-    return counts
+        )
+        .order_by(Transaction.date.asc(), Transaction.id.asc())
+        .all()
+    )
+    for row in fallback_rows:
+        if row.import_batch_id in claimed_batch_ids:
+            continue
+        fingerprint = row.import_fingerprint or transaction_fingerprint(
+            account_id, row.date, row.description, row.amount
+        )
+        occupied = occurrences.setdefault(fingerprint, set())
+        occurrence = 1
+        while occurrence in occupied:
+            occurrence += 1
+        occupied.add(occurrence)
+    return occurrences
+
+
+def statement_fingerprint_counts(db: Session, account_id: int) -> Counter:
+    """Compatibility view of account-scoped statement occurrence totals."""
+    return Counter(
+        {
+            fingerprint: len(occurrences)
+            for fingerprint, occurrences in statement_fingerprint_occurrences(
+                db, account_id
+            ).items()
+        }
+    )
 
 
 def serialize_import_transaction(transaction: Transaction) -> dict:
@@ -1082,16 +1136,9 @@ def _confirm_statement_import(
         db.add(import_batch)
         db.flush()
 
-        existing_counts = statement_fingerprint_counts(db, confirmation.account_id)
-        occupied_occurrences: dict[str, set[int]] = {}
-        for fingerprint, occurrence in (
-            db.query(Transaction.import_fingerprint, Transaction.import_occurrence)
-            .filter(Transaction.account_id == confirmation.account_id)
-            .filter(Transaction.import_fingerprint != None)
-            .filter(Transaction.import_occurrence != None)
-            .all()
-        ):
-            occupied_occurrences.setdefault(fingerprint, set()).add(occurrence)
+        existing_occurrences = statement_fingerprint_occurrences(
+            db, confirmation.account_id
+        )
 
         request_counts: Counter = Counter()
         accepted_source_occurrences: dict[str, set[int]] = {}
@@ -1124,18 +1171,14 @@ def _confirm_statement_import(
                 fingerprint, set()
             )
             if (
-                source_occurrence <= existing_counts.get(fingerprint, 0)
+                source_occurrence in existing_occurrences.get(fingerprint, set())
                 or source_occurrence in accepted_sources
             ):
                 skipped_count += 1
                 continue
             accepted_sources.add(source_occurrence)
 
-            occupied = occupied_occurrences.setdefault(fingerprint, set())
-            occurrence = existing_counts.get(fingerprint, 0) + 1
-            while occurrence in occupied:
-                occurrence += 1
-            occupied.add(occurrence)
+            occurrence = source_occurrence
 
             data["account_id"] = confirmation.account_id
             data["import_batch_id"] = batch_id
@@ -1145,6 +1188,14 @@ def _confirm_statement_import(
             apply_card_statement_fields(data, account, transaction.date)
 
             db_transaction = Transaction(**data)
+            db.add(
+                StatementImportClaim(
+                    account_id=confirmation.account_id,
+                    fingerprint=fingerprint,
+                    occurrence=occurrence,
+                    import_batch_id=batch_id,
+                )
+            )
             db.add(db_transaction)
             inserted.append(db_transaction)
 
@@ -1268,12 +1319,17 @@ def delete_import_batch(batch_id: str, db: Session = Depends(get_db)):
     import_batch = db.query(StatementImportBatch).filter(
         StatementImportBatch.import_batch_id == batch_id
     ).first()
-    if not transactions and not import_batch:
+    claims = db.query(StatementImportClaim).filter(
+        StatementImportClaim.import_batch_id == batch_id
+    ).all()
+    if not transactions and not import_batch and not claims:
         raise HTTPException(status_code=404, detail="Import batch not found")
     count = len(transactions)
     try:
         for transaction in transactions:
             db.delete(transaction)
+        for claim in claims:
+            db.delete(claim)
         if import_batch:
             db.delete(import_batch)
         db.commit()
@@ -1729,22 +1785,30 @@ def find_matching_statement_account(db: Session, selected_account_id: int, bank:
         return selected_account_id
 
     selected = db.query(Account).filter(Account.id == selected_account_id).first()
-    selected_text = f"{selected.name} {selected.bank}".lower() if selected else ""
-    bank_name = bank.lower()
+    selected_text = f"{selected.name} {selected.bank}".casefold() if selected else ""
+    bank_name = bank.casefold()
 
     if "amex" in bank_name or "american express" in bank_name:
-        keyword = "%amex%"
+        aliases = ("amex", "american express")
     elif "bmo" in bank_name:
-        keyword = "%bmo%"
+        aliases = ("bmo",)
     else:
         return selected_account_id
 
-    if keyword.strip("%") in selected_text:
+    if any(alias in selected_text for alias in aliases):
         return selected_account_id
 
+    alias_filters = [
+        candidate
+        for alias in aliases
+        for candidate in (
+            Account.name.ilike(f"%{alias}%"),
+            Account.bank.ilike(f"%{alias}%"),
+        )
+    ]
     match = db.query(Account)\
         .filter(Account.account_type == AccountTypeEnum.CREDIT_CARD)\
-        .filter(or_(Account.name.ilike(keyword), Account.bank.ilike(keyword)))\
+        .filter(or_(*alias_filters))\
         .order_by(Account.id.asc())\
         .first()
 
@@ -1795,9 +1859,9 @@ async def parse_statement_endpoint(
         .first()
     last_date = last_tx.date.strftime("%Y-%m-%d") if last_tx else None
 
-    existing_counts = statement_fingerprint_counts(db, matched_account_id)
+    existing_occurrences = statement_fingerprint_occurrences(db, matched_account_id)
     txs = filter_unseen_occurrences(
-        txs, existing_counts, matched_account_id, include_identity=True
+        txs, existing_occurrences, matched_account_id, include_identity=True
     )
     for transaction in txs:
         transaction["import_identity_token"] = create_occurrence_token(

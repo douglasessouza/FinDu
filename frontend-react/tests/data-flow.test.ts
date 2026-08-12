@@ -7,9 +7,21 @@ import {
   REFERENCE_CACHE_KEYS,
 } from '../src/services/cache.ts'
 import {
+  createLatestRequestRunner,
+  hasCurrentMonthlyData,
   loadRowsPreservingPrevious,
   replaceSelectedMonth,
 } from '../src/services/reportingData.ts'
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
 
 test('replaceSelectedMonth removes stale category data when the refreshed month is absent', () => {
   const current = {
@@ -34,6 +46,94 @@ test('loadRowsPreservingPrevious distinguishes an empty success from a failed re
   assert.deepEqual(emptySuccess, { rows: [], error: null })
   assert.equal(failed.rows, previous)
   assert.equal(failed.error, 'Could not load transactions. Please try again.')
+})
+
+test('latest monthly request ignores an older response that resolves last', async () => {
+  const runner = createLatestRequestRunner()
+  const july = deferred<string>()
+  const august = deferred<string>()
+  const state: { data: string | null, error: string | null, loading: boolean } = {
+    data: null,
+    error: null,
+    loading: false,
+  }
+  const handlers = {
+    onStart: () => {
+      state.loading = true
+      state.error = null
+    },
+    onSuccess: (data: string) => { state.data = data },
+    onError: (error: unknown) => {
+      state.error = error instanceof Error ? error.message : 'unknown error'
+    },
+    onFinish: () => { state.loading = false },
+  }
+
+  const julyRun = runner.run(() => july.promise, handlers)
+  const augustRun = runner.run(() => august.promise, handlers)
+
+  august.resolve('2026-08 data')
+  await augustRun
+  assert.deepEqual(state, {
+    data: '2026-08 data',
+    error: null,
+    loading: false,
+  })
+
+  july.resolve('2026-07 data')
+  await julyRun
+  assert.deepEqual(state, {
+    data: '2026-08 data',
+    error: null,
+    loading: false,
+  })
+})
+
+test('latest monthly request owns failure and stale finally cannot change its state', async () => {
+  const runner = createLatestRequestRunner()
+  const july = deferred<string>()
+  const august = deferred<string>()
+  const state: { data: string | null, error: string | null, loading: boolean } = {
+    data: null,
+    error: null,
+    loading: false,
+  }
+  const handlers = {
+    onStart: () => {
+      state.loading = true
+      state.error = null
+    },
+    onSuccess: (data: string) => { state.data = data },
+    onError: (error: unknown) => {
+      state.error = error instanceof Error ? error.message : 'unknown error'
+    },
+    onFinish: () => { state.loading = false },
+  }
+
+  const julyRun = runner.run(() => july.promise, handlers)
+  const augustRun = runner.run(() => august.promise, handlers)
+
+  august.reject(new Error('August failed'))
+  await augustRun
+  assert.deepEqual(state, {
+    data: null,
+    error: 'August failed',
+    loading: false,
+  })
+
+  july.resolve('2026-07 data')
+  await julyRun
+  assert.deepEqual(state, {
+    data: null,
+    error: 'August failed',
+    loading: false,
+  })
+})
+
+test('monthly data cannot drive rendering or persistence under a different selected month', () => {
+  assert.equal(hasCurrentMonthlyData('2026-08', '2026-07', false), false)
+  assert.equal(hasCurrentMonthlyData('2026-08', '2026-08', true), false)
+  assert.equal(hasCurrentMonthlyData('2026-08', '2026-08', false), true)
 })
 
 test('successful reference mutations invalidate the matching cached collection', async () => {

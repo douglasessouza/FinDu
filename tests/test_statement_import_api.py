@@ -5,6 +5,7 @@ import io
 import json
 from threading import Barrier, Lock, get_ident
 
+import pytest
 from sqlalchemy import event
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
@@ -12,13 +13,19 @@ from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
 from app.imports import transaction_fingerprint
-from app.main import app, get_db
+from app.main import (
+    app,
+    find_matching_statement_account,
+    get_db,
+    statement_fingerprint_counts,
+)
 from app.models import (
     Account,
     AccountTypeEnum,
     Base,
     CurrencyEnum,
     StatementImportBatch,
+    StatementImportClaim,
     Transaction,
 )
 
@@ -35,6 +42,20 @@ def add_account(db_session, *, name="Chequing", bank="TD"):
         name=name,
         bank=bank,
         account_type=AccountTypeEnum.CHECKING,
+        currency=CurrencyEnum.CAD,
+        balance=0,
+    )
+    db_session.add(account)
+    db_session.commit()
+    db_session.refresh(account)
+    return account
+
+
+def add_credit_card(db_session, *, name, bank):
+    account = Account(
+        name=name,
+        bank=bank,
+        account_type=AccountTypeEnum.CREDIT_CARD,
         currency=CurrencyEnum.CAD,
         balance=0,
     )
@@ -125,6 +146,28 @@ def test_preview_deduplication_is_isolated_by_account(client, db_session, monkey
 
     assert response.status_code == 200
     assert len(response.json()["transactions"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("statement_bank", "card_name", "card_bank"),
+    [
+        ("Amex", "Platinum", "American Express"),
+        ("American Express", "American Express Gold", "Centurion"),
+        ("Amex", "Amex Cobalt", "Amex"),
+        ("BMO", "BMO Cashback", "BMO"),
+    ],
+)
+def test_statement_bank_aliases_match_the_credit_card_account(
+    db_session, statement_bank, card_name, card_bank
+):
+    selected = add_account(db_session, name="Selected Chequing", bank="TD")
+    credit_card = add_credit_card(db_session, name=card_name, bank=card_bank)
+
+    matched_account_id = find_matching_statement_account(
+        db_session, selected.id, statement_bank
+    )
+
+    assert matched_account_id == credit_card.id
 
 
 def test_analysis_preserves_server_import_identity_metadata(
@@ -488,6 +531,7 @@ def test_delete_import_failure_rolls_back_transactions_and_claim(
     assert response.status_code == 500
     assert db_session.query(Transaction).count() == 1
     assert db_session.query(StatementImportBatch).count() == 1
+    assert db_session.query(StatementImportClaim).count() == 1
 
 
 def test_same_idempotency_key_rejects_a_different_payload(client, db_session):
@@ -554,6 +598,182 @@ def test_repeated_statement_with_new_key_is_skipped(client, db_session):
     assert repeated.json()["skipped_count"] == 1
     assert repeated.json()["transactions"] == []
     assert db_session.query(Transaction).count() == 1
+
+
+def test_fingerprint_counts_use_claims_without_counting_mirrored_rows_twice(
+    db_session,
+):
+    account = add_account(db_session)
+    claim_only_fingerprint = transaction_fingerprint(
+        account.id, "2026-08-10", "Grocery", -100
+    )
+    mirrored_fingerprint = transaction_fingerprint(
+        account.id, STATEMENT_ROW["date"], STATEMENT_ROW["description"], STATEMENT_ROW["amount"]
+    )
+    db_session.add_all(
+        [
+            StatementImportClaim(
+                account_id=account.id,
+                fingerprint=claim_only_fingerprint,
+                occurrence=1,
+                import_batch_id="split-batch",
+            ),
+            StatementImportClaim(
+                account_id=account.id,
+                fingerprint=mirrored_fingerprint,
+                occurrence=1,
+                import_batch_id="mirrored-batch",
+            ),
+            Transaction(
+                account_id=account.id,
+                description=STATEMENT_ROW["description"],
+                amount=STATEMENT_ROW["amount"],
+                currency=account.currency,
+                date=datetime.fromisoformat(f'{STATEMENT_ROW["date"]}T12:00:00'),
+                import_batch_id="mirrored-batch",
+                import_fingerprint=mirrored_fingerprint,
+                import_occurrence=1,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    counts = statement_fingerprint_counts(db_session, account.id)
+
+    assert counts[claim_only_fingerprint] == 1
+    assert counts[mirrored_fingerprint] == 1
+    assert sum(counts.values()) == 2
+
+
+def test_gap_in_claim_occurrences_does_not_hide_an_earlier_source_occurrence(
+    client, db_session
+):
+    account = add_account(db_session)
+    fingerprint = transaction_fingerprint(
+        account.id,
+        STATEMENT_ROW["date"],
+        STATEMENT_ROW["description"],
+        STATEMENT_ROW["amount"],
+    )
+    db_session.add_all(
+        [
+            StatementImportClaim(
+                account_id=account.id,
+                fingerprint=fingerprint,
+                occurrence=2,
+                import_batch_id="later-occurrence",
+            ),
+            Transaction(
+                account_id=account.id,
+                description=STATEMENT_ROW["description"],
+                amount=STATEMENT_ROW["amount"],
+                currency=account.currency,
+                date=datetime.fromisoformat(f'{STATEMENT_ROW["date"]}T12:00:00'),
+                import_batch_id="later-occurrence",
+                import_fingerprint=fingerprint,
+                import_occurrence=2,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "fill-occurrence-gap"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["inserted_count"] == 1
+    assert response.json()["skipped_count"] == 0
+    assert response.json()["transactions"][0]["import_occurrence"] == 1
+
+
+def test_split_keeps_source_identity_for_preview_and_reimport(
+    client, db_session, monkeypatch
+):
+    account = add_account(db_session)
+    grocery_row = {
+        "date": "2026-08-10",
+        "description": "Grocery",
+        "amount": -100,
+    }
+    first = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "grocery-source", [grocery_row]),
+    )
+    original = first.json()["transactions"][0]
+
+    split = client.post(
+        f'/transactions/{original["id"]}/split',
+        json={
+            "lines": [
+                {"description": "Food", "amount": 60, "category": "Food"},
+                {"description": "House", "amount": 40, "category": "Housing"},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "app.main.parse_statement_file",
+        lambda *_args: ([grocery_row.copy()], "TD", None),
+    )
+
+    preview = client.post(
+        "/parse-statement",
+        data={"account_id": account.id, "from_date": "2026-08-01"},
+        files={"file": ("statement.csv", b"ignored", "text/csv")},
+    )
+    repeated = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "grocery-repeat", [grocery_row]),
+    )
+
+    assert first.status_code == 200
+    assert split.status_code == 200
+    assert preview.status_code == 200
+    assert preview.json()["transactions"] == []
+    assert preview.json()["total_parsed"] == 0
+    assert repeated.status_code == 200
+    assert repeated.json()["inserted_count"] == 0
+    assert repeated.json()["skipped_count"] == 1
+    assert db_session.query(Transaction).count() == 2
+
+
+def test_delete_split_import_releases_source_identity(client, db_session):
+    account = add_account(db_session)
+    grocery_row = {
+        "date": "2026-08-10",
+        "description": "Grocery",
+        "amount": -100,
+    }
+    first = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "grocery-delete-source", [grocery_row]),
+    )
+    original = first.json()["transactions"][0]
+    split = client.post(
+        f'/transactions/{original["id"]}/split',
+        json={
+            "lines": [
+                {"description": "Food", "amount": 60, "category": "Food"},
+                {"description": "House", "amount": 40, "category": "Housing"},
+            ]
+        },
+    )
+
+    deleted = client.delete(f'/imports/{first.json()["import_batch_id"]}')
+    retried = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "grocery-after-delete", [grocery_row]),
+    )
+
+    assert first.status_code == 200
+    assert split.status_code == 200
+    assert deleted.status_code == 200
+    assert retried.status_code == 200
+    assert retried.json()["inserted_count"] == 1
+    assert retried.json()["skipped_count"] == 0
+    assert db_session.query(Transaction).count() == 1
+    assert db_session.query(StatementImportClaim).count() == 1
 
 
 def test_confirmation_deduplication_is_isolated_by_account(client, db_session):
@@ -690,16 +910,16 @@ def test_identity_integrity_race_retries_as_a_skipped_batch(
     existing.import_idempotency_key = "concurrent-winner"
     db_session.commit()
 
-    from app.main import statement_fingerprint_counts as real_counts
+    from app.main import statement_fingerprint_occurrences as real_occurrences
 
     count_calls = 0
 
-    def stale_counts_once(session, account_id):
+    def stale_occurrences_once(session, account_id):
         nonlocal count_calls
         count_calls += 1
         if count_calls == 1:
             return {}
-        return real_counts(session, account_id)
+        return real_occurrences(session, account_id)
 
     original_flush = db_session.flush
     flush_calls = 0
@@ -715,7 +935,9 @@ def test_identity_integrity_race_retries_as_a_skipped_batch(
                 RuntimeError("simulated concurrent identity conflict"),
             )
 
-    monkeypatch.setattr("app.main.statement_fingerprint_counts", stale_counts_once)
+    monkeypatch.setattr(
+        "app.main.statement_fingerprint_occurrences", stale_occurrences_once
+    )
     monkeypatch.setattr(db_session, "flush", concurrent_identity_conflict)
 
     response = client.post(
