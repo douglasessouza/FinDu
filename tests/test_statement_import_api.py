@@ -175,6 +175,36 @@ def test_preview_filters_legacy_import_after_ai_cleaned_description(
     assert response.json()["total_parsed"] == 0
 
 
+def test_preview_filters_claimed_import_after_ai_cleaned_description(
+    client, db_session, monkeypatch
+):
+    account = add_account(db_session)
+    imported = client.post(
+        "/imports/confirm",
+        json=import_payload(account.id, "cleaned-description", [STATEMENT_ROW]),
+    )
+    stored = db_session.get(Transaction, imported.json()["transactions"][0]["id"])
+    stored.description = "Clean Coffee Shop"
+    db_session.commit()
+    raw_statement_row = {
+        **STATEMENT_ROW,
+        "description": "CONTACTLESS INTERAC PURCHASE - COFFEE SHOP 1234",
+    }
+    monkeypatch.setattr(
+        "app.main.parse_statement_file",
+        lambda *_args: ([raw_statement_row], "TD", None),
+    )
+
+    response = client.post(
+        "/parse-statement",
+        data={"account_id": account.id, "from_date": "2026-08-01"},
+        files={"file": ("statement.csv", b"ignored", "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["transactions"] == []
+
+
 @pytest.mark.parametrize(
     ("statement_bank", "card_name", "card_bank"),
     [

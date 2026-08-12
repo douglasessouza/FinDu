@@ -1034,23 +1034,15 @@ def statement_fingerprint_counts(db: Session, account_id: int) -> Counter:
 
 
 def legacy_statement_counts(db: Session, account_id: int) -> Counter:
-    """Fallback identities for stored rows not protected by durable claims."""
-    claimed_batch_ids = {
-        row[0]
-        for row in db.query(StatementImportClaim.import_batch_id)
-        .filter(StatementImportClaim.account_id == account_id)
-        .distinct()
-        .all()
-    }
+    """Date/amount fallback for rows whose source description was AI-cleaned."""
     rows = (
-        db.query(Transaction.date, Transaction.amount, Transaction.import_batch_id)
+        db.query(Transaction.date, Transaction.amount)
         .filter(Transaction.account_id == account_id)
         .all()
     )
     return Counter(
         legacy_transaction_key(row.date, row.amount)
         for row in rows
-        if not row.import_batch_id or row.import_batch_id not in claimed_batch_ids
     )
 
 
