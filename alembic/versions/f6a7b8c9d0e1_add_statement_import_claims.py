@@ -11,6 +11,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_ownership import consume_adoption, record_adoption
+
 
 revision: str = "f6a7b8c9d0e1"
 down_revision: Union[str, Sequence[str], None] = "d4e5f6a7b8c9"
@@ -251,6 +253,13 @@ def _ensure_batch_index(connection: sa.Connection) -> None:
         raise RuntimeError(
             "Existing ix_statement_import_claims_import_batch_id index is incompatible"
         )
+    else:
+        record_adoption(
+            connection,
+            revision,
+            "index",
+            "ix_statement_import_claims_import_batch_id",
+        )
 
 
 def _create_table() -> None:
@@ -282,12 +291,16 @@ def _create_table() -> None:
 def upgrade() -> None:
     if op.get_context().as_sql:
         _create_table()
-        _backfill_claims(op.get_bind())
+        # Claim recovery reads prior batch/transaction data and therefore only
+        # runs with a live connection in online mode.
         return
 
     connection = op.get_bind()
     if sa.inspect(connection).has_table("statement_import_claims"):
         _validate_existing_table(connection)
+        record_adoption(
+            connection, revision, "table", "statement_import_claims"
+        )
         _ensure_batch_index(connection)
     else:
         _create_table()
@@ -295,8 +308,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(
+    if op.get_context().as_sql:
+        op.drop_index(
+            "ix_statement_import_claims_import_batch_id",
+            table_name="statement_import_claims",
+        )
+        op.drop_table("statement_import_claims")
+        return
+
+    connection = op.get_bind()
+    if not consume_adoption(
+        connection,
+        revision,
+        "index",
         "ix_statement_import_claims_import_batch_id",
-        table_name="statement_import_claims",
-    )
-    op.drop_table("statement_import_claims")
+    ):
+        op.drop_index(
+            "ix_statement_import_claims_import_batch_id",
+            table_name="statement_import_claims",
+        )
+    if not consume_adoption(
+        connection, revision, "table", "statement_import_claims"
+    ):
+        op.drop_table("statement_import_claims")

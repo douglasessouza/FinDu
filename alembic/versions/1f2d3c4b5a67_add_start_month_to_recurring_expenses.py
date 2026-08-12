@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_ownership import consume_adoption, record_adoption
+
 
 revision: str = "1f2d3c4b5a67"
 down_revision: Union[str, Sequence[str], None] = "7f1d2c3a9b40"
@@ -37,7 +39,14 @@ def upgrade() -> None:
         raise RuntimeError(
             "Existing recurring_expenses.start_month column is incompatible"
         )
+    else:
+        record_adoption(
+            op.get_bind(), revision, "column", "recurring_expenses.start_month"
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("recurring_expenses", "start_month")
+    if op.get_context().as_sql or not consume_adoption(
+        op.get_bind(), revision, "column", "recurring_expenses.start_month"
+    ):
+        op.drop_column("recurring_expenses", "start_month")

@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_ownership import consume_adoption, record_adoption
+
 
 revision: str = "6c4e8a21f9d0"
 down_revision: Union[str, Sequence[str], None] = "1f2d3c4b5a67"
@@ -94,6 +96,13 @@ def _ensure_id_index(connection: sa.Connection) -> None:
         raise RuntimeError(
             "Existing ix_recurring_monthly_overrides_id index is incompatible"
         )
+    else:
+        record_adoption(
+            connection,
+            revision,
+            "index",
+            "ix_recurring_monthly_overrides_id",
+        )
 
 
 def _create_table() -> None:
@@ -132,14 +141,35 @@ def upgrade() -> None:
     connection = op.get_bind()
     if sa.inspect(connection).has_table("recurring_monthly_overrides"):
         _validate_existing_table(connection)
+        record_adoption(
+            connection, revision, "table", "recurring_monthly_overrides"
+        )
         _ensure_id_index(connection)
     else:
         _create_table()
 
 
 def downgrade() -> None:
-    op.drop_index(
-        op.f("ix_recurring_monthly_overrides_id"),
-        table_name="recurring_monthly_overrides",
-    )
-    op.drop_table("recurring_monthly_overrides")
+    if op.get_context().as_sql:
+        op.drop_index(
+            op.f("ix_recurring_monthly_overrides_id"),
+            table_name="recurring_monthly_overrides",
+        )
+        op.drop_table("recurring_monthly_overrides")
+        return
+
+    connection = op.get_bind()
+    if not consume_adoption(
+        connection,
+        revision,
+        "index",
+        "ix_recurring_monthly_overrides_id",
+    ):
+        op.drop_index(
+            op.f("ix_recurring_monthly_overrides_id"),
+            table_name="recurring_monthly_overrides",
+        )
+    if not consume_adoption(
+        connection, revision, "table", "recurring_monthly_overrides"
+    ):
+        op.drop_table("recurring_monthly_overrides")

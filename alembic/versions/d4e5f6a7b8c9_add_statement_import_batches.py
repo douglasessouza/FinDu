@@ -10,6 +10,8 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_ownership import consume_adoption, record_adoption
+
 
 revision: str = "d4e5f6a7b8c9"
 down_revision: Union[str, Sequence[str], None] = "9a7c2d4e6f80"
@@ -108,9 +110,15 @@ def upgrade() -> None:
     connection = op.get_bind()
     if sa.inspect(connection).has_table("statement_import_batches"):
         _validate_existing_table(connection)
+        record_adoption(
+            connection, revision, "table", "statement_import_batches"
+        )
     else:
         _create_table()
 
 
 def downgrade() -> None:
-    op.drop_table("statement_import_batches")
+    if op.get_context().as_sql or not consume_adoption(
+        op.get_bind(), revision, "table", "statement_import_batches"
+    ):
+        op.drop_table("statement_import_batches")

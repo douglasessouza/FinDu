@@ -10,6 +10,12 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
+from app.migration_ownership import (
+    consume_adoption,
+    drop_adoption_table_if_empty,
+    record_adoption,
+)
+
 
 revision: str = "7f1d2c3a9b40"
 down_revision: Union[str, Sequence[str], None] = "2b7e9a1c4d33"
@@ -85,6 +91,10 @@ def _ensure_id_index(connection: sa.Connection) -> None:
         raise RuntimeError(
             "Existing ix_category_budget_items_id index is incompatible"
         )
+    else:
+        record_adoption(
+            connection, revision, "index", "ix_category_budget_items_id"
+        )
 
 
 def _create_table() -> None:
@@ -113,6 +123,9 @@ def upgrade() -> None:
         connection = op.get_bind()
         if sa.inspect(connection).has_table("category_budget_items"):
             _validate_existing_table(connection)
+            record_adoption(
+                connection, revision, "table", "category_budget_items"
+            )
             _ensure_id_index(connection)
         else:
             _create_table()
@@ -133,5 +146,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_category_budget_items_id"), table_name="category_budget_items")
-    op.drop_table("category_budget_items")
+    if op.get_context().as_sql:
+        op.drop_index(
+            op.f("ix_category_budget_items_id"),
+            table_name="category_budget_items",
+        )
+        op.drop_table("category_budget_items")
+        return
+
+    connection = op.get_bind()
+    if not consume_adoption(
+        connection, revision, "index", "ix_category_budget_items_id"
+    ):
+        op.drop_index(
+            op.f("ix_category_budget_items_id"),
+            table_name="category_budget_items",
+        )
+    if not consume_adoption(
+        connection, revision, "table", "category_budget_items"
+    ):
+        op.drop_table("category_budget_items")
+    drop_adoption_table_if_empty(connection)

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -621,6 +622,71 @@ def test_import_backfill_writes_in_bounded_batches(monkeypatch):
     assert occurrences == [1, 2, 3, 4, 5]
 
 
+def test_import_backfill_reserves_stored_occurrences_before_filling_gaps():
+    migration = _load_migration_module()
+    engine = sa.create_engine("sqlite://")
+    metadata = _legacy_metadata()
+    metadata.create_all(engine)
+    stored_fingerprint = (
+        "e83389b8501f9bb663570690e95e137747927da094ba02faf2097119797a94d3"
+    )
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE transactions ADD COLUMN import_fingerprint VARCHAR"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE transactions ADD COLUMN import_occurrence INTEGER"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE transactions ADD COLUMN import_idempotency_key VARCHAR"
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO transactions
+                    (id, account_id, description, amount, date, import_batch_id,
+                     import_fingerprint, import_occurrence, import_idempotency_key)
+                VALUES
+                    (1, 1, 'Coffee Shop', -4.5, :date, 'stored-batch',
+                     :fingerprint, 2, 'stored-key'),
+                    (2, 1, 'Coffee Shop', -4.5, :date, 'missing-batch',
+                     NULL, NULL, NULL)
+                """
+            ),
+            {"date": datetime(2026, 8, 1, 9), "fingerprint": stored_fingerprint},
+        )
+
+        migration._backfill_import_identity(connection)
+
+        assert connection.execute(
+            sa.text(
+                """
+                SELECT id, import_fingerprint, import_occurrence
+                FROM transactions ORDER BY id
+                """
+            )
+        ).mappings().all() == [
+            {
+                "id": 1,
+                "import_fingerprint": stored_fingerprint,
+                "import_occurrence": 2,
+            },
+            {
+                "id": 2,
+                "import_fingerprint": stored_fingerprint,
+                "import_occurrence": 1,
+            },
+        ]
+        connection.exec_driver_sql(
+            """
+            CREATE UNIQUE INDEX uq_test_import_identity
+            ON transactions (account_id, import_fingerprint, import_occurrence)
+            WHERE import_fingerprint IS NOT NULL AND import_occurrence IS NOT NULL
+            """
+        )
+
+
 def test_migration_creates_query_indexes():
     migration = _load_migration_module()
     engine = sa.create_engine("sqlite://")
@@ -648,6 +714,66 @@ def test_migration_creates_query_indexes():
         assert identity["unique"] == 1
         assert str(identity["dialect_options"]["sqlite_where"]) == (
             "import_fingerprint IS NOT NULL AND import_occurrence IS NOT NULL"
+        )
+
+
+def test_migration_rejects_unexpected_partial_query_index():
+    migration = _load_migration_module()
+    engine = sa.create_engine("sqlite://")
+    metadata = sa.MetaData()
+    sa.Table(
+        "transactions",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("date", sa.DateTime),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            """
+            CREATE INDEX ix_transactions_date ON transactions (date)
+            WHERE date IS NOT NULL
+            """
+        )
+        migration.op = Operations(MigrationContext.configure(connection))
+
+        with pytest.raises(
+            RuntimeError, match="Existing ix_transactions_date index is incompatible"
+        ):
+            migration._ensure_index(
+                connection,
+                "ix_transactions_date",
+                "transactions",
+                ("date",),
+            )
+
+
+def test_migration_rejects_unexpected_postgresql_partial_query_index(monkeypatch):
+    migration = _load_migration_module()
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql")
+    )
+    inspector = SimpleNamespace(
+        get_indexes=lambda table_name: [
+            {
+                "name": "ix_transactions_date",
+                "column_names": ["date"],
+                "unique": False,
+                "dialect_options": {"postgresql_where": "date IS NOT NULL"},
+            }
+        ]
+    )
+    monkeypatch.setattr(migration.sa, "inspect", lambda bind: inspector)
+
+    with pytest.raises(
+        RuntimeError, match="Existing ix_transactions_date index is incompatible"
+    ):
+        migration._ensure_index(
+            connection,
+            "ix_transactions_date",
+            "transactions",
+            ("date",),
         )
 
 
@@ -813,8 +939,35 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
             DEFAULT_CATEGORY_NAMES
         )
 
+    command.downgrade(Config("alembic.ini"), "6c4e8a21f9d0")
 
-def test_alembic_upgrade_head_reconciles_schema_created_ahead_of_revision(
+    downgraded_inspector = sa.inspect(engine)
+    assert "statement_import_batches" not in downgraded_inspector.get_table_names()
+    assert "statement_import_claims" not in downgraded_inspector.get_table_names()
+    assert {
+        column["name"]
+        for column in downgraded_inspector.get_columns("transactions")
+    }.isdisjoint(
+        {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
+    )
+
+
+def test_alembic_offline_upgrade_renders_the_complete_postgresql_chain(monkeypatch):
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql://offline:offline@localhost/findu_offline"
+    )
+    output = StringIO()
+    config = Config("alembic.ini", output_buffer=output)
+
+    command.upgrade(config, "head", sql=True)
+
+    sql = output.getvalue()
+    assert "CREATE TABLE categories" in sql
+    assert "CREATE TABLE statement_import_claims" in sql
+    assert IMPORT_CLAIM_REVISION in sql
+
+
+def test_alembic_drifted_upgrade_and_downgrade_preserve_adopted_schema_and_data(
     tmp_path, monkeypatch
 ):
     database_path = tmp_path / "drifted-migration.db"
@@ -957,3 +1110,56 @@ def test_alembic_upgrade_head_reconciles_schema_created_ahead_of_revision(
         }
         for index_name, columns in expected_indexes.items():
             assert actual_indexes[index_name] == columns
+
+    command.downgrade(config, CATEGORY_BUDGET_REVISION)
+
+    downgraded_inspector = sa.inspect(engine)
+    assert "findu_migration_adoptions" not in set(
+        downgraded_inspector.get_table_names()
+    )
+    assert set(downgraded_inspector.get_table_names()) >= {
+        "category_budget_items",
+        "recurring_monthly_overrides",
+        "statement_import_batches",
+        "statement_import_claims",
+    }
+    assert {
+        column["name"]
+        for column in downgraded_inspector.get_columns("transactions")
+    } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
+            CATEGORY_BUDGET_REVISION
+        )
+        assert connection.execute(
+            sa.text(
+                """
+                SELECT budget_id, name, amount
+                FROM category_budget_items
+                ORDER BY budget_id, name
+                """
+            )
+        ).mappings().all() == [
+            {"budget_id": 1, "name": "Groceries", "amount": 100.0},
+            {"budget_id": 2, "name": "General", "amount": 250.0},
+        ]
+        assert connection.scalar(
+            sa.text("SELECT COUNT(*) FROM statement_import_claims")
+        ) == 1
+
+    assert {
+        index["name"]
+        for index in downgraded_inspector.get_indexes("transactions")
+    } >= {"ix_transactions_account_date"}
+    assert "ix_transactions_category_date" not in {
+        index["name"]
+        for index in downgraded_inspector.get_indexes("transactions")
+    }
+    assert "ix_category_budget_items_id" not in {
+        index["name"]
+        for index in downgraded_inspector.get_indexes("category_budget_items")
+    }
+    assert "ix_statement_import_claims_import_batch_id" not in {
+        index["name"]
+        for index in downgraded_inspector.get_indexes("statement_import_claims")
+    }
