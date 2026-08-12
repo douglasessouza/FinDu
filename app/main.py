@@ -17,6 +17,7 @@ from app.models import Account, Transaction, StatementImportBatch, StatementImpo
 from app.imports import (
     create_occurrence_token,
     filter_unseen_occurrences,
+    legacy_transaction_key,
     transaction_fingerprint,
     verified_identity_from_token,
 )
@@ -1032,6 +1033,27 @@ def statement_fingerprint_counts(db: Session, account_id: int) -> Counter:
     )
 
 
+def legacy_statement_counts(db: Session, account_id: int) -> Counter:
+    """Fallback identities for stored rows not protected by durable claims."""
+    claimed_batch_ids = {
+        row[0]
+        for row in db.query(StatementImportClaim.import_batch_id)
+        .filter(StatementImportClaim.account_id == account_id)
+        .distinct()
+        .all()
+    }
+    rows = (
+        db.query(Transaction.date, Transaction.amount, Transaction.import_batch_id)
+        .filter(Transaction.account_id == account_id)
+        .all()
+    )
+    return Counter(
+        legacy_transaction_key(row.date, row.amount)
+        for row in rows
+        if not row.import_batch_id or row.import_batch_id not in claimed_batch_ids
+    )
+
+
 def serialize_import_transaction(transaction: Transaction) -> dict:
     return {
         "id": transaction.id,
@@ -1860,6 +1882,28 @@ async def parse_statement_endpoint(
     last_date = last_tx.date.strftime("%Y-%m-%d") if last_tx else None
 
     existing_occurrences = statement_fingerprint_occurrences(db, matched_account_id)
+    # Older imports stored the AI-cleaned description, so their full source
+    # fingerprint cannot be reconstructed. Reserve their original statement
+    # positions using a date/amount multiset before exact identity filtering.
+    legacy_counts = legacy_statement_counts(db, matched_account_id)
+    legacy_seen = Counter()
+    fingerprint_seen = Counter()
+    for transaction in txs:
+        fingerprint = transaction_fingerprint(
+            matched_account_id,
+            transaction["date"],
+            transaction["description"],
+            transaction["amount"],
+        )
+        fingerprint_seen[fingerprint] += 1
+        legacy_key = legacy_transaction_key(
+            transaction["date"], transaction["amount"]
+        )
+        legacy_seen[legacy_key] += 1
+        if legacy_seen[legacy_key] <= legacy_counts[legacy_key]:
+            existing_occurrences.setdefault(fingerprint, set()).add(
+                fingerprint_seen[fingerprint]
+            )
     txs = filter_unseen_occurrences(
         txs, existing_occurrences, matched_account_id, include_identity=True
     )
@@ -1968,7 +2012,7 @@ Return ONLY the JSON array, no markdown, no backticks."""
             },
             json={
                 "model": "claude-sonnet-4-6",
-                "max_tokens": 4000,
+                "max_tokens": 16000,
                 "messages": [{"role": "user", "content": prompt}]
             },
             timeout=60

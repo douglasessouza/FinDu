@@ -38,6 +38,12 @@ def transaction_fingerprint(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def legacy_transaction_key(date_value, amount) -> tuple[str, int]:
+    """Match legacy imports whose AI-cleaned description lost source identity."""
+    cents = Decimal(str(amount)).quantize(Decimal("0.01")) * 100
+    return _canonical_date(date_value), int(cents)
+
+
 def create_occurrence_token(
     secret: str, account_id: int, fingerprint: str, occurrence: int
 ) -> str:

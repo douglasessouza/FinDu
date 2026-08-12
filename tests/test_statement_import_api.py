@@ -148,6 +148,33 @@ def test_preview_deduplication_is_isolated_by_account(client, db_session, monkey
     assert len(response.json()["transactions"]) == 1
 
 
+def test_preview_filters_legacy_import_after_ai_cleaned_description(
+    client, db_session, monkeypatch
+):
+    account = add_account(db_session)
+    legacy = add_legacy_transaction(db_session, account)
+    legacy.description = "Clean Coffee Shop"
+    db_session.commit()
+    raw_statement_row = {
+        **STATEMENT_ROW,
+        "description": "CONTACTLESS INTERAC PURCHASE - COFFEE SHOP 1234",
+    }
+    monkeypatch.setattr(
+        "app.main.parse_statement_file",
+        lambda *_args: ([raw_statement_row], "TD", None),
+    )
+
+    response = client.post(
+        "/parse-statement",
+        data={"account_id": account.id, "from_date": "2026-08-01"},
+        files={"file": ("statement.csv", b"ignored", "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["transactions"] == []
+    assert response.json()["total_parsed"] == 0
+
+
 @pytest.mark.parametrize(
     ("statement_bank", "card_name", "card_bank"),
     [
@@ -225,6 +252,46 @@ def test_analysis_preserves_server_import_identity_metadata(
     assert analyzed["import_fingerprint"] == "server-fingerprint"
     assert analyzed["import_occurrence"] == 2
     assert analyzed["import_identity_token"] == "signed-token"
+
+
+def test_analysis_allows_enough_output_for_large_statements(
+    client, db_session, monkeypatch
+):
+    account = add_account(db_session)
+    request_json = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {
+                "content": [{"text": json.dumps([{
+                    **STATEMENT_ROW,
+                    "source_row_id": "source-0",
+                    "category": "Dining",
+                    "is_recurring": False,
+                    "recurring_match": None,
+                }])}]
+            }
+
+    def fake_post(*_args, **kwargs):
+        request_json.update(kwargs["json"])
+        return FakeResponse()
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr("app.main.http_requests.post", fake_post)
+
+    response = client.post(
+        "/analyze-statement",
+        data={
+            "account_id": account.id,
+            "transactions_json": json.dumps([STATEMENT_ROW]),
+        },
+    )
+
+    assert response.status_code == 200
+    assert request_json["max_tokens"] >= 12_000
 
 
 def test_reordered_analysis_maps_identity_by_source_row_id_and_confirms(
