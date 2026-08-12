@@ -47,6 +47,7 @@ DEFAULT_CATEGORY_NAMES = {
 
 IMPORT_BATCH_REVISION = "d4e5f6a7b8c9"
 IMPORT_CLAIM_REVISION = "f6a7b8c9d0e1"
+CATEGORY_BUDGET_REVISION = "2b7e9a1c4d33"
 
 
 def _load_migration_module():
@@ -65,6 +66,17 @@ def _load_import_batch_migration_module():
     matches = list(versions.glob("*_add_statement_import_batches.py"))
     assert len(matches) == 1
     spec = spec_from_file_location("statement_import_batch_migration", matches[0])
+    assert spec and spec.loader
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_category_budget_item_migration_module():
+    versions = Path("alembic/versions")
+    matches = list(versions.glob("*_add_category_budget_items.py"))
+    assert len(matches) == 1
+    spec = spec_from_file_location("category_budget_item_migration", matches[0])
     assert spec and spec.loader
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -234,6 +246,26 @@ def test_statement_import_batch_migration_runs_on_sqlite_and_downgrades():
 
         migration.downgrade()
         assert "statement_import_batches" not in sa.inspect(connection).get_table_names()
+
+
+def test_category_budget_item_migration_rejects_incompatible_existing_table():
+    migration = _load_category_budget_item_migration_module()
+    engine = sa.create_engine("sqlite://")
+    metadata = sa.MetaData()
+    sa.Table("category_budgets", metadata, sa.Column("id", sa.Integer, primary_key=True))
+    sa.Table(
+        "category_budget_items",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("budget_id", sa.Integer, nullable=False),
+        sa.Column("amount", sa.Float, nullable=False),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as connection:
+        migration.op = Operations(MigrationContext.configure(connection))
+        with pytest.raises(RuntimeError, match="missing columns: name, created_at"):
+            migration.upgrade()
 
 
 def test_statement_import_batch_postgresql_ddl_has_unique_claim_constraint():
@@ -780,3 +812,148 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
         assert connection.scalar(sa.text("SELECT COUNT(*) FROM categories")) == len(
             DEFAULT_CATEGORY_NAMES
         )
+
+
+def test_alembic_upgrade_head_reconciles_schema_created_ahead_of_revision(
+    tmp_path, monkeypatch
+):
+    database_path = tmp_path / "drifted-migration.db"
+    database_url = f"sqlite:///{database_path}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    config = Config("alembic.ini")
+    engine = sa.create_engine(database_url)
+
+    with engine.begin() as connection:
+        Base.metadata.create_all(connection)
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO category_budgets
+                    (id, category, amount, currency, start_month, is_active)
+                VALUES
+                    (1, 'Food', 100, 'CAD', '2026-08', TRUE),
+                    (2, 'Travel', 250, 'CAD', '2026-08', TRUE)
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO category_budget_items (id, budget_id, name, amount)
+                VALUES (1, 1, 'Groceries', 100)
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO accounts
+                    (id, name, bank, account_type, currency, balance)
+                VALUES (1, 'Checking', 'Test Bank', 'CHECKING', 'CAD', 0)
+                """
+            )
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO statement_import_batches
+                    (import_batch_id, account_id, idempotency_key, payload_hash,
+                     inserted_count, skipped_count, result_json)
+                VALUES ('existing-batch', 1, 'existing-key', :payload_hash, 1, 0, '{}')
+                """
+            ),
+            {"payload_hash": "b" * 64},
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO transactions
+                    (id, account_id, description, amount, currency, date,
+                     import_batch_id, import_fingerprint, import_occurrence,
+                     import_idempotency_key)
+                VALUES
+                    (1, 1, 'Existing import', -10, 'CAD', '2026-08-01',
+                     'existing-batch', :fingerprint, 1, 'existing-key')
+                """
+            ),
+            {"fingerprint": "a" * 64},
+        )
+        connection.execute(
+            sa.text(
+                """
+                INSERT INTO statement_import_claims
+                    (id, account_id, fingerprint, occurrence, import_batch_id)
+                VALUES (1, 1, :fingerprint, 1, 'existing-batch')
+                """
+            ),
+            {"fingerprint": "a" * 64},
+        )
+        for index_name in (
+            "ix_category_budget_items_id",
+            "ix_transactions_category_date",
+            "ix_statement_import_claims_import_batch_id",
+        ):
+            connection.execute(sa.text(f"DROP INDEX {index_name}"))
+        MigrationContext.configure(connection).stamp(
+            ScriptDirectory.from_config(config), CATEGORY_BUDGET_REVISION
+        )
+
+    command.upgrade(config, "head")
+
+    inspector = sa.inspect(engine)
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
+            IMPORT_CLAIM_REVISION
+        )
+        assert connection.execute(
+            sa.text(
+                """
+                SELECT budget_id, name, amount
+                FROM category_budget_items
+                ORDER BY budget_id, name
+                """
+            )
+        ).mappings().all() == [
+            {"budget_id": 1, "name": "Groceries", "amount": 100.0},
+            {"budget_id": 2, "name": "General", "amount": 250.0},
+        ]
+        assert connection.execute(
+            sa.text(
+                """
+                SELECT import_fingerprint, import_occurrence, import_idempotency_key
+                FROM transactions WHERE id = 1
+                """
+            )
+        ).mappings().one() == {
+            "import_fingerprint": "a" * 64,
+            "import_occurrence": 1,
+            "import_idempotency_key": "existing-key",
+        }
+        assert connection.scalar(
+            sa.text("SELECT COUNT(*) FROM statement_import_claims")
+        ) == 1
+
+    assert set(inspector.get_table_names()) >= {
+        "category_budget_items",
+        "recurring_monthly_overrides",
+        "statement_import_batches",
+        "statement_import_claims",
+    }
+    assert {
+        column["name"] for column in inspector.get_columns("transactions")
+    } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
+    assert {
+        index["name"]
+        for index in inspector.get_indexes("category_budget_items")
+    } >= {"ix_category_budget_items_id", "ix_category_budget_items_budget_id"}
+    assert {
+        index["name"]
+        for index in inspector.get_indexes("statement_import_claims")
+    } >= {"ix_statement_import_claims_import_batch_id"}
+    for table_name, expected_indexes in EXPECTED_INDEXES.items():
+        actual_indexes = {
+            index["name"]: tuple(index["column_names"])
+            for index in inspector.get_indexes(table_name)
+        }
+        for index_name, columns in expected_indexes.items():
+            assert actual_indexes[index_name] == columns

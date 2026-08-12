@@ -60,6 +60,12 @@ QUERY_INDEXES = (
     ),
 )
 
+IMPORT_COLUMNS = (
+    ("import_fingerprint", sa.String(), True),
+    ("import_occurrence", sa.Integer(), True),
+    ("import_idempotency_key", sa.String(), True),
+)
+
 BACKFILL_BATCH_SIZE = 500
 
 
@@ -113,6 +119,9 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
             transactions.c.description,
             transactions.c.amount,
             transactions.c.import_batch_id,
+            transactions.c.import_fingerprint,
+            transactions.c.import_occurrence,
+            transactions.c.import_idempotency_key,
         )
         .where(transactions.c.import_batch_id.is_not(None))
         .order_by(transactions.c.account_id, transactions.c.date, transactions.c.id)
@@ -141,6 +150,12 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
             )
             identity = (row["account_id"], fingerprint)
             occurrences[identity] += 1
+            if (
+                row["import_fingerprint"] is not None
+                and row["import_occurrence"] is not None
+                and row["import_idempotency_key"] is not None
+            ):
+                continue
             updates.append(
                 {
                     "transaction_id": row["id"],
@@ -150,10 +165,11 @@ def _backfill_import_identity(connection: sa.Connection) -> None:
                 }
             )
 
-        connection.execute(
-            update_statement,
-            updates,
-        )
+        if updates:
+            connection.execute(
+                update_statement,
+                updates,
+            )
 
 
 def _seed_reference_data(connection: sa.Connection) -> None:
@@ -185,7 +201,88 @@ def _seed_reference_data(connection: sa.Connection) -> None:
               )
             """
         )
+        )
+
+
+def _ensure_column(
+    connection: sa.Connection,
+    table_name: str,
+    column_name: str,
+    column_type: sa.types.TypeEngine,
+    nullable: bool,
+) -> None:
+    columns = {
+        column["name"]: column
+        for column in sa.inspect(connection).get_columns(table_name)
+    }
+    existing = columns.get(column_name)
+    if existing is None:
+        op.add_column(
+            table_name,
+            sa.Column(column_name, column_type, nullable=nullable),
+        )
+        return
+    if (
+        not isinstance(existing["type"], type(column_type))
+        or existing["nullable"] is not nullable
+    ):
+        raise RuntimeError(
+            f"Existing {table_name}.{column_name} column is incompatible"
+        )
+
+
+def _normalize_predicate(predicate: object) -> str:
+    normalized = str(predicate).lower()
+    for character in '()"':
+        normalized = normalized.replace(character, " ")
+    return " ".join(normalized.split())
+
+
+def _ensure_index(
+    connection: sa.Connection,
+    index_name: str,
+    table_name: str,
+    columns: tuple[str, ...],
+    *,
+    unique: bool = False,
+    predicate: sa.TextClause | None = None,
+) -> None:
+    indexes = {
+        index["name"]: index
+        for index in sa.inspect(connection).get_indexes(table_name)
+    }
+    existing = indexes.get(index_name)
+    if existing is None:
+        options = {}
+        if predicate is not None:
+            options = {
+                "postgresql_where": predicate,
+                "sqlite_where": predicate,
+            }
+        op.create_index(
+            index_name,
+            table_name,
+            list(columns),
+            unique=unique,
+            **options,
+        )
+        return
+
+    incompatible = (
+        tuple(existing["column_names"]) != columns
+        or bool(existing["unique"]) is not unique
     )
+    if predicate is not None and connection.dialect.name in {"postgresql", "sqlite"}:
+        dialect_options = existing.get("dialect_options") or {}
+        existing_predicate = dialect_options.get(
+            f"{connection.dialect.name}_where"
+        )
+        incompatible = incompatible or existing_predicate is None or (
+            _normalize_predicate(existing_predicate)
+            != _normalize_predicate(predicate)
+        )
+    if incompatible:
+        raise RuntimeError(f"Existing {index_name} index is incompatible")
 
 
 def _ensure_categories_table(connection: sa.Connection) -> None:
@@ -216,33 +313,50 @@ def _ensure_categories_table(connection: sa.Connection) -> None:
 
 
 def upgrade() -> None:
-    op.add_column(
-        "transactions", sa.Column("import_fingerprint", sa.String(), nullable=True)
-    )
-    op.add_column(
-        "transactions", sa.Column("import_occurrence", sa.Integer(), nullable=True)
-    )
-    op.add_column(
-        "transactions", sa.Column("import_idempotency_key", sa.String(), nullable=True)
-    )
-
     connection = op.get_bind()
-    _backfill_import_identity(connection)
+    if op.get_context().as_sql:
+        for column_name, column_type, nullable in IMPORT_COLUMNS:
+            op.add_column(
+                "transactions",
+                sa.Column(column_name, column_type, nullable=nullable),
+            )
+    else:
+        for column_name, column_type, nullable in IMPORT_COLUMNS:
+            _ensure_column(
+                connection,
+                "transactions",
+                column_name,
+                column_type,
+                nullable,
+            )
 
-    for index_name, table_name, columns in QUERY_INDEXES:
-        op.create_index(index_name, table_name, list(columns), unique=False)
+    _backfill_import_identity(connection)
 
     identity_predicate = sa.text(
         "import_fingerprint IS NOT NULL AND import_occurrence IS NOT NULL"
     )
-    op.create_index(
-        "uq_transactions_import_identity",
-        "transactions",
-        ["account_id", "import_fingerprint", "import_occurrence"],
-        unique=True,
-        postgresql_where=identity_predicate,
-        sqlite_where=identity_predicate,
-    )
+    if op.get_context().as_sql:
+        for index_name, table_name, columns in QUERY_INDEXES:
+            op.create_index(index_name, table_name, list(columns), unique=False)
+        op.create_index(
+            "uq_transactions_import_identity",
+            "transactions",
+            ["account_id", "import_fingerprint", "import_occurrence"],
+            unique=True,
+            postgresql_where=identity_predicate,
+            sqlite_where=identity_predicate,
+        )
+    else:
+        for index_name, table_name, columns in QUERY_INDEXES:
+            _ensure_index(connection, index_name, table_name, columns)
+        _ensure_index(
+            connection,
+            "uq_transactions_import_identity",
+            "transactions",
+            ("account_id", "import_fingerprint", "import_occurrence"),
+            unique=True,
+            predicate=identity_predicate,
+        )
 
     _ensure_categories_table(connection)
     _seed_reference_data(connection)

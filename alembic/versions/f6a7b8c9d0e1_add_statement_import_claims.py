@@ -20,6 +20,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 BACKFILL_BATCH_SIZE = 500
 
+EXPECTED_COLUMNS = {
+    "id": (sa.Integer, False),
+    "account_id": (sa.Integer, False),
+    "fingerprint": (sa.String, False),
+    "occurrence": (sa.Integer, False),
+    "import_batch_id": (sa.String, False),
+    "created_at": (sa.DateTime, True),
+}
+
 
 def _valid_identity(
     fingerprint: object, occurrence: object
@@ -79,7 +88,15 @@ def _backfill_claims(connection: sa.Connection) -> None:
     )
 
     pending: list[dict] = []
-    seen: set[tuple[int, str, int]] = set()
+    seen = set(
+        connection.execute(
+            sa.select(
+                claims.c.account_id,
+                claims.c.fingerprint,
+                claims.c.occurrence,
+            )
+        ).tuples()
+    )
 
     def collect(
         account_id: int,
@@ -156,7 +173,87 @@ def _backfill_claims(connection: sa.Connection) -> None:
         connection.execute(claims.insert(), pending)
 
 
-def upgrade() -> None:
+def _validate_existing_table(connection: sa.Connection) -> None:
+    inspector = sa.inspect(connection)
+    columns = {
+        column["name"]: column
+        for column in inspector.get_columns("statement_import_claims")
+    }
+    missing = [name for name in EXPECTED_COLUMNS if name not in columns]
+    incompatible = [f"missing columns: {', '.join(missing)}"] if missing else []
+    for name, (expected_type, expected_nullable) in EXPECTED_COLUMNS.items():
+        if name not in columns:
+            continue
+        column = columns[name]
+        if not isinstance(column["type"], expected_type):
+            incompatible.append(f"{name} has type {column['type']}")
+        if column["nullable"] is not expected_nullable:
+            incompatible.append(f"{name} has nullable={column['nullable']}")
+    fingerprint = columns.get("fingerprint")
+    if fingerprint is not None and getattr(fingerprint["type"], "length", 64) != 64:
+        incompatible.append("fingerprint length is not 64")
+
+    if inspector.get_pk_constraint("statement_import_claims").get(
+        "constrained_columns"
+    ) != ["id"]:
+        incompatible.append("primary key is not (id)")
+    if not any(
+        constraint.get("column_names")
+        == ["account_id", "fingerprint", "occurrence"]
+        for constraint in inspector.get_unique_constraints(
+            "statement_import_claims"
+        )
+    ):
+        incompatible.append(
+            "unique constraint (account_id, fingerprint, occurrence) is missing"
+        )
+    foreign_keys = inspector.get_foreign_keys("statement_import_claims")
+    if not any(
+        foreign_key.get("constrained_columns") == ["account_id"]
+        and foreign_key.get("referred_table") == "accounts"
+        and foreign_key.get("referred_columns") == ["id"]
+        and (foreign_key.get("options") or {}).get("ondelete", "").upper()
+        == "CASCADE"
+        for foreign_key in foreign_keys
+    ):
+        incompatible.append(
+            "foreign key account_id -> accounts.id ON DELETE CASCADE is missing"
+        )
+    if any(
+        foreign_key.get("constrained_columns") == ["import_batch_id"]
+        for foreign_key in foreign_keys
+    ):
+        incompatible.append("import_batch_id must not have a foreign key")
+
+    if incompatible:
+        raise RuntimeError(
+            "Existing statement_import_claims table is incompatible; "
+            + "; ".join(incompatible)
+        )
+
+
+def _ensure_batch_index(connection: sa.Connection) -> None:
+    indexes = {
+        index["name"]: index
+        for index in sa.inspect(connection).get_indexes("statement_import_claims")
+    }
+    existing = indexes.get("ix_statement_import_claims_import_batch_id")
+    if existing is None:
+        op.create_index(
+            "ix_statement_import_claims_import_batch_id",
+            "statement_import_claims",
+            ["import_batch_id"],
+            unique=False,
+        )
+    elif existing["column_names"] != ["import_batch_id"] or bool(
+        existing["unique"]
+    ):
+        raise RuntimeError(
+            "Existing ix_statement_import_claims_import_batch_id index is incompatible"
+        )
+
+
+def _create_table() -> None:
     op.create_table(
         "statement_import_claims",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -180,7 +277,21 @@ def upgrade() -> None:
         ["import_batch_id"],
         unique=False,
     )
-    _backfill_claims(op.get_bind())
+
+
+def upgrade() -> None:
+    if op.get_context().as_sql:
+        _create_table()
+        _backfill_claims(op.get_bind())
+        return
+
+    connection = op.get_bind()
+    if sa.inspect(connection).has_table("statement_import_claims"):
+        _validate_existing_table(connection)
+        _ensure_batch_index(connection)
+    else:
+        _create_table()
+    _backfill_claims(connection)
 
 
 def downgrade() -> None:
