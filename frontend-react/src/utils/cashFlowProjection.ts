@@ -5,6 +5,10 @@ export interface CashFlowProjectionInput {
   remainingSavings: number
 }
 
+export function calculateRemainingIncome(plannedIncome: number, receivedIncome: number): number {
+  return Math.max(0, Math.round((plannedIncome - receivedIncome + Number.EPSILON) * 100) / 100)
+}
+
 export function calculateProjectedBalance({
   currentBalance,
   remainingIncome,

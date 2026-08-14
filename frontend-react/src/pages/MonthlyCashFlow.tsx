@@ -4,7 +4,7 @@ import api, { getMonthlyDashboard } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/reportingData'
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
-import { calculateProjectedBalance } from '../utils/cashFlowProjection'
+import { calculateProjectedBalance, calculateRemainingIncome } from '../utils/cashFlowProjection'
 import type {
   Account,
   CurrencyCode,
@@ -523,9 +523,12 @@ export default function MonthlyCashFlow() {
             const plannedIncomeTotal = incomeList.reduce((s, r) => s + r.amount, 0)
             const projectedIncomeTotal = plannedIncomeTotal + actualOtherIncomeTotal
             const receivedIncomeTotal = actualSalaryIncomeTotal + actualOtherIncomeTotal
-            const remainingIncomeTotal = incomeList.reduce(
-              (sum, item) => sum + (recurringMatches[item.id] ? 0 : item.amount),
-              0,
+            // The bank balance already includes every received deposit. Use the
+            // aggregate salary received this month to avoid counting income again
+            // when one deposit covers multiple payroll entries or arrives off-date.
+            const remainingIncomeTotal = calculateRemainingIncome(
+              plannedIncomeTotal,
+              actualSalaryIncomeTotal,
             )
             const projectedBalance = calculateProjectedBalance({
               currentBalance: inBank,

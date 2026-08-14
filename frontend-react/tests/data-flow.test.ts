@@ -12,7 +12,12 @@ import {
   loadRowsPreservingPrevious,
   replaceSelectedMonth,
 } from '../src/services/reportingData.ts'
-import { calculateProjectedBalance } from '../src/utils/cashFlowProjection.ts'
+import { calculateProjectedBalance, calculateRemainingIncome } from '../src/utils/cashFlowProjection.ts'
+
+test('received salary settles guaranteed income even when deposits do not match individual payroll dates', () => {
+  assert.equal(calculateRemainingIncome(7619.88, 7624.38), 0)
+  assert.equal(calculateRemainingIncome(7619.88, 2060), 5559.88)
+})
 
 test('cash projection does not count income already included in the current balance', () => {
   assert.equal(calculateProjectedBalance({
