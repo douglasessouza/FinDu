@@ -265,7 +265,7 @@ export default function SpendingAnalysis() {
 
       const categoryRows = await getTransactions({
         category,
-        dateFrom: `${addMonths(selectedMonth, -1)}-01`,
+        dateFrom: `${addMonths(selectedMonth, -2)}-01`,
         dateTo: lastDayOfMonth(selectedMonth),
       })
       const accountById = new Map(accounts.map(account => [account.id, account]))
@@ -274,7 +274,7 @@ export default function SpendingAnalysis() {
         .filter(transaction => {
           const account = accountById.get(transaction.account_id)
           const reportingMonth = account?.account_type === 'CREDIT_CARD'
-            ? transaction.statement_month || transaction.date.slice(0, 7)
+            ? transaction.payment_due_date?.slice(0, 7) || transaction.statement_month || transaction.date.slice(0, 7)
             : transaction.date.slice(0, 7)
           return reportingMonth === selectedMonth
         })

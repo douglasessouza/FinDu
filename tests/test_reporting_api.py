@@ -151,7 +151,7 @@ def seed_reporting_data(db_session):
     return checking, card, rows
 
 
-def test_legacy_unfiltered_reporting_shapes_are_unchanged(client, db_session):
+def test_unfiltered_reporting_uses_card_payment_month(client, db_session):
     _, _, rows = seed_reporting_data(db_session)
 
     transactions = client.get("/transactions")
@@ -163,11 +163,10 @@ def test_legacy_unfiltered_reporting_shapes_are_unchanged(client, db_session):
     assert isinstance(spending.json(), dict)
     assert spending.json() == {
         "2026-01": {
-            "Dining": {"cards": 100.0, "debit": 0.0},
             "Groceries": {"cards": 0.0, "debit": 30.0},
         },
-        "2026-02": {"Dining": {"cards": 0.0, "debit": 12.0}},
-        "2026-03": {"Groceries": {"cards": 50.0, "debit": 0.0}},
+        "2026-02": {"Dining": {"cards": 100.0, "debit": 12.0}},
+        "2026-04": {"Groceries": {"cards": 50.0, "debit": 0.0}},
     }
 
 
@@ -352,7 +351,7 @@ def test_card_cycle_and_bounded_spending_aggregates_preserve_financial_rules(
     )
     spending_response = client.get(
         "/spending-analysis",
-        params={"month_from": "2026-01", "month_to": "2026-01"},
+        params={"month_from": "2026-01", "month_to": "2026-02"},
     )
 
     assert card_response.status_code == 200
@@ -388,19 +387,21 @@ def test_card_cycle_and_bounded_spending_aggregates_preserve_financial_rules(
     assert spending_response.status_code == 200
     assert spending_response.json() == {
         "2026-01": {
-            "Dining": {
-                "cards": 100.0,
-                "debit": 0.0,
-                "currency": "CAD",
-                "by_currency": {"CAD": {"cards": 100.0, "debit": 0.0}},
-            },
             "Groceries": {
                 "cards": 0.0,
                 "debit": 30.0,
                 "currency": "CAD",
                 "by_currency": {"CAD": {"cards": 0.0, "debit": 30.0}},
             },
-        }
+        },
+        "2026-02": {
+            "Dining": {
+                "cards": 100.0,
+                "debit": 12.0,
+                "currency": "CAD",
+                "by_currency": {"CAD": {"cards": 100.0, "debit": 12.0}},
+            },
+        },
     }
 
 

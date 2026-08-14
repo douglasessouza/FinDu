@@ -322,7 +322,9 @@ def apply_card_statement_fields(data: dict, account: Account, tx_date: datetime)
     closing = account.closing_day
     due = account.due_day
 
-    if tx_date.day >= closing:
+    # A purchase made on the closing day still belongs to that statement.
+    # Only purchases made after closing roll into the following statement.
+    if tx_date.day > closing:
         if tx_date.month == 12:
             stmt_month = tx_date.replace(year=tx_date.year + 1, month=1, day=1)
         else:
@@ -1478,7 +1480,7 @@ def spending_analysis(
 ):
     """
     Returns spending by category grouped by spending cycle.
-    - Credit cards: grouped by statement month (defined by closing day)
+    - Credit cards: grouped by payment month (derived from the closing cycle)
     - Checking accounts: grouped by transaction date month
     Separates card vs debit spending per category per month.
     """
@@ -1498,7 +1500,14 @@ def build_financial_snapshot(db: Session) -> dict:
 
     for tx in transactions:
         account = account_by_id.get(tx.account_id)
-        month = tx.statement_month if account and account.account_type.value == "CREDIT_CARD" and tx.amount < 0 else tx.date.strftime("%Y-%m")
+        month = (
+            tx.payment_due_date.strftime("%Y-%m")
+            if account
+            and account.account_type.value == "CREDIT_CARD"
+            and tx.amount < 0
+            and tx.payment_due_date
+            else tx.date.strftime("%Y-%m")
+        )
         currency = tx.currency.value if hasattr(tx.currency, "value") else str(tx.currency)
         category = tx.category or "Other"
         if month not in monthly:
