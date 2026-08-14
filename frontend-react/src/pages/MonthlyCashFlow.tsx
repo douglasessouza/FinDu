@@ -4,6 +4,7 @@ import api, { getMonthlyDashboard } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/reportingData'
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
+import { calculateProjectedBalance } from '../utils/cashFlowProjection'
 import type {
   Account,
   CurrencyCode,
@@ -522,7 +523,16 @@ export default function MonthlyCashFlow() {
             const plannedIncomeTotal = incomeList.reduce((s, r) => s + r.amount, 0)
             const projectedIncomeTotal = plannedIncomeTotal + actualOtherIncomeTotal
             const receivedIncomeTotal = actualSalaryIncomeTotal + actualOtherIncomeTotal
-            const projectedBalance = inBank + projectedIncomeTotal - plannedFixedExpenses - investmentSavings.plannedDue
+            const remainingIncomeTotal = incomeList.reduce(
+              (sum, item) => sum + (recurringMatches[item.id] ? 0 : item.amount),
+              0,
+            )
+            const projectedBalance = calculateProjectedBalance({
+              currentBalance: inBank,
+              remainingIncome: remainingIncomeTotal,
+              remainingExpenses: openFixedExpenses,
+              remainingSavings: investmentSavings.remainingDue,
+            })
 
             if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0 && investmentSavings.plannedDue === 0) return null
 
@@ -538,9 +548,9 @@ export default function MonthlyCashFlow() {
                   <div className="grid grid-cols-1 divide-y divide-[#E6EEE7] sm:grid-cols-5 sm:divide-x sm:divide-y-0">
                     {[
                       { label: 'Current balance', value: inBank, sign: '', tone: 'text-[#123D32]' },
-                      { label: 'Projected income', value: projectedIncomeTotal, sign: '+', tone: 'text-[#236B4B]' },
-                      { label: 'Monthly expenses', value: plannedFixedExpenses, sign: '−', tone: 'text-[#B54B4B]' },
-                      { label: 'Planned savings', value: investmentSavings.plannedDue, sign: '−', tone: 'text-[#123D32]' },
+                      { label: 'Still to receive', value: remainingIncomeTotal, sign: '+', tone: 'text-[#236B4B]' },
+                      { label: 'Still to pay', value: openFixedExpenses, sign: '−', tone: 'text-[#B54B4B]' },
+                      { label: 'Still to save', value: investmentSavings.remainingDue, sign: '−', tone: 'text-[#123D32]' },
                       { label: 'End of month', value: projectedBalance, sign: '=', tone: 'text-[#B28E18]' },
                     ].map((step, index) => (
                       <div key={step.label} className="relative px-4 py-4">
@@ -550,7 +560,7 @@ export default function MonthlyCashFlow() {
                     ))}
                   </div>
                   <div className="grid grid-cols-1 gap-2 border-t border-[#E6EEE7] bg-[#F8FBF8] px-5 py-3 text-xs text-[#55705E] sm:grid-cols-3">
-                    <span>Guaranteed income {symbol} {fmt(plannedIncomeTotal)}</span><span>Extra received {symbol} {fmt(actualOtherIncomeTotal)}</span><span>Still to pay {symbol} {fmt(openFixedExpenses)}</span>
+                    <span>Received income {symbol} {fmt(receivedIncomeTotal)}</span><span>Still to receive {symbol} {fmt(remainingIncomeTotal)}</span><span>Still to pay {symbol} {fmt(openFixedExpenses)}</span>
                   </div>
                 </section>
 
@@ -858,7 +868,7 @@ export default function MonthlyCashFlow() {
                   </summary>
                   <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
                     <p className="money text-sm text-[#55705E]">
-                      {symbol} {fmt(inBank)} + {fmt(projectedIncomeTotal)} income − {fmt(plannedFixedExpenses)} expenses − {fmt(investmentSavings.plannedDue)} savings = <strong className="text-[#123D32]">{symbol} {fmt(projectedBalance)}</strong>
+                      {symbol} {fmt(inBank)} + {fmt(remainingIncomeTotal)} still to receive − {fmt(openFixedExpenses)} still to pay − {fmt(investmentSavings.remainingDue)} still to save = <strong className="text-[#123D32]">{symbol} {fmt(projectedBalance)}</strong>
                     </p>
                     <p className="mt-2 text-xs text-[#55705E]">Savings total comes from {investmentPortfolio.openPlans} open investment plan{investmentPortfolio.openPlans === 1 ? '' : 's'}.</p>
                   </div>

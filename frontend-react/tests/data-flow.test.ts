@@ -12,6 +12,16 @@ import {
   loadRowsPreservingPrevious,
   replaceSelectedMonth,
 } from '../src/services/reportingData.ts'
+import { calculateProjectedBalance } from '../src/utils/cashFlowProjection.ts'
+
+test('cash projection does not count income already included in the current balance', () => {
+  assert.equal(calculateProjectedBalance({
+    currentBalance: 2515.67,
+    remainingIncome: 0,
+    remainingExpenses: 289.26,
+    remainingSavings: 500,
+  }), 1726.41)
+})
 
 function deferred<T>() {
   let resolve!: (value: T) => void
