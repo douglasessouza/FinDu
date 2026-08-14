@@ -3,10 +3,11 @@ import {
   PieChart, Pie, Cell, Tooltip, ResponsiveContainer,
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Legend,
 } from 'recharts'
-import { ChevronDown, ChevronUp, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronUp, Gauge, RefreshCw } from 'lucide-react'
 import {
   getAccounts,
   getCardStatementSummary,
+  getCategoryBudgets,
   getCategories,
   getSpendingAnalysis,
   getTransactions,
@@ -15,12 +16,20 @@ import {
 import type {
   Account,
   CardStatementSummaryItem,
+  CategoryBudget,
   CurrencyCode,
   SpendingAnalysisResponse,
   SpendingCategorySummary,
   Transaction,
 } from '../services/api'
 import { loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
+import {
+  budgetTotal,
+  budgetVariancePercent,
+  monthOverMonthImprovement,
+  spendingTotal,
+  yearOverYearSpendingChange,
+} from '../utils/performanceMetrics'
 
 // ── Helpers ─────────────────────────────────────────────────────
 function fmt(value: number): string {
@@ -134,6 +143,7 @@ function CardSummary({ selectedMonth }: { selectedMonth: string }) {
 export default function SpendingAnalysis() {
   const [data, setData] = useState<SpendingAnalysisResponse>({})
   const [accounts, setAccounts] = useState<Account[]>([])
+  const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [selectedMonth, setSelectedMonth] = useState('')
   const [selectedCurrency, setSelectedCurrency] = useState<CurrencyCode>('CAD')
@@ -152,14 +162,16 @@ export default function SpendingAnalysis() {
       try {
         const today = new Date()
         const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
-        const [nextData, loadedAccounts, loadedCategories] = await Promise.all([
+        const [nextData, loadedAccounts, loadedCategories, loadedBudgets] = await Promise.all([
           getSpendingAnalysis(EARLIEST_REPORTING_MONTH, currentMonth),
           getAccounts(),
           getCategories(),
+          getCategoryBudgets(),
         ])
         setData(nextData)
         setAccounts(loadedAccounts)
         setCategories(loadedCategories.map(c => c.name).sort())
+        setBudgets(loadedBudgets)
         const months = Object.keys(nextData).sort().reverse()
         if (months.length > 0) setSelectedMonth(months[0])
         setTrendMonths(months.slice(0, 2))
@@ -194,6 +206,19 @@ export default function SpendingAnalysis() {
     .sort((a, b) => b.value - a.value)
 
   const grandTotal = pieData.reduce((s, d) => s + d.value, 0)
+  const previousMonth = selectedMonth ? addMonths(selectedMonth, -1) : ''
+  const previousYearMonth = selectedMonth ? addMonths(selectedMonth, -12) : ''
+  const selectedBudget = budgetTotal(budgets, selectedMonth, selectedCurrency)
+  const previousBudget = budgetTotal(budgets, previousMonth, selectedCurrency)
+  const selectedSpend = spendingTotal(data, selectedMonth, selectedCurrency)
+  const previousSpend = spendingTotal(data, previousMonth, selectedCurrency)
+  const previousYearSpend = spendingTotal(data, previousYearMonth, selectedCurrency)
+  const budgetPerformance = budgetVariancePercent(selectedBudget, selectedSpend)
+  const momPerformance = monthOverMonthImprovement(selectedBudget, selectedSpend, previousBudget, previousSpend)
+  const yoyPerformance = yearOverYearSpendingChange(selectedSpend, previousYearSpend)
+  const today = new Date()
+  const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  const selectedCycleIsClosed = selectedMonth < currentMonth
 
   // Bar chart
   const monthsToShow = allMonths.filter(month => trendMonths.includes(month))
@@ -327,8 +352,12 @@ export default function SpendingAnalysis() {
     if (!selectedMonth) return
     const today = new Date()
     const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
-    const updatedSpending = await getSpendingAnalysis(EARLIEST_REPORTING_MONTH, currentMonth)
+    const [updatedSpending, updatedBudgets] = await Promise.all([
+      getSpendingAnalysis(EARLIEST_REPORTING_MONTH, currentMonth),
+      getCategoryBudgets(),
+    ])
     setData(updatedSpending)
+    setBudgets(updatedBudgets)
   }
 
   // ── Render ───────────────────────────────────────────────────
@@ -373,6 +402,66 @@ export default function SpendingAnalysis() {
               </select>
             )}
           </div>
+
+          <section aria-labelledby="performance-ledger-title" className="mb-8 overflow-hidden rounded-xl border border-[#BFD6C2] bg-white shadow-[0_14px_36px_rgba(18,61,50,0.05)]">
+            <div className="flex flex-col gap-2 border-b border-[#D4E4D5] bg-[#F4FAF5] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-center gap-3">
+                <span className="grid size-9 place-items-center rounded-lg bg-[#1B4D3E] text-[#E8C84A]" aria-hidden="true"><Gauge size={18} /></span>
+                <div>
+                  <p id="performance-ledger-title" className="section-title">Performance ledger</p>
+                  <p className="mt-0.5 text-xs text-[#55705E]">Budget discipline first; trends explain the movement.</p>
+                </div>
+              </div>
+              <span className={`w-fit rounded-full px-3 py-1 text-[11px] font-bold ${selectedCycleIsClosed ? 'bg-[#DDEBE0] text-[#1B6B3A]' : 'bg-[#FFF1C7] text-[#8A6810]'}`}>
+                {selectedCycleIsClosed ? 'Completed cycle' : 'Live cycle · results can change'}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 divide-y divide-[#E6EEE7] md:grid-cols-3 md:divide-x md:divide-y-0">
+              <div className="px-5 py-5" title="(Budget minus actual spending) divided by budget">
+                <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#7BAE8A]">Budget performance</p>
+                {budgetPerformance === null ? (
+                  <><p className="mt-3 text-xl font-bold text-[#55705E]">Not available</p><p className="mt-1 text-xs text-[#8BAE90]">No {selectedCurrency} budget for this cycle.</p></>
+                ) : (
+                  <>
+                    <p className={`money mt-3 text-2xl font-bold ${budgetPerformance >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                      {budgetPerformance >= 0 ? '+' : '−'}{Math.abs(budgetPerformance).toFixed(1)}%
+                    </p>
+                    <p className="mt-1 text-xs text-[#55705E]">{budgetPerformance >= 0 ? `under budget${selectedCycleIsClosed ? '' : ' so far'}` : `over budget${selectedCycleIsClosed ? '' : ' so far'}`} · {symbol} {fmt(Math.abs(selectedBudget - selectedSpend))} {budgetPerformance >= 0 ? 'remaining' : 'over'}</p>
+                  </>
+                )}
+              </div>
+              <div className="px-5 py-5" title="Current budget variance minus the previous cycle budget variance">
+                <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#7BAE8A]">MoM improvement</p>
+                {!selectedCycleIsClosed ? (
+                  <><p className="mt-3 text-xl font-bold text-[#55705E]">Pending close</p><p className="mt-1 text-xs text-[#8BAE90]">Available when {monthLabel(selectedMonth)} closes.</p></>
+                ) : momPerformance === null ? (
+                  <><p className="mt-3 text-xl font-bold text-[#55705E]">Not available</p><p className="mt-1 text-xs text-[#8BAE90]">A budget is needed in both cycles.</p></>
+                ) : (
+                  <>
+                    <p className={`money mt-3 text-2xl font-bold ${momPerformance >= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                      {momPerformance >= 0 ? '+' : '−'}{Math.abs(momPerformance).toFixed(1)} pp
+                    </p>
+                    <p className="mt-1 text-xs text-[#55705E]">{momPerformance >= 0 ? 'better' : 'lower'} budget discipline than {monthShort(previousMonth)}.</p>
+                  </>
+                )}
+              </div>
+              <div className="px-5 py-5" title="Spending change versus the same statement cycle one year earlier">
+                <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-[#7BAE8A]">YoY spending</p>
+                {!selectedCycleIsClosed ? (
+                  <><p className="mt-3 text-xl font-bold text-[#55705E]">Pending close</p><p className="mt-1 text-xs text-[#8BAE90]">YoY becomes comparable after this cycle closes.</p></>
+                ) : yoyPerformance === null ? (
+                  <><p className="mt-3 text-xl font-bold text-[#55705E]">Not enough history</p><p className="mt-1 text-xs text-[#8BAE90]">Compare with {monthShort(previousYearMonth)} when available.</p></>
+                ) : (
+                  <>
+                    <p className={`money mt-3 text-2xl font-bold ${yoyPerformance <= 0 ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
+                      {yoyPerformance > 0 ? '+' : yoyPerformance < 0 ? '−' : ''}{Math.abs(yoyPerformance).toFixed(1)}%
+                    </p>
+                    <p className="mt-1 text-xs text-[#55705E]">{yoyPerformance <= 0 ? 'less' : 'more'} spending than {monthShort(previousYearMonth)}.</p>
+                  </>
+                )}
+              </div>
+            </div>
+          </section>
 
           {pieData.length === 0 ? (
             <div className="text-center text-[#8BAE90] py-10">No expenses for this month.</div>

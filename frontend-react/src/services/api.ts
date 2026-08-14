@@ -276,6 +276,10 @@ export async function getCategories(): Promise<Category[]> {
   )
 }
 
+export async function getCategoryBudgets(): Promise<CategoryBudget[]> {
+  return (await api.get<CategoryBudget[]>('/category-budgets')).data
+}
+
 export async function getRecurringExpenses(): Promise<RecurringExpense[]> {
   return cachedGet(
     REFERENCE_CACHE_KEYS.recurring,
