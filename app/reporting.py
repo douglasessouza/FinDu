@@ -135,7 +135,7 @@ def spending_summary(
     month_from: Optional[str] = None,
     month_to: Optional[str] = None,
 ) -> dict:
-    """Aggregate card payment-month and debit-date spending without loading transactions."""
+    """Aggregate card-cycle and debit-date spending without loading transactions."""
     if month_from is not None:
         month_bounds(month_from)
     if month_to is not None:
@@ -147,11 +147,10 @@ def spending_summary(
         return _legacy_spending_summary(db)
 
     date_month = _database_month(db, Transaction.date)
-    payment_month = _database_month(db, Transaction.payment_due_date)
     reporting_month = case(
         (
             Account.account_type == AccountTypeEnum.CREDIT_CARD,
-            func.coalesce(payment_month, Transaction.statement_month, date_month),
+            func.coalesce(Transaction.statement_month, date_month),
         ),
         else_=date_month,
     )
@@ -217,14 +216,11 @@ def _legacy_spending_summary(db: Session) -> dict:
         category = transaction.category or "Other"
         if category in EXCLUDED_SPENDING_CATEGORIES:
             continue
-        if account_type == AccountTypeEnum.CREDIT_CARD:
-            month = (
-                transaction.payment_due_date.strftime("%Y-%m")
-                if transaction.payment_due_date
-                else transaction.statement_month or transaction.date.strftime("%Y-%m")
-            )
-        else:
-            month = transaction.date.strftime("%Y-%m")
+        month = (
+            transaction.statement_month or transaction.date.strftime("%Y-%m")
+            if account_type == AccountTypeEnum.CREDIT_CARD
+            else transaction.date.strftime("%Y-%m")
+        )
         values = result.setdefault(month, {}).setdefault(
             category, {"cards": 0.0, "debit": 0.0}
         )

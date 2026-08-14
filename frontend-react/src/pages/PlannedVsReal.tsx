@@ -457,7 +457,7 @@ export default function PlannedVsReal() {
     const result = await loadRowsPreservingPrevious(async () => {
       const categoryRows = await getTransactions({
         category,
-        dateFrom: `${addMonths(selectedMonth, -2)}-01`,
+        dateFrom: `${addMonths(selectedMonth, -1)}-01`,
         dateTo: lastDayOfMonth(selectedMonth),
       })
       const filtered = categoryRows
@@ -465,7 +465,7 @@ export default function PlannedVsReal() {
         .filter(transaction => {
           const account = accountById[transaction.account_id]
           const reportingMonth = account?.account_type === 'CREDIT_CARD'
-            ? transaction.payment_due_date?.slice(0, 7) || transaction.statement_month || transaction.date.slice(0, 7)
+            ? transaction.statement_month || transaction.date.slice(0, 7)
             : transaction.date.slice(0, 7)
           return reportingMonth === selectedMonth
         })

@@ -1480,7 +1480,7 @@ def spending_analysis(
 ):
     """
     Returns spending by category grouped by spending cycle.
-    - Credit cards: grouped by payment month (derived from the closing cycle)
+    - Credit cards: grouped by statement month (defined by closing day)
     - Checking accounts: grouped by transaction date month
     Separates card vs debit spending per category per month.
     """
@@ -1500,14 +1500,7 @@ def build_financial_snapshot(db: Session) -> dict:
 
     for tx in transactions:
         account = account_by_id.get(tx.account_id)
-        month = (
-            tx.payment_due_date.strftime("%Y-%m")
-            if account
-            and account.account_type.value == "CREDIT_CARD"
-            and tx.amount < 0
-            and tx.payment_due_date
-            else tx.date.strftime("%Y-%m")
-        )
+        month = tx.statement_month if account and account.account_type.value == "CREDIT_CARD" and tx.amount < 0 else tx.date.strftime("%Y-%m")
         currency = tx.currency.value if hasattr(tx.currency, "value") else str(tx.currency)
         category = tx.category or "Other"
         if month not in monthly:
