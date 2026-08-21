@@ -174,6 +174,7 @@ export interface MonthlyDashboardResponse {
   payments: MonthlyPayment[]
   matches: RecurringMatch[]
   overrides: RecurringMonthlyOverride[]
+  previous_month_overrides: RecurringMonthlyOverride[]
   checking_transactions: Transaction[]
   card_summaries: CardStatementSummaryResponse
   card_summaries_due: CardStatementSummaryResponse

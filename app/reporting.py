@@ -460,6 +460,7 @@ def serialize_match(match: RecurringMatch, transaction: Optional[Transaction]) -
 def monthly_dashboard(db: Session, month: str) -> dict:
     """Load all monthly dashboard collections with a constant seven queries."""
     start, end = month_bounds(month)
+    previous_month = (start - timedelta(days=1)).strftime("%Y-%m")
     matching_start = (start - timedelta(days=1)).replace(day=26)
     accounts = db.query(Account).all()
     recurring = db.query(RecurringExpense).order_by(
@@ -472,9 +473,13 @@ def monthly_dashboard(db: Session, month: str) -> dict:
         .filter(RecurringMatch.month == month)
         .all()
     )
-    overrides = db.query(RecurringMonthlyOverride).filter(
-        RecurringMonthlyOverride.month == month
+    override_rows = db.query(RecurringMonthlyOverride).filter(
+        RecurringMonthlyOverride.month.in_((previous_month, month))
     ).all()
+    overrides = [override for override in override_rows if override.month == month]
+    previous_month_overrides = [
+        override for override in override_rows if override.month == previous_month
+    ]
     checking_transactions = (
         db.query(Transaction)
         .join(Account, Account.id == Transaction.account_id)
@@ -493,6 +498,7 @@ def monthly_dashboard(db: Session, month: str) -> dict:
             serialize_match(match, transaction) for match, transaction in match_rows
         ],
         "overrides": overrides,
+        "previous_month_overrides": previous_month_overrides,
         "checking_transactions": checking_transactions,
         "card_summaries": cards,
         "card_summaries_due": cards_due,

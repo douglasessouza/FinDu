@@ -497,6 +497,9 @@ def test_monthly_dashboard_consolidates_legacy_collections(client, db_session):
     override = RecurringMonthlyOverride(
         recurring_id=recurring.id, month="2026-01", amount=1550
     )
+    previous_override = RecurringMonthlyOverride(
+        recurring_id=recurring.id, month="2025-12", amount=1450
+    )
     payment = MonthlyPayment(
         month="2026-01",
         item_type="recurring",
@@ -514,7 +517,7 @@ def test_monthly_dashboard_consolidates_legacy_collections(client, db_session):
         score=55,
         source="auto",
     )
-    db_session.add_all([override, payment, match])
+    db_session.add_all([override, previous_override, payment, match])
     db_session.commit()
 
     response = client.get("/dashboard/monthly", params={"month": "2026-01"})
@@ -532,6 +535,9 @@ def test_monthly_dashboard_consolidates_legacy_collections(client, db_session):
     ).json()
     assert body["overrides"] == client.get(
         "/recurring-monthly-overrides", params={"month": "2026-01"}
+    ).json()
+    assert body["previous_month_overrides"] == client.get(
+        "/recurring-monthly-overrides", params={"month": "2025-12"}
     ).json()
     assert body["card_summaries"] == client.get(
         "/card-statements/summary", params={"month": "2026-01"}

@@ -13,10 +13,32 @@ import {
   replaceSelectedMonth,
 } from '../src/services/reportingData.ts'
 import { calculateProjectedBalance, calculateRemainingIncome } from '../src/utils/cashFlowProjection.ts'
-import { buildPayPeriodSummary, resolveCardDueDay } from '../src/utils/payPeriodSummary.ts'
+import {
+  buildPayPeriodSummary,
+  calculatePreviousMonthLateIncome,
+  resolveCardDueDay,
+} from '../src/utils/payPeriodSummary.ts'
+
+test('previous-month late income respects January rollover, overrides, validity, and currency', () => {
+  const total = calculatePreviousMonthLateIncome({
+    selectedMonth: '2026-01',
+    currency: 'CAD',
+    overrides: { 1: 3600 },
+    items: [
+      { id: 1, amount: 3499.88, currency: 'CAD', dueDay: 28, type: 'INCOME', startMonth: '2025-01', validUntil: '2025-12-01' },
+      { id: 2, amount: 2060, currency: 'CAD', dueDay: 30, type: 'INCOME', startMonth: '2025-01' },
+      { id: 3, amount: 500, currency: 'CAD', dueDay: 15, type: 'INCOME', startMonth: '2025-01' },
+      { id: 4, amount: 900, currency: 'USD', dueDay: 30, type: 'INCOME', startMonth: '2025-01' },
+      { id: 5, amount: 700, currency: 'CAD', dueDay: 29, type: 'INCOME', startMonth: '2026-01' },
+    ],
+  })
+
+  assert.equal(total, 5660)
+})
 
 test('pay-period summary includes day 15 in the first period', () => {
   const summary = buildPayPeriodSummary({
+    previousMonthLateIncome: 5559.88,
     incomes: [
       { amount: 2060, dueDay: 15 },
       { amount: 3499.88, dueDay: 28 },
@@ -33,7 +55,7 @@ test('pay-period summary includes day 15 in the first period', () => {
   })
 
   assert.deepEqual(summary, {
-    throughDay15: { income: 2060, expenses: 5283.64, balance: -3223.64 },
+    throughDay15: { income: 7619.88, expenses: 5283.64, balance: 2336.24 },
     afterDay15: { income: 5559.88, expenses: 539.98, balance: 5019.9 },
   })
 })
@@ -45,7 +67,7 @@ test('card due day prefers the statement date and falls back to the account sett
 })
 
 test('pay-period summary returns zero totals when the month has no planned items', () => {
-  assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [] }), {
+  assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [], previousMonthLateIncome: 0 }), {
     throughDay15: { income: 0, expenses: 0, balance: 0 },
     afterDay15: { income: 0, expenses: 0, balance: 0 },
   })

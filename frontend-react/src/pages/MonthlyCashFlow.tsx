@@ -5,7 +5,7 @@ import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/re
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
 import { calculateProjectedBalance, calculateRemainingIncome } from '../utils/cashFlowProjection'
-import { buildPayPeriodSummary, resolveCardDueDay } from '../utils/payPeriodSummary'
+import { buildPayPeriodSummary, calculatePreviousMonthLateIncome, resolveCardDueDay } from '../utils/payPeriodSummary'
 import type {
   Account,
   CurrencyCode,
@@ -185,6 +185,7 @@ export default function MonthlyCashFlow() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [monthlyOverrides, setMonthlyOverrides] = useState<Record<number, RecurringMonthlyOverride>>({})
+  const [previousMonthlyOverrides, setPreviousMonthlyOverrides] = useState<Record<number, RecurringMonthlyOverride>>({})
   const [editingRecurringId, setEditingRecurringId] = useState<number | null>(null)
   const [editingAmount, setEditingAmount] = useState('')
   const [savingOverride, setSavingOverride] = useState(false)
@@ -249,6 +250,12 @@ export default function MonthlyCashFlow() {
           setSavedMatches(dashboard.matches)
           setMonthlyOverrides(
             dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
+              (result, override) => ({ ...result, [override.recurring_id]: override }),
+              {},
+            ),
+          )
+          setPreviousMonthlyOverrides(
+            dashboard.previous_month_overrides.reduce<Record<number, RecurringMonthlyOverride>>(
               (result, override) => ({ ...result, [override.recurring_id]: override }),
               {},
             ),
@@ -517,6 +524,22 @@ export default function MonthlyCashFlow() {
             const checking = accounts.filter(a => a.currency === currency && a.account_type !== 'CREDIT_CARD')
             const inBank = checking.reduce((s, a) => s + a.balance, 0)
             const monthRecurring = effectiveRecurring.filter(r => r.currency === currency && isValidThisMonth(r, year, month))
+            const previousMonthLateIncome = calculatePreviousMonthLateIncome({
+              selectedMonth: monthStr,
+              currency,
+              items: recurring.map(item => ({
+                id: item.id,
+                amount: item.amount,
+                currency: item.currency,
+                dueDay: item.due_day,
+                type: item.type,
+                startMonth: item.start_month,
+                validUntil: item.valid_until,
+              })),
+              overrides: Object.fromEntries(
+                Object.entries(previousMonthlyOverrides).map(([id, override]) => [Number(id), override.amount]),
+              ),
+            })
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
             const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
@@ -569,6 +592,7 @@ export default function MonthlyCashFlow() {
               remainingSavings: investmentSavings.remainingDue,
             })
             const payPeriodSummary = buildPayPeriodSummary({
+              previousMonthLateIncome,
               incomes: incomeList.map(item => ({ amount: item.amount, dueDay: item.due_day })),
               expenses: [
                 ...expenseList.map(item => ({ amount: item.amount, dueDay: item.due_day })),
@@ -610,10 +634,10 @@ export default function MonthlyCashFlow() {
                   <div className="border-b border-[#D4E4D5] px-4 py-3 sm:flex sm:items-start sm:justify-between sm:gap-6">
                     <div>
                       <p id={`${currency}-pay-period-title`} className="section-title">Plan by pay period</p>
-                      <p className="mt-1 text-xs text-[#55705E]">A quick check of what comes in and what is due on each side of the month.</p>
+                      <p className="mt-1 text-xs text-[#55705E]">A quick check of what is available and what is due on each side of the month.</p>
                     </div>
                     <p className="mt-2 max-w-xl text-xs text-[#7BAE8A] sm:mt-0 sm:text-right">
-                      Planned income and bills only. Current account balance and payment status are not included.
+                      Planned income and bills only. Late-month pay funds the start of the following month; current account balance and payment status are not included.
                     </p>
                   </div>
                   <div className="grid grid-cols-1 divide-y divide-[#D4E4D5] md:grid-cols-2 md:divide-x md:divide-y-0">
@@ -629,7 +653,10 @@ export default function MonthlyCashFlow() {
                             <span className="rounded-full bg-[#EDF4EE] px-2.5 py-1 font-mono text-[11px] font-bold tracking-wide text-[#55705E]">{period.range}</span>
                           </div>
                           <dl className="space-y-2 text-sm">
-                            <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Planned income</dt><dd className="money font-semibold text-[#1B6B3A]">+ {symbol} {fmt(period.totals.income)}</dd></div>
+                            <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Income available</dt><dd className="money font-semibold text-[#1B6B3A]">+ {symbol} {fmt(period.totals.income)}</dd></div>
+                            {period.label === 'Through day 15' && previousMonthLateIncome > 0 && (
+                              <div className="flex items-start justify-between gap-4 text-xs"><dt className="text-[#7BAE8A]">From previous month’s late paydays</dt><dd className="money whitespace-nowrap text-[#55705E]">{symbol} {fmt(previousMonthLateIncome)}</dd></div>
+                            )}
                             <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Bills due</dt><dd className="money font-semibold text-[#B85050]">− {symbol} {fmt(period.totals.expenses)}</dd></div>
                             <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#D4E4D5] pt-3"><dt className="font-bold text-[#1B4D3E]">Period balance</dt><dd className={`money text-base font-bold ${positive ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>{positive ? '+' : '−'} {symbol} {fmt(Math.abs(period.totals.balance))}</dd></div>
                           </dl>
