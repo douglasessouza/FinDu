@@ -28,8 +28,8 @@ interface PayPeriodTotals {
 }
 
 export interface PayPeriodSummary {
-  throughDay15: PayPeriodTotals
-  afterDay15: PayPeriodTotals
+  firstPeriod: PayPeriodTotals
+  secondPeriod: PayPeriodTotals
 }
 
 interface PreviousMonthIncomeItem {
@@ -62,7 +62,7 @@ export function calculatePreviousMonthLateIncome({
 }): number {
   const previousMonth = previousMonthKey(selectedMonth)
   return roundCurrency(items
-    .filter(item => item.currency === currency && item.type === 'INCOME' && item.dueDay > 15)
+    .filter(item => item.currency === currency && item.type === 'INCOME' && item.dueDay >= 25)
     .filter(item => !item.startMonth || item.startMonth <= previousMonth)
     .filter(item => !item.validUntil || item.validUntil.slice(0, 7) >= previousMonth)
     .reduce((sum, item) => sum + (overrides[item.id] ?? item.amount), 0))
@@ -80,15 +80,23 @@ function roundCurrency(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
-function totalForPeriod(items: PayPeriodItem[], throughDay15: boolean): number {
+function incomeForPeriod(items: PayPeriodItem[], firstPeriod: boolean): number {
   return roundCurrency(items
-    .filter(item => throughDay15 ? item.dueDay <= 15 : item.dueDay > 15)
+    .filter(item => firstPeriod
+      ? item.dueDay <= 14
+      : item.dueDay >= 15 && item.dueDay <= 25)
     .reduce((sum, item) => sum + item.amount, 0))
 }
 
-function billsForPeriod(items: PayPeriodExpenseItem[], throughDay15: boolean): PayPeriodBill[] {
+function expensesForPeriod(items: PayPeriodExpenseItem[], firstPeriod: boolean): number {
+  return roundCurrency(items
+    .filter(item => firstPeriod ? item.dueDay <= 14 : item.dueDay >= 15)
+    .reduce((sum, item) => sum + item.amount, 0))
+}
+
+function billsForPeriod(items: PayPeriodExpenseItem[], firstPeriod: boolean): PayPeriodBill[] {
   return items
-    .filter(item => throughDay15 ? item.dueDay <= 15 : item.dueDay > 15)
+    .filter(item => firstPeriod ? item.dueDay <= 14 : item.dueDay >= 15)
     .sort((a, b) => a.dueDay - b.dueDay || a.name.localeCompare(b.name))
     .map(item => ({
       id: item.id,
@@ -109,22 +117,22 @@ export function buildPayPeriodSummary({
   expenses: PayPeriodExpenseItem[]
   previousMonthLateIncome: number
 }): PayPeriodSummary {
-  const throughDay15Income = roundCurrency(totalForPeriod(incomes, true) + previousMonthLateIncome)
-  const throughDay15Expenses = totalForPeriod(expenses, true)
-  const afterDay15Income = totalForPeriod(incomes, false)
-  const afterDay15Expenses = totalForPeriod(expenses, false)
+  const firstPeriodIncome = roundCurrency(incomeForPeriod(incomes, true) + previousMonthLateIncome)
+  const firstPeriodExpenses = expensesForPeriod(expenses, true)
+  const secondPeriodIncome = incomeForPeriod(incomes, false)
+  const secondPeriodExpenses = expensesForPeriod(expenses, false)
 
   return {
-    throughDay15: {
-      income: throughDay15Income,
-      expenses: throughDay15Expenses,
-      balance: roundCurrency(throughDay15Income - throughDay15Expenses),
+    firstPeriod: {
+      income: firstPeriodIncome,
+      expenses: firstPeriodExpenses,
+      balance: roundCurrency(firstPeriodIncome - firstPeriodExpenses),
       bills: billsForPeriod(expenses, true),
     },
-    afterDay15: {
-      income: afterDay15Income,
-      expenses: afterDay15Expenses,
-      balance: roundCurrency(afterDay15Income - afterDay15Expenses),
+    secondPeriod: {
+      income: secondPeriodIncome,
+      expenses: secondPeriodExpenses,
+      balance: roundCurrency(secondPeriodIncome - secondPeriodExpenses),
       bills: billsForPeriod(expenses, false),
     },
   }

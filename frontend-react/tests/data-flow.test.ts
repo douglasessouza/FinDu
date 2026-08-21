@@ -19,7 +19,7 @@ import {
   resolveCardDueDay,
 } from '../src/utils/payPeriodSummary.ts'
 
-test('previous-month late income respects January rollover, overrides, validity, and currency', () => {
+test('previous-month income from day 25 respects rollover, overrides, validity, and currency', () => {
   const total = calculatePreviousMonthLateIncome({
     selectedMonth: '2026-01',
     currency: 'CAD',
@@ -30,17 +30,22 @@ test('previous-month late income respects January rollover, overrides, validity,
       { id: 3, amount: 500, currency: 'CAD', dueDay: 15, type: 'INCOME', startMonth: '2025-01' },
       { id: 4, amount: 900, currency: 'USD', dueDay: 30, type: 'INCOME', startMonth: '2025-01' },
       { id: 5, amount: 700, currency: 'CAD', dueDay: 29, type: 'INCOME', startMonth: '2026-01' },
+      { id: 6, amount: 100, currency: 'CAD', dueDay: 25, type: 'INCOME', startMonth: '2025-01' },
+      { id: 7, amount: 200, currency: 'CAD', dueDay: 24, type: 'INCOME', startMonth: '2025-01' },
     ],
   })
 
-  assert.equal(total, 5660)
+  assert.equal(total, 5760)
 })
 
-test('pay-period summary includes day 15 in the first period', () => {
+test('pay-period summary uses income windows 25-to-14 and 15-to-25 with bill windows 1-to-14 and 15-to-end', () => {
   const summary = buildPayPeriodSummary({
     previousMonthLateIncome: 5559.88,
     incomes: [
+      { amount: 500, dueDay: 14 },
       { amount: 2060, dueDay: 15 },
+      { amount: 100, dueDay: 25 },
+      { amount: 200, dueDay: 26 },
       { amount: 3499.88, dueDay: 28 },
       { amount: 2060, dueDay: 30 },
     ],
@@ -49,27 +54,29 @@ test('pay-period summary includes day 15 in the first period', () => {
       { id: 'card-2', name: 'RBC', kind: 'Credit card', dueLabel: 'Aug 16', amount: 326.72, dueDay: 16, status: 'Paid' },
       { id: 'recurring-1', name: 'Rent', kind: 'Recurring', dueLabel: 'day 1', amount: 2600, dueDay: 1 },
       { id: 'recurring-2', name: 'Affirm', kind: 'Recurring', dueLabel: 'day 7', amount: 66.62, dueDay: 7, status: 'Matched' },
+      { id: 'recurring-5', name: 'Insurance', kind: 'Recurring', dueLabel: 'day 15', amount: 40, dueDay: 15 },
       { id: 'recurring-3', name: 'Mac', kind: 'Recurring', dueLabel: 'day 18', amount: 63.26, dueDay: 18 },
       { id: 'recurring-4', name: 'Energy', kind: 'Recurring', dueLabel: 'day 19', amount: 150, dueDay: 19 },
     ],
   })
 
   assert.deepEqual(summary, {
-    throughDay15: {
-      income: 7619.88,
+    firstPeriod: {
+      income: 6059.88,
       expenses: 5283.64,
-      balance: 2336.24,
+      balance: 776.24,
       bills: [
         { id: 'recurring-1', name: 'Rent', kind: 'Recurring', dueLabel: 'day 1', amount: 2600 },
         { id: 'card-1', name: 'Amex', kind: 'Credit card', dueLabel: 'Aug 5', amount: 2617.02 },
         { id: 'recurring-2', name: 'Affirm', kind: 'Recurring', dueLabel: 'day 7', amount: 66.62, status: 'Matched' },
       ],
     },
-    afterDay15: {
-      income: 5559.88,
-      expenses: 539.98,
-      balance: 5019.9,
+    secondPeriod: {
+      income: 2160,
+      expenses: 579.98,
+      balance: 1580.02,
       bills: [
+        { id: 'recurring-5', name: 'Insurance', kind: 'Recurring', dueLabel: 'day 15', amount: 40 },
         { id: 'card-2', name: 'RBC', kind: 'Credit card', dueLabel: 'Aug 16', amount: 326.72, status: 'Paid' },
         { id: 'recurring-3', name: 'Mac', kind: 'Recurring', dueLabel: 'day 18', amount: 63.26 },
         { id: 'recurring-4', name: 'Energy', kind: 'Recurring', dueLabel: 'day 19', amount: 150 },
@@ -86,8 +93,8 @@ test('card due day prefers the statement date and falls back to the account sett
 
 test('pay-period summary returns zero totals when the month has no planned items', () => {
   assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [], previousMonthLateIncome: 0 }), {
-    throughDay15: { income: 0, expenses: 0, balance: 0, bills: [] },
-    afterDay15: { income: 0, expenses: 0, balance: 0, bills: [] },
+    firstPeriod: { income: 0, expenses: 0, balance: 0, bills: [] },
+    secondPeriod: { income: 0, expenses: 0, balance: 0, bills: [] },
   })
 })
 

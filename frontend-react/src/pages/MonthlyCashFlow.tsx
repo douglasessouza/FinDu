@@ -657,25 +657,28 @@ export default function MonthlyCashFlow() {
                       <p className="mt-1 text-xs text-[#55705E]">A quick check of what is available and what is due on each side of the month.</p>
                     </div>
                     <p className="mt-2 max-w-xl text-xs text-[#7BAE8A] sm:mt-0 sm:text-right">
-                      Planned income and bills only. Late-month pay funds the start of the following month; current account balance and payment status are not included.
+                      Income cycles: previous month day 25 through current day 14, then current days 15–25. Bills: days 1–14, then day 15 through month-end.
                     </p>
                   </div>
                   <div className="grid grid-cols-1 divide-y divide-[#D4E4D5] md:grid-cols-2 md:divide-x md:divide-y-0">
                     {[
-                      { label: 'Through day 15', range: '01–15', totals: payPeriodSummary.throughDay15 },
-                      { label: 'After day 15', range: `16–${new Date(year, month, 0).getDate()}`, totals: payPeriodSummary.afterDay15 },
+                      { label: 'First pay cycle', incomeRange: 'Income 25→14', billRange: 'Bills 01→14', totals: payPeriodSummary.firstPeriod, firstPeriod: true },
+                      { label: 'Second pay cycle', incomeRange: 'Income 15→25', billRange: `Bills 15→${new Date(year, month, 0).getDate()}`, totals: payPeriodSummary.secondPeriod, firstPeriod: false },
                     ].map(period => {
                       const positive = period.totals.balance >= 0
                       return (
                         <div key={period.label} className="px-4 py-4 sm:px-5">
                           <div className="mb-4 flex items-center justify-between gap-4">
                             <h3 className="font-bold text-[#1B4D3E]">{period.label}</h3>
-                            <span className="rounded-full bg-[#EDF4EE] px-2.5 py-1 font-mono text-[11px] font-bold tracking-wide text-[#55705E]">{period.range}</span>
+                            <span className="flex flex-wrap justify-end gap-1">
+                              <span className="rounded-full bg-[#E8F3EA] px-2.5 py-1 font-mono text-[10px] font-bold tracking-wide text-[#236B4B]">{period.incomeRange}</span>
+                              <span className="rounded-full bg-[#F3E8E8] px-2.5 py-1 font-mono text-[10px] font-bold tracking-wide text-[#B85050]">{period.billRange}</span>
+                            </span>
                           </div>
                           <div className="space-y-2 text-sm">
                             <div className="flex items-center justify-between gap-4"><span className="text-[#55705E]">Income available</span><span className="money font-semibold text-[#1B6B3A]">+ {symbol} {fmt(period.totals.income)}</span></div>
-                            {period.label === 'Through day 15' && previousMonthLateIncome > 0 && (
-                              <div className="flex items-start justify-between gap-4 text-xs"><span className="text-[#7BAE8A]">From previous month’s late paydays</span><span className="money whitespace-nowrap text-[#55705E]">{symbol} {fmt(previousMonthLateIncome)}</span></div>
+                            {period.firstPeriod && previousMonthLateIncome > 0 && (
+                              <div className="flex items-start justify-between gap-4 text-xs"><span className="text-[#7BAE8A]">Income from previous month, days 25–end</span><span className="money whitespace-nowrap text-[#55705E]">{symbol} {fmt(previousMonthLateIncome)}</span></div>
                             )}
                             <details className="group rounded-lg border border-[#E1EAE2] bg-white/70 open:bg-white">
                               <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2D6A4F]">
