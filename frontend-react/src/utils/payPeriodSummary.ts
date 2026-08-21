@@ -3,10 +3,28 @@ export interface PayPeriodItem {
   dueDay: number
 }
 
+export interface PayPeriodExpenseItem extends PayPeriodItem {
+  id: string
+  name: string
+  kind: 'Recurring' | 'Credit card'
+  dueLabel: string
+  status?: 'Paid' | 'Matched'
+}
+
+export interface PayPeriodBill {
+  id: string
+  name: string
+  kind: 'Recurring' | 'Credit card'
+  dueLabel: string
+  amount: number
+  status?: 'Paid' | 'Matched'
+}
+
 interface PayPeriodTotals {
   income: number
   expenses: number
   balance: number
+  bills: PayPeriodBill[]
 }
 
 export interface PayPeriodSummary {
@@ -68,13 +86,27 @@ function totalForPeriod(items: PayPeriodItem[], throughDay15: boolean): number {
     .reduce((sum, item) => sum + item.amount, 0))
 }
 
+function billsForPeriod(items: PayPeriodExpenseItem[], throughDay15: boolean): PayPeriodBill[] {
+  return items
+    .filter(item => throughDay15 ? item.dueDay <= 15 : item.dueDay > 15)
+    .sort((a, b) => a.dueDay - b.dueDay || a.name.localeCompare(b.name))
+    .map(item => ({
+      id: item.id,
+      name: item.name,
+      kind: item.kind,
+      dueLabel: item.dueLabel,
+      amount: item.amount,
+      ...(item.status ? { status: item.status } : {}),
+    }))
+}
+
 export function buildPayPeriodSummary({
   incomes,
   expenses,
   previousMonthLateIncome,
 }: {
   incomes: PayPeriodItem[]
-  expenses: PayPeriodItem[]
+  expenses: PayPeriodExpenseItem[]
   previousMonthLateIncome: number
 }): PayPeriodSummary {
   const throughDay15Income = roundCurrency(totalForPeriod(incomes, true) + previousMonthLateIncome)
@@ -87,11 +119,13 @@ export function buildPayPeriodSummary({
       income: throughDay15Income,
       expenses: throughDay15Expenses,
       balance: roundCurrency(throughDay15Income - throughDay15Expenses),
+      bills: billsForPeriod(expenses, true),
     },
     afterDay15: {
       income: afterDay15Income,
       expenses: afterDay15Expenses,
       balance: roundCurrency(afterDay15Income - afterDay15Expenses),
+      bills: billsForPeriod(expenses, false),
     },
   }
 }

@@ -45,18 +45,36 @@ test('pay-period summary includes day 15 in the first period', () => {
       { amount: 2060, dueDay: 30 },
     ],
     expenses: [
-      { amount: 2617.02, dueDay: 5 },
-      { amount: 326.72, dueDay: 16 },
-      { amount: 2600, dueDay: 1 },
-      { amount: 66.62, dueDay: 7 },
-      { amount: 63.26, dueDay: 18 },
-      { amount: 150, dueDay: 19 },
+      { id: 'card-1', name: 'Amex', kind: 'Credit card', dueLabel: 'Aug 5', amount: 2617.02, dueDay: 5 },
+      { id: 'card-2', name: 'RBC', kind: 'Credit card', dueLabel: 'Aug 16', amount: 326.72, dueDay: 16, status: 'Paid' },
+      { id: 'recurring-1', name: 'Rent', kind: 'Recurring', dueLabel: 'day 1', amount: 2600, dueDay: 1 },
+      { id: 'recurring-2', name: 'Affirm', kind: 'Recurring', dueLabel: 'day 7', amount: 66.62, dueDay: 7, status: 'Matched' },
+      { id: 'recurring-3', name: 'Mac', kind: 'Recurring', dueLabel: 'day 18', amount: 63.26, dueDay: 18 },
+      { id: 'recurring-4', name: 'Energy', kind: 'Recurring', dueLabel: 'day 19', amount: 150, dueDay: 19 },
     ],
   })
 
   assert.deepEqual(summary, {
-    throughDay15: { income: 7619.88, expenses: 5283.64, balance: 2336.24 },
-    afterDay15: { income: 5559.88, expenses: 539.98, balance: 5019.9 },
+    throughDay15: {
+      income: 7619.88,
+      expenses: 5283.64,
+      balance: 2336.24,
+      bills: [
+        { id: 'recurring-1', name: 'Rent', kind: 'Recurring', dueLabel: 'day 1', amount: 2600 },
+        { id: 'card-1', name: 'Amex', kind: 'Credit card', dueLabel: 'Aug 5', amount: 2617.02 },
+        { id: 'recurring-2', name: 'Affirm', kind: 'Recurring', dueLabel: 'day 7', amount: 66.62, status: 'Matched' },
+      ],
+    },
+    afterDay15: {
+      income: 5559.88,
+      expenses: 539.98,
+      balance: 5019.9,
+      bills: [
+        { id: 'card-2', name: 'RBC', kind: 'Credit card', dueLabel: 'Aug 16', amount: 326.72, status: 'Paid' },
+        { id: 'recurring-3', name: 'Mac', kind: 'Recurring', dueLabel: 'day 18', amount: 63.26 },
+        { id: 'recurring-4', name: 'Energy', kind: 'Recurring', dueLabel: 'day 19', amount: 150 },
+      ],
+    },
   })
 })
 
@@ -68,8 +86,8 @@ test('card due day prefers the statement date and falls back to the account sett
 
 test('pay-period summary returns zero totals when the month has no planned items', () => {
   assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [], previousMonthLateIncome: 0 }), {
-    throughDay15: { income: 0, expenses: 0, balance: 0 },
-    afterDay15: { income: 0, expenses: 0, balance: 0 },
+    throughDay15: { income: 0, expenses: 0, balance: 0, bills: [] },
+    afterDay15: { income: 0, expenses: 0, balance: 0, bills: [] },
   })
 })
 

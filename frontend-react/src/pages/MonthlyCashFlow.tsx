@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Check, ChevronLeft, ChevronRight, CircleHelp, Pencil, RotateCcw, Save, Sparkles, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Pencil, RotateCcw, Save, Sparkles, X } from 'lucide-react'
 import api, { getMonthlyDashboard } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/reportingData'
 import CardCycleSummary from '../components/CardCycleSummary'
@@ -595,8 +595,28 @@ export default function MonthlyCashFlow() {
               previousMonthLateIncome,
               incomes: incomeList.map(item => ({ amount: item.amount, dueDay: item.due_day })),
               expenses: [
-                ...expenseList.map(item => ({ amount: item.amount, dueDay: item.due_day })),
-                ...cardEntries.map(card => ({ amount: card.amount, dueDay: card.dueDay })),
+                ...expenseList.map(item => ({
+                  id: `recurring-${item.id}`,
+                  name: item.name,
+                  kind: 'Recurring' as const,
+                  dueLabel: `day ${item.due_day}`,
+                  amount: item.amount,
+                  dueDay: item.due_day,
+                  status: isPaid('recurring', item.id)
+                    ? 'Paid' as const
+                    : recurringMatches[item.id]
+                      ? 'Matched' as const
+                      : undefined,
+                })),
+                ...cardEntries.map(card => ({
+                  id: `card-${card.accountId}`,
+                  name: card.name,
+                  kind: 'Credit card' as const,
+                  dueLabel: card.dueDate ? formatDueDate(card.dueDate) : `day ${card.dueDay}`,
+                  amount: card.amount,
+                  dueDay: card.dueDay,
+                  status: isPaid('card', card.accountId) ? 'Paid' as const : undefined,
+                })),
               ],
             })
 
@@ -652,14 +672,39 @@ export default function MonthlyCashFlow() {
                             <h3 className="font-bold text-[#1B4D3E]">{period.label}</h3>
                             <span className="rounded-full bg-[#EDF4EE] px-2.5 py-1 font-mono text-[11px] font-bold tracking-wide text-[#55705E]">{period.range}</span>
                           </div>
-                          <dl className="space-y-2 text-sm">
-                            <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Income available</dt><dd className="money font-semibold text-[#1B6B3A]">+ {symbol} {fmt(period.totals.income)}</dd></div>
+                          <div className="space-y-2 text-sm">
+                            <div className="flex items-center justify-between gap-4"><span className="text-[#55705E]">Income available</span><span className="money font-semibold text-[#1B6B3A]">+ {symbol} {fmt(period.totals.income)}</span></div>
                             {period.label === 'Through day 15' && previousMonthLateIncome > 0 && (
-                              <div className="flex items-start justify-between gap-4 text-xs"><dt className="text-[#7BAE8A]">From previous month’s late paydays</dt><dd className="money whitespace-nowrap text-[#55705E]">{symbol} {fmt(previousMonthLateIncome)}</dd></div>
+                              <div className="flex items-start justify-between gap-4 text-xs"><span className="text-[#7BAE8A]">From previous month’s late paydays</span><span className="money whitespace-nowrap text-[#55705E]">{symbol} {fmt(previousMonthLateIncome)}</span></div>
                             )}
-                            <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Bills due</dt><dd className="money font-semibold text-[#B85050]">− {symbol} {fmt(period.totals.expenses)}</dd></div>
-                            <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#D4E4D5] pt-3"><dt className="font-bold text-[#1B4D3E]">Period balance</dt><dd className={`money text-base font-bold ${positive ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>{positive ? '+' : '−'} {symbol} {fmt(Math.abs(period.totals.balance))}</dd></div>
-                          </dl>
+                            <details className="group rounded-lg border border-[#E1EAE2] bg-white/70 open:bg-white">
+                              <summary className="flex cursor-pointer list-none items-center justify-between gap-4 rounded-lg px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2D6A4F]">
+                                <span className="flex items-center gap-2 text-[#55705E]">
+                                  <ChevronDown size={14} className="transition-transform group-open:rotate-180" aria-hidden="true" />
+                                  Bills due
+                                  <span className="rounded-full bg-[#F3E8E8] px-2 py-0.5 text-[10px] font-bold text-[#B85050]">{period.totals.bills.length}</span>
+                                </span>
+                                <span className="money font-semibold text-[#B85050]">− {symbol} {fmt(period.totals.expenses)}</span>
+                              </summary>
+                              <div className="border-t border-[#EDF2ED] px-3 py-1">
+                                {period.totals.bills.length === 0 ? (
+                                  <p className="py-2 text-xs text-[#7BAE8A]">No planned bills in this period.</p>
+                                ) : period.totals.bills.map(bill => (
+                                  <div key={bill.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-b border-[#EDF2ED] py-2.5 last:border-b-0">
+                                    <div className="min-w-0">
+                                      <p className="truncate font-semibold text-[#1B4D3E]">{bill.name}</p>
+                                      <p className="mt-0.5 text-[11px] text-[#7BAE8A]">{bill.kind} · {bill.dueLabel}</p>
+                                    </div>
+                                    <div className="text-right">
+                                      <p className="money whitespace-nowrap font-semibold text-[#B85050]">− {symbol} {fmt(bill.amount)}</p>
+                                      {bill.status && <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-[#7BAE8A]">{bill.status} · included</p>}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </details>
+                            <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#D4E4D5] pt-3"><span className="font-bold text-[#1B4D3E]">Period balance</span><span className={`money text-base font-bold ${positive ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>{positive ? '+' : '−'} {symbol} {fmt(Math.abs(period.totals.balance))}</span></div>
+                          </div>
                         </div>
                       )
                     })}
