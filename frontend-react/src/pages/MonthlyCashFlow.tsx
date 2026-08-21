@@ -5,6 +5,7 @@ import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/re
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
 import { calculateProjectedBalance, calculateRemainingIncome } from '../utils/cashFlowProjection'
+import { buildPayPeriodSummary, resolveCardDueDay } from '../utils/payPeriodSummary'
 import type {
   Account,
   CurrencyCode,
@@ -25,6 +26,7 @@ interface CardChargeEntry {
   currency: CurrencyCode
   amount: number
   dueDate?: string
+  dueDay: number
 }
 
 interface RecurringMatchCandidate {
@@ -195,6 +197,7 @@ export default function MonthlyCashFlow() {
   const [loadedMonth, setLoadedMonth] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<{ month: string, message: string } | null>(null)
   const monthlyRequestRef = useRef(createLatestRequestRunner())
+  const monthlyOverrideRequestRef = useRef(createLatestRequestRunner())
 
   const monthStr = `${year}-${String(month).padStart(2, '0')}`
   const monthLabel = new Date(year, month - 1, 1).toLocaleString('en', { month: 'long', year: 'numeric' })
@@ -211,12 +214,21 @@ export default function MonthlyCashFlow() {
     return order.filter(currency => available.has(currency))
   }, [accounts, cardCharges, recurring, statementTransactions])
 
+  function prepareMonthNavigation() {
+    monthlyOverrideRequestRef.current.invalidate()
+    setEditingRecurringId(null)
+    setSavingOverride(false)
+    setOverrideError('')
+  }
+
   function prevMonth() {
+    prepareMonthNavigation()
     if (month === 1) { setMonth(12); setYear(y => y - 1) }
     else setMonth(m => m - 1)
   }
 
   function nextMonth() {
+    prepareMonthNavigation()
     if (month === 12) { setMonth(1); setYear(y => y + 1) }
     else setMonth(m => m + 1)
   }
@@ -253,6 +265,10 @@ export default function MonthlyCashFlow() {
                 currency: card.currency,
                 amount: card.amount_due,
                 dueDate: card.payment_due_date?.slice(0, 10),
+                dueDay: resolveCardDueDay(
+                  card.payment_due_date,
+                  dashboard.accounts.find(account => account.id === card.account_id)?.due_day,
+                ),
               })),
           )
           setLoadedMonth(requestedMonth)
@@ -270,8 +286,12 @@ export default function MonthlyCashFlow() {
 
   useEffect(() => {
     const requestRunner = monthlyRequestRef.current
+    const overrideRequestRunner = monthlyOverrideRequestRef.current
     void load(monthStr)
-    return () => { requestRunner.invalidate() }
+    return () => {
+      requestRunner.invalidate()
+      overrideRequestRunner.invalidate()
+    }
   }, [monthStr])
 
   const effectiveRecurring = useMemo(
@@ -377,38 +397,50 @@ export default function MonthlyCashFlow() {
       setOverrideError('Enter an amount greater than zero.')
       return
     }
-    setSavingOverride(true)
-    setOverrideError('')
-    try {
-      const res = await api.put(`/recurring-expenses/${item.id}/monthly-overrides/${monthStr}`, { amount })
-      const saved = res.data as RecurringMonthlyOverride
-      setMonthlyOverrides(prev => ({ ...prev, [item.id]: saved }))
-      setEditingRecurringId(null)
-    } catch (error) {
-      console.error('Failed to save monthly recurring amount', error)
-      setOverrideError('Could not save this monthly amount.')
-    } finally {
-      setSavingOverride(false)
-    }
+    await monthlyOverrideRequestRef.current.run(
+      () => api.put(`/recurring-expenses/${item.id}/monthly-overrides/${monthStr}`, { amount }),
+      {
+        onStart: () => {
+          setSavingOverride(true)
+          setOverrideError('')
+        },
+        onSuccess: res => {
+          const saved = res.data as RecurringMonthlyOverride
+          setMonthlyOverrides(prev => ({ ...prev, [item.id]: saved }))
+          setEditingRecurringId(null)
+        },
+        onError: error => {
+          console.error('Failed to save monthly recurring amount', error)
+          setOverrideError('Could not save this monthly amount.')
+        },
+        onFinish: () => setSavingOverride(false),
+      },
+    )
   }
 
   async function resetMonthlyOverride(item: RecurringExpense) {
-    setSavingOverride(true)
-    setOverrideError('')
-    try {
-      await api.delete(`/recurring-expenses/${item.id}/monthly-overrides/${monthStr}`)
-      setMonthlyOverrides(prev => {
-        const next = { ...prev }
-        delete next[item.id]
-        return next
-      })
-      setEditingRecurringId(null)
-    } catch (error) {
-      console.error('Failed to reset monthly recurring amount', error)
-      setOverrideError('Could not restore the default amount.')
-    } finally {
-      setSavingOverride(false)
-    }
+    await monthlyOverrideRequestRef.current.run(
+      () => api.delete(`/recurring-expenses/${item.id}/monthly-overrides/${monthStr}`),
+      {
+        onStart: () => {
+          setSavingOverride(true)
+          setOverrideError('')
+        },
+        onSuccess: () => {
+          setMonthlyOverrides(prev => {
+            const next = { ...prev }
+            delete next[item.id]
+            return next
+          })
+          setEditingRecurringId(null)
+        },
+        onError: error => {
+          console.error('Failed to reset monthly recurring amount', error)
+          setOverrideError('Could not restore the default amount.')
+        },
+        onFinish: () => setSavingOverride(false),
+      },
+    )
   }
 
   function isPaid(itemType: string, itemId: number): MonthlyPayment | undefined {
@@ -536,6 +568,13 @@ export default function MonthlyCashFlow() {
               remainingExpenses: openFixedExpenses,
               remainingSavings: investmentSavings.remainingDue,
             })
+            const payPeriodSummary = buildPayPeriodSummary({
+              incomes: incomeList.map(item => ({ amount: item.amount, dueDay: item.due_day })),
+              expenses: [
+                ...expenseList.map(item => ({ amount: item.amount, dueDay: item.due_day })),
+                ...cardEntries.map(card => ({ amount: card.amount, dueDay: card.dueDay })),
+              ],
+            })
 
             if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0 && investmentSavings.plannedDue === 0) return null
 
@@ -564,6 +603,39 @@ export default function MonthlyCashFlow() {
                   </div>
                   <div className="grid grid-cols-1 gap-2 border-t border-[#E6EEE7] bg-[#F8FBF8] px-5 py-3 text-xs text-[#55705E] sm:grid-cols-3">
                     <span>Received income {symbol} {fmt(receivedIncomeTotal)}</span><span>Still to receive {symbol} {fmt(remainingIncomeTotal)}</span><span>Still to pay {symbol} {fmt(openFixedExpenses)}</span>
+                  </div>
+                </section>
+
+                <section aria-labelledby={`${currency}-pay-period-title`} className="mb-5 overflow-hidden rounded-xl border-2 border-[#1B4D3E] bg-[#FCFEFC]">
+                  <div className="border-b border-[#D4E4D5] px-4 py-3 sm:flex sm:items-start sm:justify-between sm:gap-6">
+                    <div>
+                      <p id={`${currency}-pay-period-title`} className="section-title">Plan by pay period</p>
+                      <p className="mt-1 text-xs text-[#55705E]">A quick check of what comes in and what is due on each side of the month.</p>
+                    </div>
+                    <p className="mt-2 max-w-xl text-xs text-[#7BAE8A] sm:mt-0 sm:text-right">
+                      Planned income and bills only. Current account balance and payment status are not included.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 divide-y divide-[#D4E4D5] md:grid-cols-2 md:divide-x md:divide-y-0">
+                    {[
+                      { label: 'Through day 15', range: '01–15', totals: payPeriodSummary.throughDay15 },
+                      { label: 'After day 15', range: `16–${new Date(year, month, 0).getDate()}`, totals: payPeriodSummary.afterDay15 },
+                    ].map(period => {
+                      const positive = period.totals.balance >= 0
+                      return (
+                        <div key={period.label} className="px-4 py-4 sm:px-5">
+                          <div className="mb-4 flex items-center justify-between gap-4">
+                            <h3 className="font-bold text-[#1B4D3E]">{period.label}</h3>
+                            <span className="rounded-full bg-[#EDF4EE] px-2.5 py-1 font-mono text-[11px] font-bold tracking-wide text-[#55705E]">{period.range}</span>
+                          </div>
+                          <dl className="space-y-2 text-sm">
+                            <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Planned income</dt><dd className="money font-semibold text-[#1B6B3A]">+ {symbol} {fmt(period.totals.income)}</dd></div>
+                            <div className="flex items-center justify-between gap-4"><dt className="text-[#55705E]">Bills due</dt><dd className="money font-semibold text-[#B85050]">− {symbol} {fmt(period.totals.expenses)}</dd></div>
+                            <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#D4E4D5] pt-3"><dt className="font-bold text-[#1B4D3E]">Period balance</dt><dd className={`money text-base font-bold ${positive ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>{positive ? '+' : '−'} {symbol} {fmt(Math.abs(period.totals.balance))}</dd></div>
+                          </dl>
+                        </div>
+                      )
+                    })}
                   </div>
                 </section>
 
@@ -596,7 +668,43 @@ export default function MonthlyCashFlow() {
                                     )}
                                   </p>
                                 </div>
-                                <p className="font-bold whitespace-nowrap text-[#1B6B3A]">+ {symbol} {fmt(r.amount)}</p>
+                                <div className="text-right">
+                                  {editingRecurringId === r.id ? (
+                                    <div className="flex flex-col items-end gap-1">
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-xs text-[#8BAE90]">{symbol}</span>
+                                        <input
+                                          type="number"
+                                          min="0.01"
+                                          step="0.01"
+                                          value={editingAmount}
+                                          onChange={event => setEditingAmount(event.target.value)}
+                                          onKeyDown={event => {
+                                            if (event.key === 'Enter') saveMonthlyOverride(r)
+                                            if (event.key === 'Escape') setEditingRecurringId(null)
+                                          }}
+                                          autoFocus
+                                          className="w-28 rounded-md border border-[#B9D1BD] bg-white px-2 py-1 text-right text-sm text-[#1B4D3E] outline-none focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#D4E4D5]"
+                                          aria-label={`Amount for ${r.name} in ${monthLabel}`}
+                                        />
+                                        <button onClick={() => saveMonthlyOverride(r)} disabled={savingOverride} className="rounded-md p-1.5 text-[#1B6B3A] hover:bg-[#E8F3EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F] disabled:opacity-50" title={`Save amount only for ${monthLabel}`}><Save size={15} /></button>
+                                        <button onClick={() => setEditingRecurringId(null)} disabled={savingOverride} className="rounded-md p-1.5 text-[#8BAE90] hover:bg-[#EDF4EE] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F]" title="Cancel"><X size={15} /></button>
+                                      </div>
+                                      {monthlyOverrides[r.id] && (
+                                        <button onClick={() => resetMonthlyOverride(r)} disabled={savingOverride} className="flex items-center gap-1 text-[11px] text-[#7BAE8A] hover:text-[#1B4D3E] disabled:opacity-50" title="Use the regular recurring amount again"><RotateCcw size={11} />Restore default {symbol} {fmt(recurring.find(item => item.id === r.id)?.amount ?? r.amount)}</button>
+                                      )}
+                                      {overrideError && <p className="text-xs font-semibold text-[#B85050]">{overrideError}</p>}
+                                    </div>
+                                  ) : (
+                                    <>
+                                      <div className="flex items-center justify-end gap-1">
+                                        <p className="font-bold whitespace-nowrap text-[#1B6B3A]">+ {symbol} {fmt(r.amount)}</p>
+                                        <button onClick={() => startEditingRecurring(r)} className="rounded-md p-1 text-[#7BAE8A] hover:bg-[#E8F3EA] hover:text-[#1B4D3E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F]" title={`Edit amount only for ${monthLabel}`}><Pencil size={13} /></button>
+                                      </div>
+                                      {monthlyOverrides[r.id] && <p className="text-[11px] font-semibold text-amber-600">custom for {monthLabel}</p>}
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             </div>
                           ))}
@@ -621,7 +729,43 @@ export default function MonthlyCashFlow() {
                                       )}
                                     </p>
                                   </div>
-                                  <p className="text-[#1B6B3A] font-bold whitespace-nowrap">+ {symbol} {fmt(r.amount)}</p>
+                                  <div className="text-right">
+                                    {editingRecurringId === r.id ? (
+                                      <div className="flex flex-col items-end gap-1">
+                                        <div className="flex items-center gap-1">
+                                          <span className="text-xs text-[#8BAE90]">{symbol}</span>
+                                          <input
+                                            type="number"
+                                            min="0.01"
+                                            step="0.01"
+                                            value={editingAmount}
+                                            onChange={event => setEditingAmount(event.target.value)}
+                                            onKeyDown={event => {
+                                              if (event.key === 'Enter') saveMonthlyOverride(r)
+                                              if (event.key === 'Escape') setEditingRecurringId(null)
+                                            }}
+                                            autoFocus
+                                            className="w-28 rounded-md border border-[#B9D1BD] bg-white px-2 py-1 text-right text-sm text-[#1B4D3E] outline-none focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#D4E4D5]"
+                                            aria-label={`Amount for ${r.name} in ${monthLabel}`}
+                                          />
+                                          <button onClick={() => saveMonthlyOverride(r)} disabled={savingOverride} className="rounded-md p-1.5 text-[#1B6B3A] hover:bg-[#E8F3EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F] disabled:opacity-50" title={`Save amount only for ${monthLabel}`}><Save size={15} /></button>
+                                          <button onClick={() => setEditingRecurringId(null)} disabled={savingOverride} className="rounded-md p-1.5 text-[#8BAE90] hover:bg-[#EDF4EE] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F]" title="Cancel"><X size={15} /></button>
+                                        </div>
+                                        {monthlyOverrides[r.id] && (
+                                          <button onClick={() => resetMonthlyOverride(r)} disabled={savingOverride} className="flex items-center gap-1 text-[11px] text-[#7BAE8A] hover:text-[#1B4D3E] disabled:opacity-50" title="Use the regular recurring amount again"><RotateCcw size={11} />Restore default {symbol} {fmt(recurring.find(item => item.id === r.id)?.amount ?? r.amount)}</button>
+                                        )}
+                                        {overrideError && <p className="text-xs font-semibold text-[#B85050]">{overrideError}</p>}
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <div className="flex items-center justify-end gap-1">
+                                          <p className="text-[#1B6B3A] font-bold whitespace-nowrap">+ {symbol} {fmt(r.amount)}</p>
+                                          <button onClick={() => startEditingRecurring(r)} className="rounded-md p-1 text-[#3F6EA8] hover:bg-[#E7EFFA] hover:text-[#1B4D3E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3F6EA8]" title={`Edit amount only for ${monthLabel}`}><Pencil size={13} /></button>
+                                        </div>
+                                        {monthlyOverrides[r.id] && <p className="text-[11px] font-semibold text-amber-600">custom for {monthLabel}</p>}
+                                      </>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             ))}

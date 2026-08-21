@@ -13,6 +13,43 @@ import {
   replaceSelectedMonth,
 } from '../src/services/reportingData.ts'
 import { calculateProjectedBalance, calculateRemainingIncome } from '../src/utils/cashFlowProjection.ts'
+import { buildPayPeriodSummary, resolveCardDueDay } from '../src/utils/payPeriodSummary.ts'
+
+test('pay-period summary includes day 15 in the first period', () => {
+  const summary = buildPayPeriodSummary({
+    incomes: [
+      { amount: 2060, dueDay: 15 },
+      { amount: 3499.88, dueDay: 28 },
+      { amount: 2060, dueDay: 30 },
+    ],
+    expenses: [
+      { amount: 2617.02, dueDay: 5 },
+      { amount: 326.72, dueDay: 16 },
+      { amount: 2600, dueDay: 1 },
+      { amount: 66.62, dueDay: 7 },
+      { amount: 63.26, dueDay: 18 },
+      { amount: 150, dueDay: 19 },
+    ],
+  })
+
+  assert.deepEqual(summary, {
+    throughDay15: { income: 2060, expenses: 5283.64, balance: -3223.64 },
+    afterDay15: { income: 5559.88, expenses: 539.98, balance: 5019.9 },
+  })
+})
+
+test('card due day prefers the statement date and falls back to the account setting', () => {
+  assert.equal(resolveCardDueDay('2026-08-04', 18), 4)
+  assert.equal(resolveCardDueDay(undefined, 18), 18)
+  assert.equal(resolveCardDueDay(undefined, undefined), 31)
+})
+
+test('pay-period summary returns zero totals when the month has no planned items', () => {
+  assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [] }), {
+    throughDay15: { income: 0, expenses: 0, balance: 0 },
+    afterDay15: { income: 0, expenses: 0, balance: 0 },
+  })
+})
 
 test('received salary settles guaranteed income even when deposits do not match individual payroll dates', () => {
   assert.equal(calculateRemainingIncome(7619.88, 7624.38), 0)
