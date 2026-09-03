@@ -16,10 +16,11 @@ import { calculateProjectedBalance, calculateRemainingIncome } from '../src/util
 import {
   buildPayPeriodSummary,
   calculatePreviousMonthLateIncome,
+  hasExpectedIncomeDate,
   resolveCardDueDay,
 } from '../src/utils/payPeriodSummary.ts'
 
-test('previous-month income from day 25 respects rollover, overrides, validity, and currency', () => {
+test('previous-month income from day 28 respects rollover, overrides, validity, and currency', () => {
   const total = calculatePreviousMonthLateIncome({
     selectedMonth: '2026-01',
     currency: 'CAD',
@@ -35,19 +36,16 @@ test('previous-month income from day 25 respects rollover, overrides, validity, 
     ],
   })
 
-  assert.equal(total, 5760)
+  assert.equal(total, 5660)
 })
 
-test('pay-period summary uses income windows 25-to-14 and 15-to-25 with bill windows 1-to-14 and 15-to-end', () => {
+test('pay-period summary replaces planned income with received income in cycles 28-to-14 and 15-to-27', () => {
   const summary = buildPayPeriodSummary({
-    previousMonthLateIncome: 5559.88,
     incomes: [
-      { amount: 500, dueDay: 14 },
-      { amount: 2060, dueDay: 15 },
-      { amount: 100, dueDay: 25 },
-      { amount: 200, dueDay: 26 },
-      { amount: 3499.88, dueDay: 28 },
-      { amount: 2060, dueDay: 30 },
+      { id: 'income-previous-1', name: 'Douglas salary', dueLabel: 'Expected Aug 28', amount: 3500, actualAmount: 3000, period: 'first' },
+      { id: 'income-previous-2', name: 'Jaque salary', dueLabel: 'Expected Aug 30', amount: 2060, actualAmount: 2000, period: 'first' },
+      { id: 'income-current-1', name: 'SP Rent', dueLabel: 'Expected Sep 9', amount: 450, period: 'first' },
+      { id: 'income-current-2', name: 'Jaque salary', dueLabel: 'Expected Sep 15', amount: 2060, period: 'second' },
     ],
     expenses: [
       { id: 'card-1', name: 'Amex', kind: 'Credit card', dueLabel: 'Aug 5', amount: 2617.02, dueDay: 5 },
@@ -62,9 +60,14 @@ test('pay-period summary uses income windows 25-to-14 and 15-to-25 with bill win
 
   assert.deepEqual(summary, {
     firstPeriod: {
-      income: 6059.88,
+      income: 5450,
       expenses: 5283.64,
-      balance: 776.24,
+      balance: 166.36,
+      incomes: [
+        { id: 'income-previous-1', name: 'Douglas salary', dueLabel: 'Expected Aug 28', amount: 3000, status: 'Received' },
+        { id: 'income-previous-2', name: 'Jaque salary', dueLabel: 'Expected Aug 30', amount: 2000, status: 'Received' },
+        { id: 'income-current-1', name: 'SP Rent', dueLabel: 'Expected Sep 9', amount: 450, status: 'Planned' },
+      ],
       bills: [
         { id: 'recurring-1', name: 'Rent', kind: 'Recurring', dueLabel: 'day 1', amount: 2600 },
         { id: 'card-1', name: 'Amex', kind: 'Credit card', dueLabel: 'Aug 5', amount: 2617.02 },
@@ -72,9 +75,12 @@ test('pay-period summary uses income windows 25-to-14 and 15-to-25 with bill win
       ],
     },
     secondPeriod: {
-      income: 2160,
+      income: 2060,
       expenses: 579.98,
-      balance: 1580.02,
+      balance: 1480.02,
+      incomes: [
+        { id: 'income-current-2', name: 'Jaque salary', dueLabel: 'Expected Sep 15', amount: 2060, status: 'Planned' },
+      ],
       bills: [
         { id: 'recurring-5', name: 'Insurance', kind: 'Recurring', dueLabel: 'day 15', amount: 40 },
         { id: 'card-2', name: 'RBC', kind: 'Credit card', dueLabel: 'Aug 16', amount: 326.72, status: 'Paid' },
@@ -91,10 +97,15 @@ test('card due day prefers the statement date and falls back to the account sett
   assert.equal(resolveCardDueDay(undefined, undefined), 31)
 })
 
+test('income matching treats the start of a month as close to an expected month-end deposit', () => {
+  assert.equal(hasExpectedIncomeDate({ transactionDate: '2026-09-01', dueDay: 28, cashFlowMonth: '2026-09' }), true)
+  assert.equal(hasExpectedIncomeDate({ transactionDate: '2026-09-12', dueDay: 28, cashFlowMonth: '2026-09' }), false)
+})
+
 test('pay-period summary returns zero totals when the month has no planned items', () => {
-  assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [], previousMonthLateIncome: 0 }), {
-    firstPeriod: { income: 0, expenses: 0, balance: 0, bills: [] },
-    secondPeriod: { income: 0, expenses: 0, balance: 0, bills: [] },
+  assert.deepEqual(buildPayPeriodSummary({ incomes: [], expenses: [] }), {
+    firstPeriod: { income: 0, expenses: 0, balance: 0, incomes: [], bills: [] },
+    secondPeriod: { income: 0, expenses: 0, balance: 0, incomes: [], bills: [] },
   })
 })
 

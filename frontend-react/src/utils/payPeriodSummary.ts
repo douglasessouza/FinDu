@@ -3,6 +3,23 @@ export interface PayPeriodItem {
   dueDay: number
 }
 
+export interface PayPeriodIncomeItem {
+  id: string
+  name: string
+  dueLabel: string
+  amount: number
+  actualAmount?: number
+  period: 'first' | 'second'
+}
+
+export interface PayPeriodIncome {
+  id: string
+  name: string
+  dueLabel: string
+  amount: number
+  status: 'Planned' | 'Received'
+}
+
 export interface PayPeriodExpenseItem extends PayPeriodItem {
   id: string
   name: string
@@ -24,6 +41,7 @@ interface PayPeriodTotals {
   income: number
   expenses: number
   balance: number
+  incomes: PayPeriodIncome[]
   bills: PayPeriodBill[]
 }
 
@@ -62,7 +80,7 @@ export function calculatePreviousMonthLateIncome({
 }): number {
   const previousMonth = previousMonthKey(selectedMonth)
   return roundCurrency(items
-    .filter(item => item.currency === currency && item.type === 'INCOME' && item.dueDay >= 25)
+    .filter(item => item.currency === currency && item.type === 'INCOME' && item.dueDay >= 28)
     .filter(item => !item.startMonth || item.startMonth <= previousMonth)
     .filter(item => !item.validUntil || item.validUntil.slice(0, 7) >= previousMonth)
     .reduce((sum, item) => sum + (overrides[item.id] ?? item.amount), 0))
@@ -80,12 +98,55 @@ function roundCurrency(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100
 }
 
-function incomeForPeriod(items: PayPeriodItem[], firstPeriod: boolean): number {
-  return roundCurrency(items
-    .filter(item => firstPeriod
-      ? item.dueDay <= 14
-      : item.dueDay >= 15 && item.dueDay <= 25)
-    .reduce((sum, item) => sum + item.amount, 0))
+function addMonths(month: string, delta: number): string {
+  const [year, monthNumber] = month.split('-').map(Number)
+  const date = new Date(year, monthNumber - 1 + delta, 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function nearestDueDateDistance(transactionDate: string, dueDay: number): number {
+  const [year, month, day] = transactionDate.slice(0, 10).split('-').map(Number)
+  if (![year, month, day].every(Number.isInteger)) return 31
+  const transactionTime = Date.UTC(year, month - 1, day)
+  return Math.min(...[-1, 0, 1].map(offset => {
+    const candidateMonth = new Date(Date.UTC(year, month - 1 + offset, 1))
+    const lastDay = new Date(Date.UTC(candidateMonth.getUTCFullYear(), candidateMonth.getUTCMonth() + 1, 0)).getUTCDate()
+    const candidateTime = Date.UTC(
+      candidateMonth.getUTCFullYear(),
+      candidateMonth.getUTCMonth(),
+      Math.min(dueDay, lastDay),
+    )
+    return Math.abs(transactionTime - candidateTime) / 86_400_000
+  }))
+}
+
+export function hasExpectedIncomeDate({
+  transactionDate,
+  dueDay,
+  cashFlowMonth,
+}: {
+  transactionDate: string
+  dueDay: number
+  cashFlowMonth: string
+}): boolean {
+  const transactionMonth = transactionDate.slice(0, 7)
+  const transactionDay = Number(transactionDate.slice(8, 10))
+  if (!Number.isInteger(transactionDay)) return false
+  const effectiveCashFlowMonth = transactionDay >= 28 ? addMonths(transactionMonth, 1) : transactionMonth
+  return effectiveCashFlowMonth === cashFlowMonth
+    && nearestDueDateDistance(transactionDate, dueDay) <= 7
+}
+
+function incomesForPeriod(items: PayPeriodIncomeItem[], period: 'first' | 'second'): PayPeriodIncome[] {
+  return items
+    .filter(item => item.period === period)
+    .map(item => ({
+      id: item.id,
+      name: item.name,
+      dueLabel: item.dueLabel,
+      amount: roundCurrency(item.actualAmount ?? item.amount),
+      status: item.actualAmount === undefined ? 'Planned' as const : 'Received' as const,
+    }))
 }
 
 function expensesForPeriod(items: PayPeriodExpenseItem[], firstPeriod: boolean): number {
@@ -111,15 +172,15 @@ function billsForPeriod(items: PayPeriodExpenseItem[], firstPeriod: boolean): Pa
 export function buildPayPeriodSummary({
   incomes,
   expenses,
-  previousMonthLateIncome,
 }: {
-  incomes: PayPeriodItem[]
+  incomes: PayPeriodIncomeItem[]
   expenses: PayPeriodExpenseItem[]
-  previousMonthLateIncome: number
 }): PayPeriodSummary {
-  const firstPeriodIncome = roundCurrency(incomeForPeriod(incomes, true) + previousMonthLateIncome)
+  const firstPeriodIncomes = incomesForPeriod(incomes, 'first')
+  const secondPeriodIncomes = incomesForPeriod(incomes, 'second')
+  const firstPeriodIncome = roundCurrency(firstPeriodIncomes.reduce((sum, item) => sum + item.amount, 0))
   const firstPeriodExpenses = expensesForPeriod(expenses, true)
-  const secondPeriodIncome = incomeForPeriod(incomes, false)
+  const secondPeriodIncome = roundCurrency(secondPeriodIncomes.reduce((sum, item) => sum + item.amount, 0))
   const secondPeriodExpenses = expensesForPeriod(expenses, false)
 
   return {
@@ -127,12 +188,14 @@ export function buildPayPeriodSummary({
       income: firstPeriodIncome,
       expenses: firstPeriodExpenses,
       balance: roundCurrency(firstPeriodIncome - firstPeriodExpenses),
+      incomes: firstPeriodIncomes,
       bills: billsForPeriod(expenses, true),
     },
     secondPeriod: {
       income: secondPeriodIncome,
       expenses: secondPeriodExpenses,
       balance: roundCurrency(secondPeriodIncome - secondPeriodExpenses),
+      incomes: secondPeriodIncomes,
       bills: billsForPeriod(expenses, false),
     },
   }
