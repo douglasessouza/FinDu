@@ -116,6 +116,9 @@ def verify_auth_token(token: str) -> bool:
         if not hmac.compare_digest(expected, provided):
             return False
         payload = auth_json.loads(base64url_decode(payload_part))
+        if GOOGLE_AUTH_ENABLED and not APP_PASSWORD:
+            if payload.get("sub") not in ALLOWED_GOOGLE_EMAILS:
+                return False
         return int(payload.get("exp", 0)) >= int(time.time())
     except Exception:
         return False
@@ -151,7 +154,7 @@ def auth_status():
 @app.post("/auth/login")
 def auth_login(login: LoginRequest):
     if not APP_PASSWORD:
-        return {"token": create_auth_token()}
+        raise HTTPException(status_code=403, detail="Password sign-in is disabled")
     if not hmac.compare_digest(login.password, APP_PASSWORD):
         raise HTTPException(status_code=401, detail="Invalid password")
     return {"token": create_auth_token("password")}
