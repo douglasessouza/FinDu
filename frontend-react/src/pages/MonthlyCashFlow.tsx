@@ -193,6 +193,9 @@ export default function MonthlyCashFlow() {
   const [cardCharges, setCardCharges] = useState<CardChargeEntry[]>([])
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
   const [savedMatches, setSavedMatches] = useState<SavedRecurringMatch[]>([])
+  const [savingIncome, setSavingIncome] = useState(false)
+  const [incomeError, setIncomeError] = useState('')
+  const incomeRequestRef = useRef(createLatestRequestRunner())
   const [loading, setLoading] = useState(true)
   const [loadedMonth, setLoadedMonth] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<{ month: string, message: string } | null>(null)
@@ -215,6 +218,9 @@ export default function MonthlyCashFlow() {
   }, [accounts, cardCharges, recurring, statementTransactions])
 
   function prepareMonthNavigation() {
+    incomeRequestRef.current.invalidate()
+    setSavingIncome(false)
+    setIncomeError('')
     monthlyOverrideRequestRef.current.invalidate()
     setEditingRecurringId(null)
     setSavingOverride(false)
@@ -293,10 +299,12 @@ export default function MonthlyCashFlow() {
   useEffect(() => {
     const requestRunner = monthlyRequestRef.current
     const overrideRequestRunner = monthlyOverrideRequestRef.current
+    const incomeRequestRunner = incomeRequestRef.current
     void load(monthStr)
     return () => {
       requestRunner.invalidate()
       overrideRequestRunner.invalidate()
+      incomeRequestRunner.invalidate()
     }
   }, [monthStr])
 
@@ -477,6 +485,28 @@ export default function MonthlyCashFlow() {
     })
   }
 
+  async function toggleIncomeReceived(item: RecurringExpense) {
+    const existing = isPaid('income', item.id)
+    await incomeRequestRef.current.run(
+      () => existing
+        ? api.delete(`/monthly-payments/${existing.id}`)
+        : api.post('/monthly-payments', {
+            month: monthStr,
+            item_type: 'income',
+            item_id: item.id,
+            item_name: item.name,
+          }),
+      {
+        onStart: () => { setSavingIncome(true); setIncomeError('') },
+        onSuccess: res => setPayments(prev => existing
+          ? prev.filter(payment => payment.id !== existing.id)
+          : [...prev, res.data]),
+        onError: () => setIncomeError('Could not update received income. Please try again.'),
+        onFinish: () => setSavingIncome(false),
+      },
+    )
+  }
+
   async function togglePaid(itemType: string, itemId: number, itemName: string) {
     const existing = isPaid(itemType, itemId)
     if (existing) {
@@ -567,9 +597,18 @@ export default function MonthlyCashFlow() {
             // The bank balance already includes every received deposit. Use the
             // aggregate salary received this month to avoid counting income again
             // when one deposit covers multiple payroll entries or arrives off-date.
+            const confirmedOtherIncome = otherIncome.reduce((sum, item) => {
+              if (!isPaid('income', item.id)) return sum
+              const transaction = recurringMatches[item.id]?.transaction
+              // A salary match is already included in the aggregate above.
+              if (transaction?.date.slice(0, 7) === monthStr
+                && transaction.category?.trim().toLowerCase() === 'salary') return sum
+              return sum + item.amount
+            }, 0)
             const remainingIncomeTotal = calculateRemainingIncome(
               plannedIncomeTotal,
               actualSalaryIncomeTotal,
+              confirmedOtherIncome,
             )
             const projectedBalance = calculateProjectedBalance({
               currentBalance: inBank,
@@ -599,14 +638,15 @@ export default function MonthlyCashFlow() {
               }),
               ...incomeList.filter(item => item.due_day <= 27).map(item => {
                 const match = recurringMatches[item.id]
+                const manuallyReceived = Boolean(isPaid('income', item.id))
                 return {
                   id: `income-current-${item.id}`,
                   name: item.name,
                   dueLabel: match
                     ? `Received ${formatDueDate(match.transaction.date)}`
-                    : `Expected ${new Date(year, month - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
+                    : manuallyReceived ? 'Already included in account balance' : `Expected ${new Date(year, month - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
                   amount: item.amount,
-                  actualAmount: match?.actualAmount,
+                  actualAmount: match?.actualAmount ?? (manuallyReceived ? item.amount : undefined),
                   period: item.due_day <= 14 ? 'first' as const : 'second' as const,
                 }
               }),
@@ -716,6 +756,22 @@ export default function MonthlyCashFlow() {
                                     <div className="text-right">
                                       <p className="money whitespace-nowrap font-semibold text-[#1B6B3A]">+ {symbol} {fmt(income.amount)}</p>
                                       <p className={`mt-0.5 text-[10px] font-bold uppercase tracking-wide ${income.status === 'Received' ? 'text-[#236B4B]' : 'text-[#B28E18]'}`}>{income.status}</p>
+                                      {(() => {
+                                        const item = otherIncome.find(current => income.id === `income-current-${current.id}`)
+                                        if (!item) return null
+                                        const confirmed = Boolean(isPaid('income', item.id))
+                                        if (recurringMatches[item.id] && !confirmed) return null
+                                        return <button
+                                          type="button"
+                                          onClick={() => void toggleIncomeReceived(item)}
+                                          disabled={savingIncome}
+                                          aria-pressed={confirmed}
+                                          aria-label={`${confirmed ? 'Undo receipt for' : 'Mark as received:'} ${item.name}`}
+                                          title="Already included in your account balance. No new transaction is created."
+                                          className="mt-1 inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold text-[#236B4B] hover:bg-[#E8F3EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F] disabled:opacity-50"
+                                        >{confirmed ? <RotateCcw size={12} /> : <Check size={12} />}{confirmed ? 'Undo received' : 'Mark as received'}</button>
+                                      })()}
+
                                     </div>
                                   </div>
                                 ))}
@@ -755,6 +811,7 @@ export default function MonthlyCashFlow() {
                   </div>
                 </section>
 
+                {incomeError && <p role="alert" className="mb-3 text-sm text-[#B85050]">{incomeError}</p>}
                 <section className="mb-5 rounded-xl border-2 border-[#1B4D3E] bg-[#F7FBF8] p-4">
                   <div className="flex items-center justify-between mb-2">
                     <p className="section-title">Income</p>
