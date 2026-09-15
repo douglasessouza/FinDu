@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
-import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle, PiggyBank, ArrowLeftRight } from 'lucide-react'
+import { TrendingUp, Receipt, Upload, Building2, CreditCard, RefreshCw, Tag, Banknote, Target, CircleHelp, MessageCircle, PiggyBank, ArrowLeftRight, Menu, X } from 'lucide-react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import api, { clearAuthToken, getAuthToken, getExchangeRates, setAuthToken } from './services/api'
@@ -202,18 +202,51 @@ const mobileNav = [
   { to: '/planned-vs-real', icon: Target, label: 'Budget' },
   { to: '/investments', icon: PiggyBank, label: 'Invest' },
   { to: '/import', icon: Upload, label: 'Import' },
-  { to: '/recurring', icon: RefreshCw, label: 'Plan' },
 ]
 
 function MobileNav() {
+  const [open, setOpen] = useState(false)
+  const toggleRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (!open) return
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setOpen(false)
+        toggleRef.current?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [open])
+  const moreLinks = [...navReports, ...navManage,
+    { to: '/chat', icon: MessageCircle, label: 'Financial Chat' },
+    { to: '/currency-converter', icon: ArrowLeftRight, label: 'Currency Converter' },
+    { to: '/how-it-works', icon: CircleHelp, label: 'How FinDu Works' },
+  ].filter(item => !mobileNav.some(primary => primary.to === item.to))
   return (
     <nav aria-label="Primary navigation" className="lg:hidden fixed inset-x-0 bottom-0 z-40 border-t border-[#D4E4D5] bg-white/95 backdrop-blur px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2">
+      {open && (
+        <section id="mobile-more" aria-label="More pages" className="max-h-[60dvh] overflow-y-auto border-b border-[#D4E4D5] pb-3 mb-2">
+          <div className="grid grid-cols-2 gap-1">
+            {moreLinks.map(({ to, icon: Icon, label }) => (
+              <NavLink key={to} to={to} onClick={() => setOpen(false)} className={({ isActive }) => `flex min-h-12 items-center gap-2 rounded-lg px-3 py-2 text-sm ${isActive ? 'bg-[#EDF4EE] font-semibold text-[#123D32]' : 'text-[#55705E]'}`}>
+                <Icon size={18} className="shrink-0" aria-hidden="true" />{label}
+              </NavLink>
+            ))}
+          </div>
+          <details className="px-3 pt-3 text-sm text-[#55705E]">
+            <summary className="cursor-pointer font-semibold">Install FinDu on your phone</summary>
+            <p className="py-2">iPhone: in Safari, open Share, then Add to Home Screen. Android: open your browser menu, then Install app or Add to Home screen. FinDu needs an internet connection.</p>
+          </details>
+        </section>
+      )}
       <div className="grid grid-cols-5 gap-1">
         {mobileNav.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
             end={to === '/'}
+            onClick={() => setOpen(false)}
             className={({ isActive }) => `flex min-h-12 flex-col items-center justify-center gap-1 rounded-lg text-[11px] font-semibold ${
               isActive ? 'bg-[#EDF4EE] text-[#123D32]' : 'text-[#55705E]'
             }`}
@@ -222,6 +255,10 @@ function MobileNav() {
             <span>{label}</span>
           </NavLink>
         ))}
+        <button ref={toggleRef} type="button" aria-expanded={open} aria-controls="mobile-more" onClick={() => setOpen(value => !value)} className="flex min-h-12 flex-col items-center justify-center gap-1 rounded-lg text-[11px] font-semibold text-[#123D32]">
+          {open ? <X size={18} aria-hidden="true" /> : <Menu size={18} aria-hidden="true" />}
+          <span>More</span>
+        </button>
       </div>
     </nav>
   )

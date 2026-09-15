@@ -71,3 +71,19 @@ export default defineConfig([
   },
 ])
 ```
+
+## Install FinDu on a phone
+
+Deploy the frontend over HTTPS. The web manifest and PNG icons in `public/`
+let supported browsers install FinDu in standalone mode. The app stays online-only;
+there is no service worker or offline data synchronization.
+
+- Android: browser menu → Install app / Add to Home screen.
+- iPhone: Safari → Share → Add to Home Screen (enable Open as Web App if offered).
+- The mobile **More** menu contains installation guidance and the remaining pages.
+- Desktop users continue using the same site and account.
+
+Validation: `npm test`, `npm run build`, and `npm run lint`. In Chrome DevTools,
+check Application → Manifest on the deployed HTTPS site. Verify the mobile More
+menu at 320/390/768px, Escape to close, and the desktop sidebar at 1440px.
+Actual installation on iOS/Android requires a device check after deployment.

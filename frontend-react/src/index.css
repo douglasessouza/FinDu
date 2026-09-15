@@ -79,6 +79,53 @@ input, select, textarea {
   }
 }
 
+/* Keep the page scroll container narrower than its tables and charts. */
+#main-content {
+  min-width: 0;
+}
+
+@media (max-width: 1023px) {
+  #main-content {
+    padding-top: max(1.25rem, env(safe-area-inset-top));
+    padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+    padding-left: max(1rem, env(safe-area-inset-left));
+    padding-right: max(1rem, env(safe-area-inset-right));
+    scroll-padding-bottom: calc(6rem + env(safe-area-inset-bottom));
+  }
+
+  nav[aria-label="Primary navigation"] {
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+    padding-right: max(0.5rem, env(safe-area-inset-right));
+  }
+}
+
+@media (max-width: 639px) {
+  /* Page wrappers already receive the shell's mobile gutter. */
+  #main-content > .px-6 {
+    padding-inline: 0;
+  }
+
+  #main-content > div > .flex:has(h1) {
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  /* A 16px input font avoids automatic zoom when focusing forms on iOS. */
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+    font-size: 16px;
+    min-height: 44px;
+    max-width: 100%;
+  }
+
+  button, summary {
+    min-height: 44px;
+  }
+
+  button {
+    min-width: 44px;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after {

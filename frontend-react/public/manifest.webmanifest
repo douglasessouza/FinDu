@@ -1,0 +1,17 @@
+{
+  "id": "/",
+  "name": "FinDu — Personal Finance",
+  "short_name": "FinDu",
+  "description": "Your accounts, budgets and cash flow in one place.",
+  "lang": "en",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F4F7F2",
+  "theme_color": "#123D32",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
