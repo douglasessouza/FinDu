@@ -48,7 +48,7 @@ jobs:
             --min-instances=1 \
             --cpu-boost \
             --remove-env-vars FINDU_APP_PASSWORD \
-            --update-env-vars "DATABASE_URL=${{ secrets.DATABASE_URL }},ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }},GOOGLE_CLIENT_ID=534834684098-77kkt85g117634fogl615t1jrerjgblt.apps.googleusercontent.com,ALLOWED_GOOGLE_EMAILS=${{ secrets.ALLOWED_GOOGLE_EMAILS }},EXCHANGE_RATE_API_KEY=${{ secrets.EXCHANGE_RATE_API_KEY }}"
+            --update-env-vars "^|^DATABASE_URL=${{ secrets.DATABASE_URL }}|ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}|GOOGLE_CLIENT_ID=534834684098-77kkt85g117634fogl615t1jrerjgblt.apps.googleusercontent.com|ALLOWED_GOOGLE_EMAILS=${{ secrets.ALLOWED_GOOGLE_EMAILS }}|EXCHANGE_RATE_API_KEY=${{ secrets.EXCHANGE_RATE_API_KEY }}"
 
       - name: Deploy React to Cloud Run
         run: |
