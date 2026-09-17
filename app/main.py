@@ -1398,8 +1398,23 @@ def delete_recurring_expense(expense_id: int, db: Session = Depends(get_db)):
     expense = db.query(RecurringExpense).filter(RecurringExpense.id == expense_id).first()
     if not expense:
         raise HTTPException(status_code=404, detail="Expense not found")
-    db.delete(expense)
-    db.commit()
+    try:
+        # Remove recurrence metadata while keeping the actual bank transactions.
+        db.query(RecurringMatch).filter(RecurringMatch.recurring_id == expense_id).delete(
+            synchronize_session=False,
+        )
+        db.query(RecurringMonthlyOverride).filter(
+            RecurringMonthlyOverride.recurring_id == expense_id,
+        ).delete(synchronize_session=False)
+        db.query(MonthlyPayment).filter(
+            MonthlyPayment.item_type == "recurring",
+            MonthlyPayment.item_id == expense_id,
+        ).delete(synchronize_session=False)
+        db.delete(expense)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     return {"message": f"Expense {expense_id} deleted"}
 
 def validate_month_key(month: str) -> None:
