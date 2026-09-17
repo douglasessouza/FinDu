@@ -502,9 +502,11 @@ export default function CreditCards() {
           <input
             value={form.name}
             onChange={e => setForm(prev => ({ ...prev, name: e.target.value }))}
-            placeholder="Amex Cobalt"
+            placeholder="e.g. RBC Jaque or Doug's Amex"
             className="w-full px-4 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none mb-4"
           />
+
+          <p className="text-xs text-[#7BAE8A] mb-4">Include Jaque in the name to group her cards under Jaque in account menus. Other cards appear under Doug.</p>
 
           <label className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest block mb-2">Bank</label>
           <input

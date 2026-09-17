@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Upload, Trash2, Bot, CheckCircle, RefreshCw, Split, Plus, X } from 'lucide-react'
 import api, { confirmStatementImport, getAccounts, getCategories } from '../services/api'
 import type { Account, CurrencyCode } from '../services/api'
+import CreditCardOptions from '../components/CreditCardOptions'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -388,11 +389,7 @@ export default function ImportStatement() {
                     {debitAccounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>)}
                   </optgroup>
                 )}
-                {cardAccounts.length > 0 && (
-                  <optgroup label="💳 Credit Cards">
-                    {cardAccounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>)}
-                  </optgroup>
-                )}
+                <CreditCardOptions cards={cardAccounts} />
               </select>
             </div>
             <div>

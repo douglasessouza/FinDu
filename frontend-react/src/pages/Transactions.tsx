@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { ArrowDownUp, Plus, Save, Split, Trash2, X } from 'lucide-react'
 import api from '../services/api'
 import type { Account, Category } from '../services/api'
+import CreditCardOptions from '../components/CreditCardOptions'
 
 function fmt(value: number): string {
   return value.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -442,13 +443,7 @@ export default function Transactions() {
                 ))}
               </optgroup>
             )}
-            {cardAccounts.length > 0 && (
-              <optgroup label="💳 Credit Cards">
-                {cardAccounts.map(a => (
-                  <option key={a.id} value={a.id}>{a.name} ({a.bank})</option>
-                ))}
-              </optgroup>
-            )}
+            <CreditCardOptions cards={cardAccounts} />
           </select>
         </div>
 
