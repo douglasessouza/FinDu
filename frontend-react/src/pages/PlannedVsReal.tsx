@@ -252,13 +252,15 @@ export default function PlannedVsReal() {
     const requestRunner = monthlyRequestRef.current
     void requestRunner.run(
       async () => {
-        const [budgetRes, monthlyTransactions] = await Promise.all([
+        const [budgetRes, monthlyTransactions, monthlySpending] = await Promise.all([
           api.get('/category-budgets', { params: { month: requestedMonth } }),
           getTransactions({ month: requestedMonth }),
+          getSpendingAnalysis(requestedMonth, requestedMonth),
         ])
         return {
           budgets: budgetRes.data as CategoryBudget[],
           transactions: monthlyTransactions,
+          spending: monthlySpending,
         }
       },
       {
@@ -268,6 +270,7 @@ export default function PlannedVsReal() {
           setMonthLoadError(null)
         },
         onSuccess: result => {
+          setSpending(current => replaceSelectedMonth(current, requestedMonth, result.spending))
           setBudgets(result.budgets)
           setTransactions(result.transactions)
           setLoadedMonth(requestedMonth)
