@@ -193,6 +193,9 @@ export default function MonthlyCashFlow() {
   const [cardCharges, setCardCharges] = useState<CardChargeEntry[]>([])
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
   const [savedMatches, setSavedMatches] = useState<SavedRecurringMatch[]>([])
+  const [savingPayment, setSavingPayment] = useState(false)
+  const [paymentError, setPaymentError] = useState('')
+  const paymentRequestRef = useRef(createLatestRequestRunner())
   const [savingIncome, setSavingIncome] = useState(false)
   const [incomeError, setIncomeError] = useState('')
   const incomeRequestRef = useRef(createLatestRequestRunner())
@@ -218,6 +221,9 @@ export default function MonthlyCashFlow() {
   }, [accounts, cardCharges, recurring, statementTransactions])
 
   function prepareMonthNavigation() {
+    paymentRequestRef.current.invalidate()
+    setSavingPayment(false)
+    setPaymentError('')
     incomeRequestRef.current.invalidate()
     setSavingIncome(false)
     setIncomeError('')
@@ -300,11 +306,13 @@ export default function MonthlyCashFlow() {
     const requestRunner = monthlyRequestRef.current
     const overrideRequestRunner = monthlyOverrideRequestRef.current
     const incomeRequestRunner = incomeRequestRef.current
+    const paymentRequestRunner = paymentRequestRef.current
     void load(monthStr)
     return () => {
       requestRunner.invalidate()
       overrideRequestRunner.invalidate()
       incomeRequestRunner.invalidate()
+      paymentRequestRunner.invalidate()
     }
   }, [monthStr])
 
@@ -547,19 +555,19 @@ export default function MonthlyCashFlow() {
   }
 
   async function togglePaid(itemType: string, itemId: number, itemName: string) {
+    if (savingPayment) return
     const existing = isPaid(itemType, itemId)
-    if (existing) {
-      await api.delete(`/monthly-payments/${existing.id}`)
-      setPayments(prev => prev.filter(p => p.id !== existing.id))
-    } else {
-      const res = await api.post('/monthly-payments', {
-        month: monthStr,
-        item_type: itemType,
-        item_id: itemId,
-        item_name: itemName,
-      })
-      setPayments(prev => [...prev, res.data])
-    }
+    await paymentRequestRef.current.run(
+      () => existing ? api.delete(`/monthly-payments/${existing.id}`)
+        : api.post('/monthly-payments', { month: monthStr, item_type: itemType, item_id: itemId, item_name: itemName }),
+      {
+        onStart: () => { setSavingPayment(true); setPaymentError('') },
+        onSuccess: res => setPayments(prev => existing
+          ? prev.filter(payment => payment.id !== existing.id) : [...prev, res.data]),
+        onError: () => setPaymentError('Could not update payment. Please try again.'),
+        onFinish: () => setSavingPayment(false),
+      },
+    )
   }
 
   return (
@@ -765,6 +773,7 @@ export default function MonthlyCashFlow() {
                       Income and bills grouped around each pay cycle.
                     </p>
                   </div>
+                  {paymentError && <p role="alert" className="px-5 py-2 text-sm text-[#B85050]">{paymentError}</p>}
                   {incomeError && <p role="alert" className="px-5 py-2 text-sm text-[#B85050]">{incomeError}</p>}
                   <div className="grid grid-cols-1 divide-y divide-[#D4E4D5] md:grid-cols-2 md:divide-x md:divide-y-0">
                     {[
@@ -837,7 +846,16 @@ export default function MonthlyCashFlow() {
                                     </div>
                                     <div className="text-right">
                                       <p className="money whitespace-nowrap font-semibold text-[#B85050]">− {symbol} {fmt(bill.amount)}</p>
-                                      {bill.status && <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-[#7BAE8A]">{bill.status} · included</p>}
+                                      {bill.status === 'Matched' && <p className="mt-0.5 text-[10px] font-bold uppercase tracking-wide text-[#7BAE8A]">Matched · included</p>}
+                                      {bill.status !== 'Matched' && <button
+                                        type="button"
+                                        disabled={savingPayment}
+                                        aria-pressed={bill.status === 'Paid'}
+                                        aria-label={`${bill.status === 'Paid' ? 'Undo payment for' : 'Mark as paid:'} ${bill.name}`}
+                                        onClick={() => void togglePaid(bill.kind === 'Credit card' ? 'card' : 'recurring', Number(bill.id.split('-').pop()), bill.name)}
+                                        className={`mt-1 inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F] disabled:opacity-50 ${bill.status === 'Paid' ? 'border-[#B9D1BD] bg-[#E8F3EA] text-[#236B4B]' : 'border-[#D4E4D5] text-[#55705E] hover:bg-[#E8F3EA]'}`}
+                                        title={bill.status === 'Paid' ? 'Undo payment' : 'Mark as paid for this month'}
+                                      >{bill.status === 'Paid' ? <Check size={12} /> : <span aria-hidden="true">○</span>}{bill.status === 'Paid' ? 'Paid · Undo' : 'Mark as paid'}</button>}
                                     </div>
                                   </div>
                                 ))}
@@ -1065,6 +1083,7 @@ export default function MonthlyCashFlow() {
                             <div className="flex items-start justify-between gap-3">
                               <div className="flex items-start gap-3 min-w-0">
                                 <button
+                                  disabled={savingPayment}
                                   onClick={() => card && togglePaid('card', card.id, cardCharge.name)}
                                   className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center transition shrink-0 ${
                                     paid ? 'bg-[#1B6B3A] border-[#1B6B3A] text-white' : 'border-[#D4E4D5] hover:border-[#4E9A7A]'
