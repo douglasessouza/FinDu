@@ -4,8 +4,8 @@ import api, { getMonthlyDashboard } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/reportingData'
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
-import { calculateProjectedBalance, calculateRemainingIncome } from '../utils/cashFlowProjection'
-import { buildPayPeriodSummary, hasExpectedIncomeDate, resolveCardDueDay } from '../utils/payPeriodSummary'
+import { calculateProjectedBalance, calculateOccurrenceIncome } from '../utils/cashFlowProjection'
+import { buildPayPeriodSummary, hasExpectedIncomeDate, isIncomeInCashFlowMonth, resolveCardDueDay } from '../utils/payPeriodSummary'
 import type {
   Account,
   CurrencyCode,
@@ -84,7 +84,7 @@ function isPayrollIncome(item: RecurringExpense): boolean {
 }
 
 function hasExpectedRecurringDate(item: RecurringExpense, tx: Transaction, cashFlowMonth: string): boolean {
-  if (isPayrollIncome(item)) {
+  if (item.type === 'INCOME') {
     return hasExpectedIncomeDate({
       transactionDate: tx.date,
       dueDay: item.due_day,
@@ -251,7 +251,7 @@ export default function MonthlyCashFlow() {
         onSuccess: dashboard => {
           setAccounts(dashboard.accounts)
           setRecurring(dashboard.recurring)
-          setPayments(dashboard.payments)
+          setPayments([...dashboard.payments, ...(dashboard.previous_month_payments ?? [])])
           setSavedMatches(dashboard.matches)
           setMonthlyOverrides(
             dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
@@ -316,15 +316,27 @@ export default function MonthlyCashFlow() {
     [monthlyOverrides, recurring],
   )
 
+  const matchingRecurring = useMemo(() => recurring.map(item => {
+    const previousDate = new Date(year, month - 2, 1)
+    const previous = item.type === 'INCOME' && item.due_day >= 28
+    return {
+      ...item,
+      amount: (previous ? previousMonthlyOverrides : monthlyOverrides)[item.id]?.amount ?? item.amount,
+      validForCycle: previous
+        ? isValidThisMonth(item, previousDate.getFullYear(), previousDate.getMonth() + 1)
+        : isValidThisMonth(item, year, month),
+    }
+  }).filter(item => item.validForCycle), [recurring, previousMonthlyOverrides, monthlyOverrides, year, month])
+
   const autoRecurringMatches = useMemo(
     () => loadedMonth === monthStr
       ? findRecurringMatches(
-          effectiveRecurring.filter(item => isValidThisMonth(item, year, month)),
+          matchingRecurring,
           statementTransactions,
           monthStr,
         )
       : {},
-    [effectiveRecurring, loadedMonth, month, statementTransactions, monthStr, year],
+    [matchingRecurring, loadedMonth, statementTransactions, monthStr],
   )
 
   const recurringMatches = useMemo(() => {
@@ -336,7 +348,7 @@ export default function MonthlyCashFlow() {
         continue
       }
       if (!saved.transaction) continue
-      const item = effectiveRecurring.find(current => current.id === saved.recurring_id)
+      const item = matchingRecurring.find(current => current.id === saved.recurring_id)
       if (!item) continue
       if (!hasExpectedRecurringDate(item, saved.transaction, monthStr)) continue
       merged[saved.recurring_id] = {
@@ -351,7 +363,7 @@ export default function MonthlyCashFlow() {
     }
 
     return merged
-  }, [autoRecurringMatches, effectiveRecurring, monthStr, savedMatches])
+  }, [autoRecurringMatches, matchingRecurring, monthStr, savedMatches])
 
   useEffect(() => {
     if (!currentMonthData) return
@@ -360,7 +372,7 @@ export default function MonthlyCashFlow() {
     const matchesToSave = Object.entries(autoRecurringMatches)
       .filter(([recurringId]) => !savedRecurringIds.has(Number(recurringId)))
       .map(([recurringId, match]) => {
-        const item = effectiveRecurring.find(current => current.id === Number(recurringId))
+        const item = matchingRecurring.find(current => current.id === Number(recurringId))
         if (!item) return null
         return {
           month: monthStr,
@@ -397,7 +409,7 @@ export default function MonthlyCashFlow() {
 
     saveMatches()
     return () => { cancelled = true }
-  }, [autoRecurringMatches, currentMonthData, effectiveRecurring, monthStr, savedMatches])
+  }, [autoRecurringMatches, currentMonthData, matchingRecurring, monthStr, savedMatches])
 
   function startEditingRecurring(item: RecurringExpense) {
     setEditingRecurringId(item.id)
@@ -458,7 +470,7 @@ export default function MonthlyCashFlow() {
   }
 
   function isPaid(itemType: string, itemId: number): MonthlyPayment | undefined {
-    return payments.find(p => p.item_type === itemType && p.item_id === itemId)
+    return payments.find(p => p.month === monthStr && p.item_type === itemType && p.item_id === itemId)
   }
 
   async function ignoreRecurringMatch(item: RecurringExpense, match: RecurringMatchCandidate) {
@@ -485,26 +497,53 @@ export default function MonthlyCashFlow() {
     })
   }
 
-  async function toggleIncomeReceived(item: RecurringExpense) {
-    const existing = isPaid('income', item.id)
+  function incomeState(itemId: number, occurrenceMonth: string) {
+    return payments.find(payment => payment.month === occurrenceMonth
+      && payment.item_id === itemId
+      && ['income', 'income_cancelled'].includes(payment.item_type))
+  }
+
+  async function updateIncomeState(item: RecurringExpense, occurrenceMonth: string, state: 'income' | 'income_cancelled' | null) {
+    const existing = incomeState(item.id, occurrenceMonth)
+    if (!state && !existing) return
     await incomeRequestRef.current.run(
-      () => existing
-        ? api.delete(`/monthly-payments/${existing.id}`)
-        : api.post('/monthly-payments', {
-            month: monthStr,
-            item_type: 'income',
-            item_id: item.id,
-            item_name: item.name,
-          }),
+      () => state
+        ? api.post('/monthly-payments', {
+            month: occurrenceMonth, item_type: state, item_id: item.id, item_name: item.name,
+          })
+        : api.delete(`/monthly-payments/${existing!.id}`),
       {
         onStart: () => { setSavingIncome(true); setIncomeError('') },
-        onSuccess: res => setPayments(prev => existing
-          ? prev.filter(payment => payment.id !== existing.id)
-          : [...prev, res.data]),
-        onError: () => setIncomeError('Could not update received income. Please try again.'),
+        onSuccess: res => setPayments(prev => {
+          const remaining = prev.filter(payment => !(payment.month === occurrenceMonth
+            && payment.item_id === item.id && ['income', 'income_cancelled'].includes(payment.item_type)))
+          return state ? [...remaining, res.data] : remaining
+        }),
+        onError: () => setIncomeError('Could not update income. Please try again.'),
         onFinish: () => setSavingIncome(false),
       },
     )
+  }
+
+  function incomeActions(item: RecurringExpense, occurrenceMonth: string) {
+    const state = incomeState(item.id, occurrenceMonth)
+    const buttonClass = 'inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-semibold hover:bg-[#E8F3EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F] disabled:opacity-50'
+    return <div className="mt-1 flex flex-wrap justify-end gap-1">
+      {state ? <button type="button" className={buttonClass} disabled={savingIncome}
+        onClick={() => void updateIncomeState(item, occurrenceMonth, null)}
+        aria-label={`Undo ${state.item_type === 'income_cancelled' ? 'cancellation' : 'receipt'} for ${item.name} (${occurrenceMonth})`}>
+        <RotateCcw size={12} />{state.item_type === 'income_cancelled' ? 'Restore income' : 'Undo received'}
+      </button> : <>
+        <button type="button" className={`${buttonClass} text-[#236B4B]`} disabled={savingIncome}
+          onClick={() => void updateIncomeState(item, occurrenceMonth, 'income')}
+          title="Already included in account balance"
+          aria-label={`Mark as received: ${item.name} (${occurrenceMonth})`}><Check size={12} />Mark as received</button>
+        <button type="button" className={`${buttonClass} text-[#B85050]`} disabled={savingIncome}
+          onClick={() => void updateIncomeState(item, occurrenceMonth, 'income_cancelled')}
+          title={`Cancel only this occurrence (${occurrenceMonth})`}
+          aria-label={`Cancel income: ${item.name} (${occurrenceMonth})`}><X size={12} />Cancel this occurrence</button>
+      </>}
+    </div>
   }
 
   async function togglePaid(itemType: string, itemId: number, itemName: string) {
@@ -556,13 +595,14 @@ export default function MonthlyCashFlow() {
             const previousMonthDate = new Date(year, month - 2, 1)
             const previousMonthYear = previousMonthDate.getFullYear()
             const previousMonthNumber = previousMonthDate.getMonth() + 1
+            const previousMonthStr = `${previousMonthYear}-${String(previousMonthNumber).padStart(2, '0')}`
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
             const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
             const matchedExpenseActual = expenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
             const remainingRecurringExpenses = expenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
             const currencyIncomeTransactions = statementTransactions.filter(tx => (
-              tx.currency === currency && tx.amount > 0 && tx.date.slice(0, 7) === monthStr
+              tx.currency === currency && tx.amount > 0 && isIncomeInCashFlowMonth(tx.date, monthStr)
             ))
             const currencyActualSalaryIncome = currencyIncomeTransactions.filter(
               tx => (tx.category || '').trim().toLowerCase() === 'salary',
@@ -590,49 +630,54 @@ export default function MonthlyCashFlow() {
               return text.includes('payroll') || text.includes('salary')
             })
             const otherIncome = incomeList.filter(item => !payrollIncome.some(payroll => payroll.id === item.id))
-            const payrollIncomeTotal = payrollIncome.reduce((s, r) => s + r.amount, 0)
-            const plannedIncomeTotal = incomeList.reduce((s, r) => s + r.amount, 0)
-            const projectedIncomeTotal = plannedIncomeTotal + actualOtherIncomeTotal
-            const receivedIncomeTotal = actualSalaryIncomeTotal + actualOtherIncomeTotal
-            // The bank balance already includes every received deposit. Use the
-            // aggregate salary received this month to avoid counting income again
-            // when one deposit covers multiple payroll entries or arrives off-date.
-            const confirmedOtherIncome = otherIncome.reduce((sum, item) => {
-              if (!isPaid('income', item.id)) return sum
-              const transaction = recurringMatches[item.id]?.transaction
-              // A salary match is already included in the aggregate above.
-              if (transaction?.date.slice(0, 7) === monthStr
-                && transaction.category?.trim().toLowerCase() === 'salary') return sum
-              return sum + item.amount
-            }, 0)
-            const remainingIncomeTotal = calculateRemainingIncome(
-              plannedIncomeTotal,
-              actualSalaryIncomeTotal,
-              confirmedOtherIncome,
-            )
-            const projectedBalance = calculateProjectedBalance({
-              currentBalance: inBank,
-              remainingIncome: remainingIncomeTotal,
-              remainingExpenses: openFixedExpenses,
-              remainingSavings: investmentSavings.remainingDue,
-            })
             const previousMonthIncomeList = recurring.filter(item => (
               item.currency === currency
               && item.type === 'INCOME'
               && item.due_day >= 28
               && isValidThisMonth(item, previousMonthYear, previousMonthNumber)
             ))
+            const cycleOccurrences = [
+              ...previousMonthIncomeList.map(item => ({ item, occurrenceMonth: previousMonthStr, amount: previousMonthlyOverrides[item.id]?.amount ?? item.amount })),
+              ...incomeList.filter(item => item.due_day <= 27).map(item => ({ item, occurrenceMonth: monthStr, amount: item.amount })),
+            ]
+            const cycleItems = cycleOccurrences.map(({ item, occurrenceMonth, amount }) => {
+              const match = recurringMatches[item.id]
+              const state = incomeState(item.id, occurrenceMonth)
+              return {
+                amount,
+                payroll: isPayrollIncome(item),
+                cancelled: state?.item_type === 'income_cancelled',
+                received: state?.item_type === 'income',
+                matchedAmount: match?.actualAmount,
+                salaryMatch: match?.transaction.category?.trim().toLowerCase() === 'salary',
+              }
+            })
+            const incomeTotals = calculateOccurrenceIncome(cycleItems, actualSalaryIncomeTotal)
+            const payrollIncomeTotal = cycleItems.filter(item => item.payroll && !item.cancelled).reduce((sum, item) => sum + item.amount, 0)
+            const plannedIncomeTotal = incomeTotals.planned
+            const projectedIncomeTotal = plannedIncomeTotal + actualOtherIncomeTotal
+            const receivedIncomeTotal = incomeTotals.receivedSalary + actualOtherIncomeTotal + incomeTotals.manualOther
+            const remainingIncomeTotal = incomeTotals.remaining
+            const projectedBalance = calculateProjectedBalance({
+              currentBalance: inBank,
+              remainingIncome: remainingIncomeTotal,
+              remainingExpenses: openFixedExpenses,
+              remainingSavings: investmentSavings.remainingDue,
+            })
             const payPeriodIncomes = [
               ...previousMonthIncomeList.map(item => {
                 const match = recurringMatches[item.id]
+                const state = incomeState(item.id, previousMonthStr)
+                const manuallyReceived = state?.item_type === 'income'
                 return {
                   id: `income-previous-${item.id}`,
                   name: item.name,
                   dueLabel: match
                     ? `Received ${formatDueDate(match.transaction.date)}`
-                    : `Expected ${new Date(previousMonthYear, previousMonthNumber - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
+                    : manuallyReceived ? 'Already included in account balance' : `Expected ${new Date(previousMonthYear, previousMonthNumber - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
                   amount: previousMonthlyOverrides[item.id]?.amount ?? item.amount,
-                  actualAmount: match?.actualAmount,
+                  cancelled: state?.item_type === 'income_cancelled',
+                  actualAmount: match?.actualAmount ?? (manuallyReceived ? previousMonthlyOverrides[item.id]?.amount ?? item.amount : undefined),
                   period: 'first' as const,
                 }
               }),
@@ -646,6 +691,7 @@ export default function MonthlyCashFlow() {
                     ? `Received ${formatDueDate(match.transaction.date)}`
                     : manuallyReceived ? 'Already included in account balance' : `Expected ${new Date(year, month - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
                   amount: item.amount,
+                  cancelled: Boolean(isPaid('income_cancelled', item.id)),
                   actualAmount: match?.actualAmount ?? (manuallyReceived ? item.amount : undefined),
                   period: item.due_day <= 14 ? 'first' as const : 'second' as const,
                 }
@@ -719,6 +765,7 @@ export default function MonthlyCashFlow() {
                       Income and bills grouped around each pay cycle.
                     </p>
                   </div>
+                  {incomeError && <p role="alert" className="px-5 py-2 text-sm text-[#B85050]">{incomeError}</p>}
                   <div className="grid grid-cols-1 divide-y divide-[#D4E4D5] md:grid-cols-2 md:divide-x md:divide-y-0">
                     {[
                       { label: 'First pay cycle', incomeRange: 'Income 28→14', billRange: 'Bills 01→14', totals: payPeriodSummary.firstPeriod },
@@ -750,28 +797,21 @@ export default function MonthlyCashFlow() {
                                 ) : period.totals.incomes.map(income => (
                                   <div key={income.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 border-b border-[#EDF2ED] py-2.5 last:border-b-0">
                                     <div className="min-w-0">
-                                      <p className="truncate font-semibold text-[#1B4D3E]">{income.name}</p>
+                                      <p className={`truncate font-semibold ${income.status === 'Cancelled' ? 'line-through text-gray-400' : 'text-[#1B4D3E]'}`}>{income.name}</p>
                                       <p className="mt-0.5 text-[11px] text-[#7BAE8A]">{income.dueLabel}</p>
                                     </div>
                                     <div className="text-right">
-                                      <p className="money whitespace-nowrap font-semibold text-[#1B6B3A]">+ {symbol} {fmt(income.amount)}</p>
-                                      <p className={`mt-0.5 text-[10px] font-bold uppercase tracking-wide ${income.status === 'Received' ? 'text-[#236B4B]' : 'text-[#B28E18]'}`}>{income.status}</p>
-                                      {(() => {
-                                        const item = otherIncome.find(current => income.id === `income-current-${current.id}`)
-                                        if (!item) return null
-                                        const confirmed = Boolean(isPaid('income', item.id))
-                                        if (recurringMatches[item.id] && !confirmed) return null
-                                        return <button
-                                          type="button"
-                                          onClick={() => void toggleIncomeReceived(item)}
-                                          disabled={savingIncome}
-                                          aria-pressed={confirmed}
-                                          aria-label={`${confirmed ? 'Undo receipt for' : 'Mark as received:'} ${item.name}`}
-                                          title="Already included in your account balance. No new transaction is created."
-                                          className="mt-1 inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold text-[#236B4B] hover:bg-[#E8F3EA] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F] disabled:opacity-50"
-                                        >{confirmed ? <RotateCcw size={12} /> : <Check size={12} />}{confirmed ? 'Undo received' : 'Mark as received'}</button>
-                                      })()}
+                                      <p className={`money whitespace-nowrap font-semibold ${income.status === 'Cancelled' ? 'line-through text-gray-400' : 'text-[#1B6B3A]'}`}>+ {symbol} {fmt(income.amount)}</p>
+                                      <p className={`mt-0.5 text-[10px] font-bold uppercase tracking-wide ${income.status === 'Cancelled' ? 'text-gray-500' : income.status === 'Received' ? 'text-[#236B4B]' : 'text-[#B28E18]'}`}>{income.status}</p>
 
+
+                                    </div>
+                                    <div className="col-span-2">
+                                      {(() => {
+                                        const previous = income.id.startsWith('income-previous-')
+                                        const item = (previous ? previousMonthIncomeList : incomeList).find(current => income.id === `income-${previous ? 'previous' : 'current'}-${current.id}`)
+                                        return item ? incomeActions(item, previous ? previousMonthStr : monthStr) : null
+                                      })()}
                                     </div>
                                   </div>
                                 ))}
@@ -811,12 +851,12 @@ export default function MonthlyCashFlow() {
                   </div>
                 </section>
 
-                {incomeError && <p role="alert" className="mb-3 text-sm text-[#B85050]">{incomeError}</p>}
+
                 <section className="mb-5 rounded-xl border-2 border-[#1B4D3E] bg-[#F7FBF8] p-4">
                   <div className="flex items-center justify-between mb-2">
                     <p className="section-title">Income</p>
                     <p className="text-xs text-[#8BAE90]">
-                      Guaranteed {symbol} {fmt(plannedIncomeTotal)} · received {symbol} {fmt(receivedIncomeTotal)}
+                      Planned for pay cycles {symbol} {fmt(plannedIncomeTotal)} · received {symbol} {fmt(receivedIncomeTotal)}
                     </p>
                   </div>
                   {incomeList.length === 0 && currencyIncomeTransactions.length === 0 ? (
@@ -831,7 +871,7 @@ export default function MonthlyCashFlow() {
                             <div key={r.id} className="rounded-lg border border-[#D4E4D5] bg-[#F4FAF5] px-4 py-3">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <p className="font-bold truncate text-[#1B4D3E]">{r.name}</p>
+                                  <p className={`font-bold truncate text-[#1B4D3E] ${isPaid('income_cancelled', r.id) ? 'line-through opacity-50' : ''}`}>{r.name}</p>
                                   <p className="text-xs text-[#7BAE8A] mt-1">
                                     day {r.due_day}
                                     {r.valid_until && (
@@ -842,6 +882,8 @@ export default function MonthlyCashFlow() {
                                   </p>
                                 </div>
                                 <div className="text-right">
+                                  {incomeState(r.id, monthStr) && <p className="text-[10px] font-bold uppercase text-gray-500">{isPaid('income_cancelled', r.id) ? 'Cancelled' : 'Received'}</p>}
+                                  {incomeActions(r, monthStr)}
                                   {editingRecurringId === r.id ? (
                                     <div className="flex flex-col items-end gap-1">
                                       <div className="flex items-center gap-1">
@@ -871,7 +913,7 @@ export default function MonthlyCashFlow() {
                                   ) : (
                                     <>
                                       <div className="flex items-center justify-end gap-1">
-                                        <p className="font-bold whitespace-nowrap text-[#1B6B3A]">+ {symbol} {fmt(r.amount)}</p>
+                                        <p className={`font-bold whitespace-nowrap text-[#1B6B3A] ${isPaid('income_cancelled', r.id) ? 'line-through opacity-50' : ''}`}>+ {symbol} {fmt(r.amount)}</p>
                                         <button onClick={() => startEditingRecurring(r)} className="rounded-md p-1 text-[#7BAE8A] hover:bg-[#E8F3EA] hover:text-[#1B4D3E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2D6A4F]" title={`Edit amount only for ${monthLabel}`}><Pencil size={13} /></button>
                                       </div>
                                       {monthlyOverrides[r.id] && <p className="text-[11px] font-semibold text-amber-600">custom for {monthLabel}</p>}
@@ -892,7 +934,7 @@ export default function MonthlyCashFlow() {
                               <div key={r.id} className="rounded-lg border border-[#CFE0F5] bg-[#F3F7FD] px-4 py-3">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
-                                    <p className="font-bold text-[#1B4D3E] truncate">{r.name}</p>
+                                    <p className={`font-bold truncate text-[#1B4D3E] ${isPaid('income_cancelled', r.id) ? 'line-through opacity-50' : ''}`}>{r.name}</p>
                                     <p className="text-xs text-[#3F6EA8] mt-1">
                                       day {r.due_day} · {r.category || 'Other Income'}
                                       {r.valid_until && (
@@ -903,6 +945,8 @@ export default function MonthlyCashFlow() {
                                     </p>
                                   </div>
                                   <div className="text-right">
+                                  {incomeState(r.id, monthStr) && <p className="text-[10px] font-bold uppercase text-gray-500">{isPaid('income_cancelled', r.id) ? 'Cancelled' : 'Received'}</p>}
+                                  {incomeActions(r, monthStr)}
                                     {editingRecurringId === r.id ? (
                                       <div className="flex flex-col items-end gap-1">
                                         <div className="flex items-center gap-1">
@@ -932,7 +976,7 @@ export default function MonthlyCashFlow() {
                                     ) : (
                                       <>
                                         <div className="flex items-center justify-end gap-1">
-                                          <p className="text-[#1B6B3A] font-bold whitespace-nowrap">+ {symbol} {fmt(r.amount)}</p>
+                                          <p className={`font-bold whitespace-nowrap text-[#1B6B3A] ${isPaid('income_cancelled', r.id) ? 'line-through opacity-50' : ''}`}>+ {symbol} {fmt(r.amount)}</p>
                                           <button onClick={() => startEditingRecurring(r)} className="rounded-md p-1 text-[#3F6EA8] hover:bg-[#E7EFFA] hover:text-[#1B4D3E] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3F6EA8]" title={`Edit amount only for ${monthLabel}`}><Pencil size={13} /></button>
                                         </div>
                                         {monthlyOverrides[r.id] && <p className="text-[11px] font-semibold text-amber-600">custom for {monthLabel}</p>}

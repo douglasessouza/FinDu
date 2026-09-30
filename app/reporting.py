@@ -466,7 +466,7 @@ def monthly_dashboard(db: Session, month: str) -> dict:
     recurring = db.query(RecurringExpense).order_by(
         RecurringExpense.due_day, RecurringExpense.name
     ).all()
-    payments = db.query(MonthlyPayment).filter(MonthlyPayment.month == month).all()
+    payments = db.query(MonthlyPayment).filter(MonthlyPayment.month.in_((previous_month, month))).all()
     match_rows = (
         db.query(RecurringMatch, Transaction)
         .outerjoin(Transaction, Transaction.id == RecurringMatch.transaction_id)
@@ -493,7 +493,8 @@ def monthly_dashboard(db: Session, month: str) -> dict:
         "month": month,
         "accounts": accounts,
         "recurring": recurring,
-        "payments": [serialize_payment(payment) for payment in payments],
+        "payments": [serialize_payment(payment) for payment in payments if payment.month == month],
+        "previous_month_payments": [serialize_payment(payment) for payment in payments if payment.month == previous_month],
         "matches": [
             serialize_match(match, transaction) for match, transaction in match_rows
         ],

@@ -24,6 +24,7 @@ from app.imports import (
 from app.reporting import (
     card_statement_summary,
     monthly_dashboard,
+    month_bounds,
     spending_summary,
     transaction_page,
 )
@@ -1407,7 +1408,7 @@ def delete_recurring_expense(expense_id: int, db: Session = Depends(get_db)):
             RecurringMonthlyOverride.recurring_id == expense_id,
         ).delete(synchronize_session=False)
         db.query(MonthlyPayment).filter(
-            MonthlyPayment.item_type == "recurring",
+            MonthlyPayment.item_type.in_(("recurring", "income", "income_cancelled")),
             MonthlyPayment.item_id == expense_id,
         ).delete(synchronize_session=False)
         db.delete(expense)
@@ -2134,7 +2135,32 @@ def get_monthly_payments(month: str, db: Session = Depends(get_db)):
 
 @app.post("/monthly-payments")
 def create_monthly_payment(payment: MonthlyPaymentCreate, db: Session = Depends(get_db)):
-    """Mark an expense or card as paid for a given month."""
+    """Record a payment or a manual income state for one occurrence."""
+    if payment.item_type in ("income", "income_cancelled"):
+        # Lock the recurrence so concurrent state changes cannot create both states.
+        income = db.query(RecurringExpense).filter(
+            RecurringExpense.id == payment.item_id,
+            RecurringExpense.type == RecurringTypeEnum.INCOME,
+        ).with_for_update().first()
+        if not income:
+            raise HTTPException(status_code=404, detail="Income not found")
+        month_bounds(payment.month)
+        existing = db.query(MonthlyPayment).filter(
+            MonthlyPayment.month == payment.month,
+            MonthlyPayment.item_type.in_(("income", "income_cancelled")),
+            MonthlyPayment.item_id == payment.item_id,
+        ).all()
+        if existing:
+            p = existing[0]
+            p.item_type = payment.item_type
+            p.item_name = income.name
+            for duplicate in existing[1:]:
+                db.delete(duplicate)
+            db.commit()
+            db.refresh(p)
+            return {"id": p.id, "month": p.month, "item_type": p.item_type,
+                    "item_id": p.item_id, "item_name": p.item_name,
+                    "paid_at": p.paid_at.isoformat()}
     # Prevent duplicates
     existing = db.query(MonthlyPayment).filter(
         MonthlyPayment.month == payment.month,

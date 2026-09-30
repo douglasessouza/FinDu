@@ -172,6 +172,7 @@ export interface MonthlyDashboardResponse {
   accounts: Account[]
   recurring: RecurringExpense[]
   payments: MonthlyPayment[]
+  previous_month_payments?: MonthlyPayment[]
   matches: RecurringMatch[]
   overrides: RecurringMonthlyOverride[]
   previous_month_overrides: RecurringMonthlyOverride[]

@@ -9,6 +9,7 @@ export interface PayPeriodIncomeItem {
   dueLabel: string
   amount: number
   actualAmount?: number
+  cancelled?: boolean
   period: 'first' | 'second'
 }
 
@@ -17,7 +18,7 @@ export interface PayPeriodIncome {
   name: string
   dueLabel: string
   amount: number
-  status: 'Planned' | 'Received'
+  status: 'Planned' | 'Received' | 'Cancelled'
 }
 
 export interface PayPeriodExpenseItem extends PayPeriodItem {
@@ -129,11 +130,7 @@ export function hasExpectedIncomeDate({
   dueDay: number
   cashFlowMonth: string
 }): boolean {
-  const transactionMonth = transactionDate.slice(0, 7)
-  const transactionDay = Number(transactionDate.slice(8, 10))
-  if (!Number.isInteger(transactionDay)) return false
-  const effectiveCashFlowMonth = transactionDay >= 28 ? addMonths(transactionMonth, 1) : transactionMonth
-  return effectiveCashFlowMonth === cashFlowMonth
+  return isIncomeInCashFlowMonth(transactionDate, cashFlowMonth)
     && nearestDueDateDistance(transactionDate, dueDay) <= 7
 }
 
@@ -144,8 +141,8 @@ function incomesForPeriod(items: PayPeriodIncomeItem[], period: 'first' | 'secon
       id: item.id,
       name: item.name,
       dueLabel: item.dueLabel,
-      amount: roundCurrency(item.actualAmount ?? item.amount),
-      status: item.actualAmount === undefined ? 'Planned' as const : 'Received' as const,
+      amount: roundCurrency(item.cancelled ? item.amount : item.actualAmount ?? item.amount),
+      status: item.cancelled ? 'Cancelled' as const : item.actualAmount === undefined ? 'Planned' as const : 'Received' as const,
     }))
 }
 
@@ -178,9 +175,9 @@ export function buildPayPeriodSummary({
 }): PayPeriodSummary {
   const firstPeriodIncomes = incomesForPeriod(incomes, 'first')
   const secondPeriodIncomes = incomesForPeriod(incomes, 'second')
-  const firstPeriodIncome = roundCurrency(firstPeriodIncomes.reduce((sum, item) => sum + item.amount, 0))
+  const firstPeriodIncome = roundCurrency(firstPeriodIncomes.reduce((sum, item) => sum + (item.status === 'Cancelled' ? 0 : item.amount), 0))
   const firstPeriodExpenses = expensesForPeriod(expenses, true)
-  const secondPeriodIncome = roundCurrency(secondPeriodIncomes.reduce((sum, item) => sum + item.amount, 0))
+  const secondPeriodIncome = roundCurrency(secondPeriodIncomes.reduce((sum, item) => sum + (item.status === 'Cancelled' ? 0 : item.amount), 0))
   const secondPeriodExpenses = expensesForPeriod(expenses, false)
 
   return {
@@ -199,4 +196,11 @@ export function buildPayPeriodSummary({
       bills: billsForPeriod(expenses, false),
     },
   }
+}
+
+export function isIncomeInCashFlowMonth(transactionDate: string, cashFlowMonth: string): boolean {
+  const transactionMonth = transactionDate.slice(0, 7)
+  const transactionDay = Number(transactionDate.slice(8, 10))
+  if (!Number.isInteger(transactionDay) || transactionDay < 1 || transactionDay > 31) return false
+  return (transactionDay >= 28 ? addMonths(transactionMonth, 1) : transactionMonth) === cashFlowMonth
 }
