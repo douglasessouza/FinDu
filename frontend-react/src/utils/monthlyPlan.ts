@@ -155,6 +155,7 @@ export function calculateMonthlyPlan(
   }
   let variableAllowance = 0
   const variableBudgetByCategory: Record<string, number> = {}
+  const variableBudgetItems: { category: string; name: string; amount: number }[] = []
   for (const row of budgetItems) {
     const treatment = row.item.id ? treatmentByItem.get(row.item.id) : undefined
     const covered = row.item.id ? coveredByItem.get(row.item.id) || 0 : 0
@@ -162,6 +163,7 @@ export function calculateMonthlyPlan(
       : treatment === 'VARIABLE' ? row.item.amount : Math.max(0, row.item.amount - covered)
     variableAllowance += amount
     variableBudgetByCategory[row.category] = money((variableBudgetByCategory[row.category] || 0) + amount)
+    if (amount > 0) variableBudgetItems.push({ category: row.category, name: row.item.name, amount: money(amount) })
   }
 
   const eligible = transactions.filter(tx => tx.currency === currency && tx.amount < 0
@@ -203,6 +205,7 @@ export function calculateMonthlyPlan(
     grossBudget,
     variableAllowance,
     variableBudgetByCategory,
+    variableBudgetItems,
     totalPlanned: money(fixedPlanned + variableAllowance),
     fixedActual: money(fixedActual),
     variableActual: money(variableActual),

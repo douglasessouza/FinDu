@@ -65,6 +65,15 @@ input, select, textarea {
   box-shadow: 0 1px 0 rgba(18, 61, 50, 0.04), 0 12px 32px rgba(18, 61, 50, 0.035);
 }
 
+.plan-detail-dialog {
+  animation: plan-detail-open 180ms ease-out both;
+}
+
+@keyframes plan-detail-open {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 .eyebrow {
   color: #55705E;
   font-size: 0.7rem;

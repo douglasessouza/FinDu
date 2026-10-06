@@ -208,6 +208,8 @@ export default function PlannedVsReal() {
   const [categoryTransactionsError, setCategoryTransactionsError] = useState<string | null>(null)
   const [selectedMonth, setSelectedMonth] = useState('')
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
+  const [planDetail, setPlanDetail] = useState<'fixed' | 'flexible' | null>(null)
+  const planDetailCloseRef = useRef<HTMLButtonElement>(null)
   const [editedCats, setEditedCats] = useState<Record<number, string>>({})
   const [loading, setLoading] = useState(true)
   const [loadedMonth, setLoadedMonth] = useState<string | null>(null)
@@ -323,7 +325,23 @@ export default function PlannedVsReal() {
         : transaction.date.slice(0, 7)
       return reportingMonth === selectedMonth
     }), recurringMatches, treatments), [selectedMonth, recurring, budgets, coverages, transactions, recurringMatches, treatments, accountById])
+  const fixedBills = recurring.filter(item => item.type === 'EXPENSE' && item.currency === 'CAD'
+    && item.planning_kind !== 'VARIABLE' && recurringIsActiveForMonth(item, selectedMonth))
   const currentTreatments = useMemo(() => treatmentsForMonth(treatments, selectedMonth), [treatments, selectedMonth])
+
+  useEffect(() => {
+    if (!planDetail) return
+    const previousFocus = document.activeElement as HTMLElement | null
+    planDetailCloseRef.current?.focus()
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPlanDetail(null)
+    }
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('keydown', closeOnEscape)
+      previousFocus?.focus()
+    }
+  }, [planDetail])
 
   const rows = useMemo<Row[]>(() => {
     if (!selectedMonth) return []
@@ -738,24 +756,52 @@ export default function PlannedVsReal() {
               <Link to={`/recurring?month=${selectedMonth}&currency=CAD`} className="text-sm font-semibold text-[#1B4D3E] underline">Edit fixed bills and budgets</Link>
             </div>
             <div className="grid grid-cols-1 divide-y divide-[#EDF4EE] sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-3">
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Fixed commitments</p><p className="money mt-1 text-xl font-bold text-[#B54B4B]">CAD$ {fmt(monthlyPlan.fixedPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">Matched actual CAD$ {fmt(monthlyPlan.fixedActual)}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">CAD$ {fmt(monthlyPlan.variableAllowance)}</p><p className="mt-1 text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
+              <button type="button" onClick={() => setPlanDetail('fixed')} aria-haspopup="dialog" className="group px-5 py-4 text-left transition hover:bg-[#F4FAF5] focus-visible:relative">
+                <span className="flex items-center justify-between gap-2 text-xs font-semibold text-[#55705E]">Fixed commitments <ChevronRight size={16} className="transition-transform group-hover:translate-x-1" /></span>
+                <span className="money mt-1 block text-xl font-bold text-[#B54B4B]">CAD$ {fmt(monthlyPlan.fixedPlanned)}</span>
+                <span className="mt-1 block text-xs text-[#55705E]">Matched actual CAD$ {fmt(monthlyPlan.fixedActual)} · View bills</span>
+              </button>
+              <button type="button" onClick={() => setPlanDetail('flexible')} aria-haspopup="dialog" className="group px-5 py-4 text-left transition hover:bg-[#F4FAF5] focus-visible:relative">
+                <span className="flex items-center justify-between gap-2 text-xs font-semibold text-[#55705E]">Flexible allowance <ChevronRight size={16} className="transition-transform group-hover:translate-x-1" /></span>
+                <span className="money mt-1 block text-xl font-bold text-[#123D32]">CAD$ {fmt(monthlyPlan.variableAllowance)}</span>
+                <span className="mt-1 block text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)} · View categories</span>
+              </button>
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">CAD$ {fmt(monthlyPlan.totalPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.missingFixedCategories.length ? `${monthlyPlan.missingFixedCategories.join(', ')} will be included when added as fixed` : monthlyIncomeCad <= 0 ? 'Fixed + flexible · Add income to calculate room' : `Fixed + flexible · Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
             </div>
-            <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
-              <p className="mb-2 text-sm font-bold text-[#123D32]">Fixed bills · planned and payment status</p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
-                {recurring.filter(item => item.type === 'EXPENSE' && item.currency === 'CAD' && item.planning_kind !== 'VARIABLE' && recurringIsActiveForMonth(item, selectedMonth)).map(item => {
-                  const paidAmount = monthlyPlan.fixedActualByRecurringId[item.id]
-                  const manual = monthlyPayments.some(row => row.item_type === 'recurring' && row.item_id === item.id)
-                  return <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm">
-                    <div className="min-w-0"><p className="truncate font-semibold text-[#1B4D3E]">{item.name}</p><p className="text-xs text-[#55705E]">{paidAmount ? `Charged · CAD$ ${fmt(paidAmount)}` : manual ? 'Marked paid · amount unverified' : `Due day ${item.due_day}`} · {item.payment_method === 'CREDIT_CARD' ? accountById[item.payment_account_id || 0]?.name || 'Card needed' : item.payment_method === 'DEBIT' ? accountById[item.payment_account_id || 0]?.name || 'Bank needed' : 'Payment route needed'}</p></div>
-                    <span className="money shrink-0 font-bold text-[#B54B4B]">CAD$ {fmt(item.amount)}</span>
-                  </div>
-                })}
+          </section>
+          {planDetail && <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F241C]/50 px-3 py-5 sm:px-6" onClick={event => { if (event.target === event.currentTarget) setPlanDetail(null) }}>
+            <div role="dialog" aria-modal="true" aria-labelledby="plan-detail-title" className="plan-detail-dialog flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-[#D4E4D5] bg-white shadow-2xl">
+              <div className="flex items-start justify-between gap-4 border-b border-[#D4E4D5] px-5 py-4 sm:px-7 sm:py-5">
+                <div>
+                  <p className="eyebrow">{monthLabel(selectedMonth)} · Budget & Card Cycles</p>
+                  <h2 id="plan-detail-title" className="mt-1 text-2xl font-bold text-[#123D32]">{planDetail === 'fixed' ? 'Fixed commitments' : 'Flexible allowance'}</h2>
+                  <p className="mt-1 text-sm text-[#55705E]">{planDetail === 'fixed' ? `${fixedBills.length} recurring bills · planned CAD$ ${fmt(monthlyPlan.fixedPlanned)} · charged CAD$ ${fmt(monthlyPlan.fixedActual)}` : `${monthlyPlan.variableBudgetItems.length} flexible budget items · planned CAD$ ${fmt(monthlyPlan.variableAllowance)} · spent CAD$ ${fmt(monthlyPlan.variableActual)}`}</p>
+                </div>
+                <button ref={planDetailCloseRef} type="button" onClick={() => setPlanDetail(null)} aria-label="Close details" className="shrink-0 rounded-lg p-2 text-[#123D32] hover:bg-[#EDF4EE]"><X size={20} /></button>
+              </div>
+              <div className="overflow-y-auto bg-[#F8FBF8] p-4 sm:p-6">
+                {planDetail === 'fixed' ? (
+                  fixedBills.length ? <div className="space-y-2">{fixedBills.map(item => {
+                    const charged = monthlyPlan.fixedActualByRecurringId[item.id]
+                    const markedPaid = monthlyPayments.some(row => row.item_type === 'recurring' && row.item_id === item.id)
+                    const paymentAccount = accountById[item.payment_account_id || 0]?.name
+                    return <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#D4E4D5] bg-white px-4 py-3">
+                      <div className="min-w-0"><p className="font-semibold text-[#123D32]">{item.name}</p><p className="mt-1 text-xs text-[#55705E]">Due day {item.due_day} · {item.payment_method === 'CREDIT_CARD' ? paymentAccount ? `Card: ${paymentAccount}` : 'Card needed' : item.payment_method === 'DEBIT' ? paymentAccount ? `Bank: ${paymentAccount}` : 'Bank needed' : 'Payment route needed'}</p></div>
+                      <div className="flex items-center gap-4 text-right"><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${charged || markedPaid ? 'bg-[#E5F2E9] text-[#1B6B3A]' : 'bg-[#F3F5F1] text-[#55705E]'}`}>{charged ? `Charged CAD$ ${fmt(charged)}` : markedPaid ? 'Marked paid' : 'Upcoming'}</span><strong className="money text-[#B54B4B]">CAD$ {fmt(item.amount)}</strong></div>
+                    </div>
+                  })}</div> : <p className="rounded-xl border border-[#D4E4D5] bg-white px-4 py-8 text-center text-sm text-[#55705E]">No fixed bills for this month.</p>
+                ) : (
+                  rows.length ? <div className="space-y-3">{rows.map(row => {
+                    const items = monthlyPlan.variableBudgetItems.filter(item => item.category === row.category)
+                    return <div key={row.category} className="rounded-xl border border-[#D4E4D5] bg-white px-4 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-[#123D32]">{row.category}</h3><p className="money text-sm text-[#123D32]">Budget CAD$ {fmt(row.planned)} · Spent CAD$ {fmt(row.real)}</p></div>
+                      {items.length > 0 ? <div className="mt-3 space-y-1 border-t border-[#EDF4EE] pt-2">{items.map((item, index) => <div key={`${row.category}-${index}`} className="flex items-center justify-between gap-3 text-sm text-[#55705E]"><span>{item.name}</span><span className="money">CAD$ {fmt(item.amount)}</span></div>)}</div> : <p className="mt-2 text-xs text-[#55705E]">Spending without a flexible budget for this category.</p>}
+                    </div>
+                  })}</div> : <p className="rounded-xl border border-[#D4E4D5] bg-white px-4 py-8 text-center text-sm text-[#55705E]">No flexible budget or spending for this month.</p>
+                )}
               </div>
             </div>
-          </section>
+          </div>}
           <details className="bg-white border border-[#D4E4D5] rounded-xl p-5 mb-6">
             <summary className="cursor-pointer text-sm font-bold text-[#1B4D3E]">Budget methodology · allocation rules</summary>
             <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-5 mb-5">
