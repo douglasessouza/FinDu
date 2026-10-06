@@ -62,6 +62,7 @@ export function calculateMonthlyPlan(
   const fixedById = new Map(fixed.map(item => [item.id, item]))
   const currentBudgets = budgets.filter(budget => budget.currency === currency && budget.is_active !== false
     && active(budget.start_month, budget.valid_until, month))
+  const grossBudget = money(currentBudgets.reduce((sum, budget) => sum + budget.amount, 0))
   const coveredByItem = new Map<number, number>()
   for (const coverage of coverages) {
     if (!fixedById.has(coverage.recurring_id)) continue
@@ -104,6 +105,7 @@ export function calculateMonthlyPlan(
   variableAllowance = money(variableAllowance)
   return {
     fixedPlanned,
+    grossBudget,
     variableAllowance,
     totalPlanned: unresolved.size ? null : money(fixedPlanned + variableAllowance),
     fixedActual: money(fixedActual),
