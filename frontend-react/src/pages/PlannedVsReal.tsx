@@ -12,7 +12,7 @@ import api, {
 import type { Account, BudgetCoverage, BudgetItemTreatment, CategoryBudget, MonthlyPayment, RecurringExpense, RecurringMatch, SpendingAnalysisResponse, Transaction } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData, loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
-import { calculateMonthlyPlan, excludedOnlyBudgetCategories, treatmentsForMonth } from '../utils/monthlyPlan'
+import { calculateMonthlyPlan, treatmentsForMonth } from '../utils/monthlyPlan'
 import CardCycleSummary from '../components/CardCycleSummary'
 
 interface Row {
@@ -330,7 +330,6 @@ export default function PlannedVsReal() {
 
     const coveredByItem = new Map<number, number>()
     const treatmentByItem = treatmentsForMonth(treatments, selectedMonth)
-    const excludedCategories = excludedOnlyBudgetCategories(selectedMonth, 'CAD', budgets, treatments)
     coverages.forEach(link => coveredByItem.set(link.budget_item_id,
       (coveredByItem.get(link.budget_item_id) || 0) + link.amount))
     const plannedByCategory = budgets
@@ -376,7 +375,7 @@ export default function PlannedVsReal() {
           variance: real - planned,
         }
       })
-      .filter(row => !excludedCategories.has(row.category) && (row.planned > 0 || row.real > 0))
+      .filter(row => row.planned > 0 || row.real > 0)
       .sort((a, b) => {
         const aHasPlan = a.planned > 0
         const bHasPlan = b.planned > 0
@@ -760,16 +759,16 @@ export default function PlannedVsReal() {
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Fixed commitments</p><p className="money mt-1 text-xl font-bold text-[#B54B4B]">CAD$ {fmt(monthlyPlan.fixedPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">Matched actual CAD$ {fmt(monthlyPlan.fixedActual)}</p></div>
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.unresolvedCategories.length ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.variableAllowance)}`}</p><p className="mt-1 text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.totalPlanned === null ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.totalPlanned)}`}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.missingFixedCategories.length ? `Add fixed bills for ${monthlyPlan.missingFixedCategories.join(', ')}` : monthlyPlan.totalPlanned === null ? 'Classify mixed budget items' : monthlyIncomeCad <= 0 ? 'Fixed + flexible · Add income to calculate room' : `Fixed + flexible · Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Needs classification</p><p className="money mt-1 text-xl font-bold text-[#B28E18]">CAD$ {fmt(monthlyPlan.unclassifiedActual)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.unresolvedCategories.length ? `Overlaps: ${monthlyPlan.unresolvedCategories.join(', ')}` : 'Spending awaiting a fixed bill match'}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Possible fixed payments</p><p className="money mt-1 text-xl font-bold text-[#B28E18]">CAD$ {fmt(monthlyPlan.unclassifiedActual)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.needsReviewTransactions.length ? 'Charges that may match a fixed bill' : 'No unmatched fixed payments found'}</p></div>
             </div>
             {monthlyPlan.needsReviewTransactions.length > 0 && <div className="border-t border-amber-200 bg-amber-50 px-5 py-4" id="transactions-needing-review">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div><p className="text-sm font-bold text-amber-950">Transactions to review · {monthlyPlan.needsReviewTransactions.length}</p><p className="mt-1 text-xs text-amber-900">These charges total CAD$ {fmt(monthlyPlan.unclassifiedActual)}. Check whether each belongs to a fixed bill or flexible spending.</p></div>
+                <div><p className="text-sm font-bold text-amber-950">Possible fixed payments · {monthlyPlan.needsReviewTransactions.length}</p><p className="mt-1 text-xs text-amber-900">These charges total CAD$ {fmt(monthlyPlan.unclassifiedActual)} and resemble a configured fixed bill. Check their match in Cash Flow.</p></div>
                 <Link to="/transactions" className="text-xs font-semibold text-amber-950 underline">Open transactions</Link>
               </div>
               <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
                 {monthlyPlan.needsReviewTransactions.map(transaction => <div key={transaction.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm">
-                  <div className="min-w-0"><p className="font-semibold text-[#123D32]">{transaction.description || 'Transaction'} <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">Review</span></p><p className="mt-1 text-xs text-[#55705E]">{transaction.date.slice(0, 10)} · {transaction.category || 'Other'} · {accountById[transaction.account_id]?.name || 'Account'}</p></div>
+                  <div className="min-w-0"><p className="font-semibold text-[#123D32]">{transaction.description || 'Transaction'} <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">Possible fixed bill</span></p><p className="mt-1 text-xs text-[#55705E]">{transaction.date.slice(0, 10)} · {transaction.category || 'Other'} · {accountById[transaction.account_id]?.name || 'Account'} · May match {transaction.possibleFixedBill}</p></div>
                   <strong className="money text-[#B54B4B]">CAD$ {fmt(-transaction.amount)}</strong>
                 </div>)}
               </div>

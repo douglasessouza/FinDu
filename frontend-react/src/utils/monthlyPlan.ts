@@ -6,6 +6,8 @@ export interface PlanRecurring {
   type: string
   category?: string
   planning_kind?: string
+  due_day?: number
+  payment_account_id?: number | null
   start_month?: string | null
   valid_until?: string | null
 }
@@ -54,6 +56,19 @@ export interface PlanMatch {
 const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100
 const active = (start: string | null | undefined, end: string | null | undefined, month: string) =>
   (!start || start.slice(0, 7) <= month) && (!end || end.slice(0, 7) >= month)
+
+function possibleFixedBill(tx: PlanTransaction, fixed: PlanRecurring[]): PlanRecurring | undefined {
+  return fixed.find(bill => {
+    if (bill.payment_account_id && bill.payment_account_id !== tx.account_id) return false
+    if (Math.abs(bill.amount + tx.amount) > Math.max(5, bill.amount * 0.15)) return false
+    if (bill.due_day && Math.abs(Number(tx.date.slice(8, 10)) - bill.due_day) > 7) return false
+    const billWords = bill.name.toLowerCase().match(/[a-z0-9]{4,}/g) || []
+    const description = (tx.description || '').toLowerCase()
+    const nameMatches = billWords.some(word => description.includes(word))
+    const categoryAndAccountMatch = bill.payment_account_id === tx.account_id && bill.category === tx.category
+    return nameMatches || categoryAndAccountMatch
+  })
+}
 
 export function treatmentsForMonth(rows: PlanTreatment[], month: string): Map<number, PlanTreatment['treatment']> {
   const current = new Map<number, PlanTreatment['treatment']>()
@@ -120,6 +135,8 @@ export function calculateMonthlyPlan(
     && (tx.category || '').toLowerCase() !== 'transfer'
     && (tx.statement_month || tx.date.slice(0, 7)) === month)
   const eligibleById = new Map(eligible.map(tx => [tx.id, tx]))
+  const ignoredPairs = new Set(matches.filter(match => match.source === 'ignored')
+    .map(match => `${match.recurring_id}:${match.transaction_id}`))
   const matchedIds = new Set<number>()
   let fixedActual = 0
   for (const match of matches) {
@@ -131,12 +148,13 @@ export function calculateMonthlyPlan(
   }
   let variableActual = 0
   let unclassifiedActual = 0
-  const needsReviewTransactions: PlanTransaction[] = []
+  const needsReviewTransactions: (PlanTransaction & { possibleFixedBill: string })[] = []
   for (const tx of eligible) {
     if (matchedIds.has(tx.id)) continue
-    if (fixedCategories.has(tx.category) || excludedOnlyCategories.has(tx.category || '')) {
+    const candidate = possibleFixedBill(tx, fixed.filter(bill => !ignoredPairs.has(`${bill.id}:${tx.id}`)))
+    if (candidate) {
       unclassifiedActual += -tx.amount
-      needsReviewTransactions.push(tx)
+      needsReviewTransactions.push({ ...tx, possibleFixedBill: candidate.name })
     } else variableActual += -tx.amount
   }
   const fixedPlanned = money(fixed.reduce((sum, item) => sum + item.amount, 0))
