@@ -149,6 +149,9 @@ class RecurringExpense(Base):
     start_month = Column(String, nullable=True)
     valid_until = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    planning_kind = Column(String, nullable=False, default="FIXED", server_default="FIXED")
+    payment_method = Column(String, nullable=False, default="UNSET", server_default="UNSET")
+    payment_account_id = Column(Integer, ForeignKey("accounts.id", name="fk_recurring_payment_account", ondelete="SET NULL"), nullable=True)
 
 class RecurringMonthlyOverride(Base):
     __tablename__ = "recurring_monthly_overrides"
@@ -237,3 +240,12 @@ class CategoryBudgetItem(Base):
     amount = Column(Float, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     budget = relationship("CategoryBudget", back_populates="items")
+
+class BudgetCoverage(Base):
+    __tablename__ = "budget_coverages"
+    __table_args__ = (UniqueConstraint("budget_item_id", "recurring_id", name="uq_budget_coverage_item_recurring"),)
+
+    id = Column(Integer, primary_key=True)
+    budget_item_id = Column(Integer, ForeignKey("category_budget_items.id", ondelete="CASCADE"), nullable=False)
+    recurring_id = Column(Integer, ForeignKey("recurring_expenses.id", ondelete="CASCADE"), nullable=False)
+    amount = Column(Float, nullable=False)
