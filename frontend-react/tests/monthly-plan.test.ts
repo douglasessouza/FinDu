@@ -26,6 +26,17 @@ test('unlinked overlap cannot masquerade as a reliable total', () => {
   assert.deepEqual(result.unresolvedCategories, ['Rent'])
 })
 
+test('excluded insurance budget stays saved but does not count as flexible before its fixed bill exists', () => {
+  const insuranceBudget = { ...budget, id: 9, category: 'Insurance', amount: 446,
+    items: [{ id: 10, name: 'Car insurance', amount: 446 }] }
+  const result = calculateMonthlyPlan('2026-11', 'CAD', [rent], [insuranceBudget], [], [], [],
+    [{ budget_item_id: 10, effective_month: '2026-10', treatment: 'EXCLUDED' }])
+  assert.equal(result.grossBudget, 446)
+  assert.equal(result.variableAllowance, 0)
+  assert.equal(result.totalPlanned, null)
+  assert.deepEqual(result.missingFixedCategories, ['Insurance'])
+})
+
 test('a card purchase matched to insurance is fixed actual; card repayment is excluded', () => {
   const insurance = { ...rent, id: 2, name: 'Insurance', category: 'Insurance', amount: 418,
     payment_method: 'CREDIT_CARD', payment_account_id: 7 }

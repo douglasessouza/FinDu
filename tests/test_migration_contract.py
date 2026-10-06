@@ -49,6 +49,25 @@ DEFAULT_CATEGORY_NAMES = {
 IMPORT_BATCH_REVISION = "d4e5f6a7b8c9"
 IMPORT_CLAIM_REVISION = "f6a7b8c9d0e1"
 PAYMENT_ROUTING_REVISION = "d9915a8fd65b"
+BUDGET_TREATMENT_REVISION = "e1a2b3c4d5e6"
+
+
+def test_budget_treatment_migration_preserves_amounts_and_excludes_rent_insurance(tmp_path, monkeypatch):
+    database_path = tmp_path / "existing-budget.db"
+    database_url = f"sqlite:///{database_path}"
+    monkeypatch.setenv("DATABASE_URL", database_url)
+    engine = sa.create_engine(database_url)
+    Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(sa.text("DELETE FROM budget_item_treatments"))
+        connection.execute(sa.text("INSERT INTO category_budgets (id, category, amount, currency, start_month, is_active) VALUES (1, 'Rent', 2600, 'CAD', '2026-08', 1), (2, 'Insurance', 446, 'CAD', '2026-08', 1), (3, 'Food', 800, 'CAD', '2026-08', 1)"))
+        connection.execute(sa.text("INSERT INTO category_budget_items (id, budget_id, name, amount) VALUES (1, 1, 'Rent', 2600), (2, 2, 'Car', 418), (3, 2, 'Other', 28), (4, 3, 'Groceries', 800)"))
+        MigrationContext.configure(connection).stamp(ScriptDirectory.from_config(Config("alembic.ini")), PAYMENT_ROUTING_REVISION)
+    command.upgrade(Config("alembic.ini"), "head")
+    with engine.connect() as connection:
+        assert connection.execute(sa.text("SELECT id, amount FROM category_budget_items ORDER BY id")).all() == [(1, 2600), (2, 418), (3, 28), (4, 800)]
+        assert connection.execute(sa.text("SELECT budget_item_id, effective_month, treatment FROM budget_item_treatments ORDER BY budget_item_id")).all() == [
+            (1, '2026-10', 'EXCLUDED'), (2, '2026-10', 'EXCLUDED'), (3, '2026-10', 'EXCLUDED')]
 CATEGORY_BUDGET_REVISION = "2b7e9a1c4d33"
 
 
@@ -437,8 +456,8 @@ def test_statement_import_claim_postgresql_ddl_is_the_alembic_head(monkeypatch):
     sql = output.getvalue()
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     head = script.get_revision(script.get_current_head())
-    assert head.revision == PAYMENT_ROUTING_REVISION
-    assert head.down_revision == IMPORT_CLAIM_REVISION
+    assert head.revision == BUDGET_TREATMENT_REVISION
+    assert head.down_revision == PAYMENT_ROUTING_REVISION
     assert "CREATE TABLE statement_import_claims" in sql
     assert "UNIQUE (account_id, fingerprint, occurrence)" in sql
     assert "CREATE INDEX ix_statement_import_claims_import_batch_id" in sql
@@ -934,7 +953,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
     } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            PAYMENT_ROUTING_REVISION
+            BUDGET_TREATMENT_REVISION
         )
         assert connection.scalar(sa.text("SELECT COUNT(*) FROM categories")) == len(
             DEFAULT_CATEGORY_NAMES
@@ -1057,7 +1076,7 @@ def test_alembic_drifted_upgrade_and_downgrade_preserve_adopted_schema_and_data(
     inspector = sa.inspect(engine)
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            PAYMENT_ROUTING_REVISION
+            BUDGET_TREATMENT_REVISION
         )
         assert connection.execute(
             sa.text(

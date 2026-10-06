@@ -20,15 +20,15 @@ Available CAD accounts in the snapshot were RBC checking, Amex, Amex Jaque, Doug
 
 ## 2. Add missing fixed commitments
 
-- **Car insurance:** add a fixed recurring expense. The existing Insurance budget contains an item named `Car` for CAD 418. Confirm that CAD 418 is the actual premium, its charge day, start/end dates, and **which credit card** is charged. Then link the `Car` budget item to this fixed bill for the amount it covers. This preserves the CAD 418 budget value while removing its fixed portion from flexible allowance.
-- **Home insurance:** add a fixed recurring expense once you confirm the premium, billing frequency, charge day, start/end dates, and bank account or card. Add or link a budget item only if an existing item already covers it.
-- **Cell phone / Rogers:** the Phone budget contains `Rogers` CAD 137, but the current fixed list contains only the two Affirm phone instalments. If Rogers is a required recurring phone bill, add it as fixed with its actual amount/date/payment route and link the `Rogers` budget item.
+- **Car insurance:** add a fixed recurring expense. The existing Insurance budget contains an item named `Car` for CAD 418. Confirm that CAD 418 is the actual premium, its charge day, start/end dates, and **which credit card** is charged. Insurance budget items are excluded from the flexible limit from October 2026; adding this bill will restore a complete planned total without deleting the original budget.
+- **Home insurance:** add a fixed recurring expense once you confirm the premium, billing frequency, charge day, start/end dates, and bank account or card. It does not need a second budget item.
+- **Cell phone / Rogers:** the Phone budget contains `Rogers` CAD 137, but the current fixed list contains only the two Affirm phone instalments. If Rogers is a required recurring phone bill, add it as fixed with its actual amount/date/payment route and mark the `Rogers` budget item **Fixed · exclude from flexible**.
 
-## 3. Review existing budget coverage
+## 3. Review budget items that mix fixed and flexible spending
 
-- Link **Rent CAD 2,600** budget item to the existing **Rent CAD 2,600** fixed bill. The app will then show fixed CAD 2,600 and flexible CAD 0 for that item, without rewriting the budget.
-- Review Phone budget items `Affirm Mac` CAD 67 and `Affirm Iphone` CAD 67 against fixed bills CAD 63.26 and CAD 66.62. Confirm which item covers which bill; small remainders can remain flexible. Do not assume they match from their labels alone.
-- Review Housing budget `Provident` CAD 210 and `Others` CAD 150 against the existing **Provident Energy CAD 150** fixed bill. Choose the item and covered amount that reflect your plan.
+- **Rent CAD 2,600** and all existing **Insurance** budget items are already marked outside the flexible limit from October 2026. Their saved amounts remain visible for historical reference; do not add them again as flexible spending.
+- Review Phone budget items `Affirm Mac` CAD 67 and `Affirm Iphone` CAD 67 against fixed bills CAD 63.26 and CAD 66.62. Mark fixed items **Fixed · exclude from flexible** and confirm any genuinely adjustable Phone item as **Flexible budget**. The original budget amounts are preserved.
+- Review Housing budget `Provident` CAD 210 and `Others` CAD 150 against the existing **Provident Energy CAD 150** fixed bill. Mark only the fixed item outside the flexible limit; keep any genuine variable allowance flexible.
 - Keep **Subscriptions** as variable spending. Its CAD 120 budget does not become a fixed commitment merely because the charges repeat.
 - Review the two `Car Bi-Weekly` rows. They are scheduled for days 8 and 23 each month (24 payments per year), while a true biweekly schedule has 26 payments per year. Confirm which schedule matches the lender before relying on annual totals.
 
@@ -38,4 +38,4 @@ One existing transaction (ID 351) is attached to two payroll matches, one for Ju
 
 ## Data safety
 
-Before deployment to the live database, take a verified backup/snapshot, record row counts and sums for `recurring_expenses`, `category_budgets`, `category_budget_items`, `transactions`, `monthly_payments`, and `recurring_matches`, then run the additive migration and compare those counts and sums. No automatic creation, deletion, or reclassification of individual bills or budget items is part of this rollout.
+Before deployment to the live database, take a verified backup/snapshot, record row counts and sums for `recurring_expenses`, `category_budgets`, `category_budget_items`, `transactions`, `monthly_payments`, and `recurring_matches`, then run the additive migration and compare those counts and sums. No bill, transaction, or budget row is deleted. The new treatment history excludes existing CAD Rent and Insurance budget items from the flexible limit starting October 2026; past months and saved amounts remain intact.

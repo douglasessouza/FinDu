@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Edit3, GitBranch, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import api from '../services/api'
-import type { Account, BudgetCoverage, Category, CategoryBudget, RecurringExpense } from '../services/api'
-import { calculateMonthlyPlan } from '../utils/monthlyPlan'
+import type { Account, BudgetCoverage, BudgetItemTreatment, Category, CategoryBudget, RecurringExpense } from '../services/api'
+import { calculateMonthlyPlan, treatmentsForMonth } from '../utils/monthlyPlan'
 
 type Currency = 'BRL' | 'CAD' | 'USD' | 'EUR'
 type RecurringType = 'EXPENSE' | 'INCOME'
@@ -144,7 +144,7 @@ export default function RecurringExpenses() {
   const [items, setItems] = useState<RecurringExpense[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [coverages, setCoverages] = useState<BudgetCoverage[]>([])
-  const [coverageDraft, setCoverageDraft] = useState<Record<number, { recurringId: string; amount: string }>>({})
+  const [treatments, setTreatments] = useState<BudgetItemTreatment[]>([])
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [expenseOnlyCategories, setExpenseOnlyCategories] = useState<string[]>([])
@@ -182,7 +182,8 @@ export default function RecurringExpenses() {
   const fixedIncomeTotal = incomeItems.reduce((sum, item) => sum + item.amount, 0)
   const fixedExpenses = expenseItems.filter(item => item.planning_kind !== 'VARIABLE')
   const variableRecurring = expenseItems.filter(item => item.planning_kind === 'VARIABLE')
-  const monthlyPlan = calculateMonthlyPlan(selectedMonth, selectedCurrency, items, monthBudgets, coverages, [], [])
+  const monthlyPlan = calculateMonthlyPlan(selectedMonth, selectedCurrency, items, monthBudgets, coverages, [], [], treatments)
+  const currentTreatments = treatmentsForMonth(treatments, selectedMonth)
   const fixedExpenseTotal = monthlyPlan.fixedPlanned
   const categoryBudgetTotal = monthlyPlan.variableAllowance
   const totalMonthlyPlan = monthlyPlan.totalPlanned
@@ -200,11 +201,12 @@ export default function RecurringExpenses() {
     setLoading(true)
     setError('')
     try {
-      const [recRes, catRes, accountsRes, coverageRes] = await Promise.all([
+      const [recRes, catRes, accountsRes, coverageRes, treatmentRes] = await Promise.all([
         api.get('/recurring-expenses'),
         api.get('/categories'),
         api.get('/accounts'),
         api.get('/budget-coverages'),
+        api.get('/budget-item-treatments'),
       ])
       const nextCategories = (catRes.data as Category[])
         .filter(category => category.type === 'EXPENSE' || category.type === 'TRANSFER')
@@ -218,6 +220,7 @@ export default function RecurringExpenses() {
       setItems(recRes.data as RecurringExpense[])
       setAccounts(accountsRes.data as Account[])
       setCoverages(coverageRes.data as BudgetCoverage[])
+      setTreatments(treatmentRes.data as BudgetItemTreatment[])
       setBudgets(budgetRes.data as CategoryBudget[])
       setCategories(nextCategories)
       setExpenseOnlyCategories(nextExpenseOnlyCategories)
@@ -241,12 +244,13 @@ export default function RecurringExpenses() {
     async function loadInitialRecurring() {
       setError('')
       try {
-        const [recRes, catRes, budgetRes, accountsRes, coverageRes] = await Promise.all([
+        const [recRes, catRes, budgetRes, accountsRes, coverageRes, treatmentRes] = await Promise.all([
           api.get('/recurring-expenses'),
           api.get('/categories'),
           api.get('/category-budgets').catch(() => ({ data: [] })),
           api.get('/accounts'),
           api.get('/budget-coverages'),
+          api.get('/budget-item-treatments'),
         ])
         if (!active) return
         const nextCategories = (catRes.data as Category[])
@@ -260,6 +264,7 @@ export default function RecurringExpenses() {
         setItems(recRes.data as RecurringExpense[])
         setAccounts(accountsRes.data as Account[])
         setCoverages(coverageRes.data as BudgetCoverage[])
+        setTreatments(treatmentRes.data as BudgetItemTreatment[])
         setBudgets(budgetRes.data as CategoryBudget[])
         setCategories(nextCategories)
         setExpenseOnlyCategories(nextExpenseOnlyCategories)
@@ -413,37 +418,17 @@ export default function RecurringExpenses() {
     }
   }
 
-  async function addCoverage(itemId: number) {
-    const draft = coverageDraft[itemId]
-    if (!draft?.recurringId || Number(draft.amount) <= 0) {
-      setError('Choose a fixed bill and an amount covered by this budget item.')
-      return
-    }
+  async function setBudgetItemTreatment(itemId: number, treatment: BudgetItemTreatment['treatment']) {
     setSaving(true)
     setError('')
     try {
-      const res = await api.post('/budget-coverages', {
-        budget_item_id: itemId, recurring_id: Number(draft.recurringId), amount: Number(draft.amount),
+      const res = await api.put(`/budget-items/${itemId}/treatment`, {
+        effective_month: selectedMonth, treatment,
       })
-      setCoverages(previous => [...previous, res.data as BudgetCoverage])
-      setCoverageDraft(previous => ({ ...previous, [itemId]: { recurringId: '', amount: '' } }))
-      setMessage('Fixed bill linked to budget item. The budget value was not changed.')
+      setTreatments(previous => [...previous.filter(row => !(row.budget_item_id === itemId && row.effective_month === selectedMonth)), res.data as BudgetItemTreatment])
+      setMessage(treatment === 'EXCLUDED' ? 'This item is outside the flexible budget from this month.' : 'This item counts toward the flexible budget from this month.')
     } catch {
-      setError('Could not link this bill. Check the amount, currency, and dates.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  async function removeCoverage(link: BudgetCoverage) {
-    setSaving(true)
-    setError('')
-    try {
-      await api.delete(`/budget-coverages/${link.id}`)
-      setCoverages(previous => previous.filter(item => item.id !== link.id))
-      setMessage('Budget link removed. The budget value was not changed.')
-    } catch {
-      setError('Could not remove the budget link.')
+      setError('Could not update this budget item. Its saved amount was not changed.')
     } finally {
       setSaving(false)
     }
@@ -571,6 +556,10 @@ export default function RecurringExpenses() {
   }
 
   async function saveBudgetItems(budget: CategoryBudget) {
+    if (budget.items?.some(item => treatments.some(row => row.budget_item_id === item.id))) {
+      setError('Use Adjust From Month to change classified budget items and preserve past months.')
+      return
+    }
     if (budget.items?.some(item => coverages.some(link => link.budget_item_id === item.id))) {
       setError('Remove this budget’s fixed-bill links before replacing its items. The saved amounts are unchanged.')
       return
@@ -771,29 +760,20 @@ export default function RecurringExpenses() {
                 {items.map((item, index) => {
                   const itemLinks = coverages.filter(link => link.budget_item_id === item.id)
                   const covered = itemLinks.reduce((sum, link) => sum + link.amount, 0)
-                  const draft = item.id ? coverageDraft[item.id] : undefined
+                  const treatment = item.id ? currentTreatments.get(item.id) : undefined
                   return <div key={`${budget.id}-${item.name}-${index}`} className="border-b border-[#EDF4EE] px-4 py-3 last:border-0">
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold text-[#1B4D3E] truncate">{item.name}</p>
                       <p className="text-sm font-bold tabular-nums text-[#B85050]">- {symbol(budget.currency)} {fmt(item.amount, budget.currency)}</p>
                     </div>
-                    <p className="mt-1 text-xs text-[#55705E]">Fixed covered {symbol(budget.currency)} {fmt(covered, budget.currency)} · flexible {symbol(budget.currency)} {fmt(Math.max(0, item.amount - covered), budget.currency)}</p>
-                    {itemLinks.map(link => <div key={link.id} className="mt-2 flex items-center justify-between gap-2 rounded-md bg-[#EDF4EE] px-2 py-1 text-xs text-[#1B4D3E]">
-                      <span>Covers {fixedExpenses.find(expense => expense.id === link.recurring_id)?.name || 'fixed bill'} · {symbol(budget.currency)} {fmt(link.amount, budget.currency)}</span>
-                      <button type="button" onClick={() => removeCoverage(link)} disabled={saving} aria-label={`Remove fixed bill link for ${item.name}`} className="font-semibold underline disabled:opacity-50">Remove</button>
-                    </div>)}
-                    {item.id && item.amount > covered && fixedExpenses.some(expense => expense.currency === budget.currency) && <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_96px_auto]">
-                      <select aria-label={`Fixed bill covered by ${item.name}`} value={draft?.recurringId || ''} onChange={e => {
-                        const selected = fixedExpenses.find(expense => expense.id === Number(e.target.value))
-                        setCoverageDraft(previous => ({ ...previous, [item.id!]: { recurringId: e.target.value,
-                          amount: selected ? String(Math.min(item.amount - covered, selected.amount)) : '' } }))
-                      }} className="min-w-0 rounded-md border border-[#D4E4D5] bg-white px-2 py-1 text-xs text-[#1B4D3E]">
-                        <option value="">Link a fixed bill</option>
-                        {fixedExpenses.filter(expense => expense.currency === budget.currency && !itemLinks.some(link => link.recurring_id === expense.id)).map(expense => <option key={expense.id} value={expense.id}>{expense.name}</option>)}
-                      </select>
-                      <input aria-label={`Amount of ${item.name} covering fixed bill`} type="number" min="0.01" max={item.amount - covered} step="0.01" value={draft?.amount || ''} onChange={e => setCoverageDraft(previous => ({ ...previous, [item.id!]: { recurringId: draft?.recurringId || '', amount: e.target.value } }))} className="w-full rounded-md border border-[#D4E4D5] bg-white px-2 py-1 text-xs text-[#1B4D3E]" />
-                      <button type="button" onClick={() => addCoverage(item.id!)} disabled={saving || !draft?.recurringId} className="rounded-md bg-[#1B4D3E] px-2 py-1 text-xs font-semibold text-white disabled:opacity-50">Link</button>
-                    </div>}
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[#55705E]">
+                      <span>{treatment === 'EXCLUDED' ? 'Fixed or reserved · outside flexible budget' : treatment === 'VARIABLE' ? 'Flexible budget item' : covered > 0 ? `Legacy fixed allocation ${symbol(budget.currency)} ${fmt(covered, budget.currency)}` : 'Review if this is already a fixed bill'}</span>
+                      {item.id && <select aria-label={`Budget treatment for ${item.name}`} value={treatment || ''} onChange={e => void setBudgetItemTreatment(item.id!, e.target.value as BudgetItemTreatment['treatment'])} disabled={saving} className="rounded-md border border-[#D4E4D5] bg-white px-2 py-1 text-xs text-[#1B4D3E]">
+                        <option value="" disabled>Choose treatment</option>
+                        <option value="VARIABLE">Flexible budget</option>
+                        <option value="EXCLUDED">Fixed · exclude from flexible</option>
+                      </select>}
+                    </div>
                   </div>
                 })}
                 <div className="px-4 py-3 bg-white">
@@ -1000,8 +980,8 @@ export default function RecurringExpenses() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <div className="surface-card p-4"><p className="eyebrow">Fixed income</p><p className="money mt-2 text-xl font-bold text-[#236B4B]">+ {symbol(selectedCurrency)} {fmt(fixedIncomeTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{incomeItems.length} guaranteed source{incomeItems.length === 1 ? '' : 's'}</p></div>
         <div className="surface-card p-4"><p className="eyebrow">Fixed commitments</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(fixedExpenseTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{fixedExpenses.length} fixed bill{fixedExpenses.length === 1 ? '' : 's'}</p></div>
-        <div className="surface-card p-4"><p className="eyebrow">Flexible allowance</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">{totalMonthlyPlan === null ? 'Needs review' : `- ${symbol(selectedCurrency)} ${fmt(categoryBudgetTotal, selectedCurrency)}`}</p><p className="mt-1 text-xs text-[#55705E]">From budget {symbol(selectedCurrency)} {fmt(monthlyPlan.grossBudget, selectedCurrency)} · {monthBudgets.length} spending area{monthBudgets.length === 1 ? '' : 's'}</p></div>
-        <div className="rounded-2xl border border-[#123D32] bg-[#123D32] p-4 text-white"><p className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/70">Total planned outflow</p><p className="money mt-2 text-xl font-bold text-[#D8B541]">{totalMonthlyPlan === null ? 'Needs review' : `- ${symbol(selectedCurrency)} ${fmt(totalMonthlyPlan, selectedCurrency)}`}</p><p className="mt-1 text-xs text-white/70">{monthlyPlan.unresolvedCategories.length ? `Check overlapping budgets: ${monthlyPlan.unresolvedCategories.join(', ')}` : 'Fixed commitments + flexible allowance'}</p></div>
+        <div className="surface-card p-4"><p className="eyebrow">Flexible allowance</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">{monthlyPlan.unresolvedCategories.length ? 'Needs review' : `- ${symbol(selectedCurrency)} ${fmt(categoryBudgetTotal, selectedCurrency)}`}</p><p className="mt-1 text-xs text-[#55705E]">From budget {symbol(selectedCurrency)} {fmt(monthlyPlan.grossBudget, selectedCurrency)} · {monthBudgets.length} spending area{monthBudgets.length === 1 ? '' : 's'}</p></div>
+        <div className="rounded-2xl border border-[#123D32] bg-[#123D32] p-4 text-white"><p className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/70">Total planned outflow</p><p className="money mt-2 text-xl font-bold text-[#D8B541]">{totalMonthlyPlan === null ? 'Needs review' : `- ${symbol(selectedCurrency)} ${fmt(totalMonthlyPlan, selectedCurrency)}`}</p><p className="mt-1 text-xs text-white/70">{monthlyPlan.missingFixedCategories.length ? `Add fixed bills for: ${monthlyPlan.missingFixedCategories.join(', ')}` : monthlyPlan.unresolvedCategories.length ? `Review mixed budgets: ${monthlyPlan.unresolvedCategories.join(', ')}` : 'Fixed commitments + flexible allowance'}</p></div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 items-start">

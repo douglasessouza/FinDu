@@ -32,11 +32,39 @@ jobs:
           docker build -f Dockerfile.web -t us-east1-docker.pkg.dev/findu23/findu/findu-web:${{ github.sha }} .
           docker push us-east1-docker.pkg.dev/findu23/findu/findu-web:${{ github.sha }}
 
+      - name: Back up database before migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          docker run --rm --env DATABASE_URL postgres:17 sh -c 'pg_dump --dbname="$DATABASE_URL" --format=custom --no-owner --no-acl' > pre-migration.dump
+          test -s pre-migration.dump
+          docker run --rm -v "$PWD:/backup:ro" postgres:17 pg_restore --file=/dev/null /backup/pre-migration.dump
+
+      - name: Store verified backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: financial-database-before-${{ github.sha }}
+          path: pre-migration.dump
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Record financial totals before migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: docker run --rm --env DATABASE_URL "$API_IMAGE" python scripts/financial_snapshot.py > before-financial.json
+
       - name: Run database migrations
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
           docker run --rm --env DATABASE_URL "$API_IMAGE" alembic upgrade head
+
+      - name: Verify financial totals after migration
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          docker run --rm --env DATABASE_URL "$API_IMAGE" python scripts/financial_snapshot.py > after-financial.json
+          diff -u before-financial.json after-financial.json
 
       - name: Deploy API to Cloud Run
         run: |

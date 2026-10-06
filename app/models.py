@@ -249,3 +249,12 @@ class BudgetCoverage(Base):
     budget_item_id = Column(Integer, ForeignKey("category_budget_items.id", ondelete="CASCADE"), nullable=False)
     recurring_id = Column(Integer, ForeignKey("recurring_expenses.id", ondelete="CASCADE"), nullable=False)
     amount = Column(Float, nullable=False)
+
+class BudgetItemTreatment(Base):
+    __tablename__ = "budget_item_treatments"
+    __table_args__ = (UniqueConstraint("budget_item_id", "effective_month", name="uq_budget_item_treatment_month"),)
+
+    id = Column(Integer, primary_key=True)
+    budget_item_id = Column(Integer, ForeignKey("category_budget_items.id", ondelete="CASCADE"), nullable=False)
+    effective_month = Column(String, nullable=False)
+    treatment = Column(String, nullable=False)

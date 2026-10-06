@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Literal
 import os
 import base64
 import hmac
@@ -13,7 +13,7 @@ import json as auth_json
 import time
 import requests as http_requests
 from dotenv import load_dotenv
-from app.models import Account, Transaction, StatementImportBatch, StatementImportClaim, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem, BudgetCoverage
+from app.models import Account, Transaction, StatementImportBatch, StatementImportClaim, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem, BudgetCoverage, BudgetItemTreatment
 from app.imports import (
     create_occurrence_token,
     filter_unseen_occurrences,
@@ -301,6 +301,10 @@ class BudgetCoverageCreate(BaseModel):
     recurring_id: int
     amount: float = Field(gt=0)
 
+class BudgetItemTreatmentUpdate(BaseModel):
+    effective_month: str
+    treatment: Literal["VARIABLE", "EXCLUDED"]
+
 class FinancialChatMessage(BaseModel):
     role: str
     content: str
@@ -416,6 +420,9 @@ def serialize_category_budget(budget: CategoryBudget):
         "created_at": budget.created_at.isoformat() if budget.created_at else None,
     }
 
+def budget_category_is_reserved(category: str, currency: CurrencyEnum) -> bool:
+    return currency == CurrencyEnum.CAD and category.strip().casefold() in {"rent", "insurance"}
+
 def fallback_budget_bucket(category: str) -> str:
     value = category.lower()
     if any(token in value for token in ["investment", "saving", "emergency", "debt", "loan", "tfsa", "rrsp"]):
@@ -489,6 +496,39 @@ def list_category_budgets(month: Optional[str] = None, db: Session = Depends(get
     budgets = db.query(CategoryBudget).order_by(CategoryBudget.category).all()
     return [serialize_category_budget(budget) for budget in budgets if category_budget_is_active_for_month(budget, month)]
 
+@app.get("/budget-item-treatments")
+def list_budget_item_treatments(month: Optional[str] = None, db: Session = Depends(get_db)):
+    if month:
+        month_start(month)
+    query = db.query(BudgetItemTreatment)
+    if month:
+        query = query.filter(BudgetItemTreatment.effective_month <= month)
+    rows = query.order_by(
+        BudgetItemTreatment.effective_month, BudgetItemTreatment.id).all()
+    selected = list({row.budget_item_id: row for row in rows}.values()) if month else rows
+    return [{"id": row.id, "budget_item_id": row.budget_item_id,
+             "effective_month": row.effective_month, "treatment": row.treatment}
+            for row in selected]
+
+@app.put("/budget-items/{item_id}/treatment")
+def set_budget_item_treatment(item_id: int, payload: BudgetItemTreatmentUpdate, db: Session = Depends(get_db)):
+    month_start(payload.effective_month)
+    if not db.get(CategoryBudgetItem, item_id):
+        raise HTTPException(status_code=404, detail="Budget item not found")
+    row = db.query(BudgetItemTreatment).filter(
+        BudgetItemTreatment.budget_item_id == item_id,
+        BudgetItemTreatment.effective_month == payload.effective_month).first()
+    if row:
+        row.treatment = payload.treatment
+    else:
+        row = BudgetItemTreatment(budget_item_id=item_id, effective_month=payload.effective_month,
+                                  treatment=payload.treatment)
+        db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "budget_item_id": row.budget_item_id,
+            "effective_month": row.effective_month, "treatment": row.treatment}
+
 @app.post("/category-budgets")
 def create_category_budget(budget: CategoryBudgetCreate, db: Session = Depends(get_db)):
     """Creates a monthly budget for variable spending by category."""
@@ -511,6 +551,11 @@ def create_category_budget(budget: CategoryBudgetCreate, db: Session = Depends(g
         for item in clean_items
     ] or [CategoryBudgetItem(name=budget.category, amount=amount)]
     db.add(db_budget)
+    db.flush()
+    if budget_category_is_reserved(db_budget.category, db_budget.currency):
+        db.add_all(BudgetItemTreatment(budget_item_id=item.id,
+                                       effective_month=db_budget.start_month, treatment="EXCLUDED")
+                   for item in db_budget.items)
     db.commit()
     db.refresh(db_budget)
     return serialize_category_budget(db_budget)
@@ -524,6 +569,9 @@ def update_category_budget(budget_id: int, updates: dict, db: Session = Depends(
         linked = db.query(BudgetCoverage).join(CategoryBudgetItem).filter(CategoryBudgetItem.budget_id == budget_id).first()
         if linked:
             raise HTTPException(status_code=409, detail="Remove fixed-bill links before replacing budget items")
+        treated = db.query(BudgetItemTreatment).join(CategoryBudgetItem).filter(CategoryBudgetItem.budget_id == budget_id).first()
+        if treated:
+            raise HTTPException(status_code=409, detail="Use a new budget version to preserve item classification history")
     allowed = {"category", "amount", "currency", "start_month", "valid_until", "is_active", "items"}
     for key, value in updates.items():
         if key not in allowed:
@@ -599,6 +647,14 @@ def adjust_category_budget(budget_id: int, adjustment: CategoryBudgetAdjustment,
         old_items = old_by_key.get(key, [])
         if len(old_items) != 1 or len(new_items) != 1:
             continue
+        prior_treatment = db.query(BudgetItemTreatment).filter(
+            BudgetItemTreatment.budget_item_id == old_items[0].id,
+            BudgetItemTreatment.effective_month <= adjustment.start_month).order_by(
+                BudgetItemTreatment.effective_month.desc()).first()
+        if prior_treatment:
+            db.add(BudgetItemTreatment(budget_item_id=new_items[0].id,
+                                       effective_month=adjustment.start_month,
+                                       treatment=prior_treatment.treatment))
         for link in db.query(BudgetCoverage).filter(BudgetCoverage.budget_item_id == old_items[0].id).all():
             linked_expense = db.get(RecurringExpense, link.recurring_id)
             if (not linked_expense or linked_expense.planning_kind != "FIXED"
@@ -606,6 +662,12 @@ def adjust_category_budget(budget_id: int, adjustment: CategoryBudgetAdjustment,
                 continue
             db.add(BudgetCoverage(budget_item_id=new_items[0].id,
                                   recurring_id=link.recurring_id, amount=link.amount))
+    if budget_category_is_reserved(next_budget.category, next_budget.currency):
+        treated_ids = {row.budget_item_id for row in db.new if isinstance(row, BudgetItemTreatment)}
+        for item in next_budget.items:
+            if item.id not in treated_ids:
+                db.add(BudgetItemTreatment(budget_item_id=item.id,
+                                           effective_month=adjustment.start_month, treatment="EXCLUDED"))
     db.commit()
     db.refresh(budget)
     db.refresh(next_budget)

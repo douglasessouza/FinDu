@@ -9,10 +9,10 @@ import api, {
   getTransactions,
   updateTransactionCategories,
 } from '../services/api'
-import type { Account, BudgetCoverage, CategoryBudget, MonthlyPayment, RecurringExpense, RecurringMatch, SpendingAnalysisResponse, Transaction } from '../services/api'
+import type { Account, BudgetCoverage, BudgetItemTreatment, CategoryBudget, MonthlyPayment, RecurringExpense, RecurringMatch, SpendingAnalysisResponse, Transaction } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData, loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
-import { calculateMonthlyPlan } from '../utils/monthlyPlan'
+import { calculateMonthlyPlan, excludedOnlyBudgetCategories, treatmentsForMonth } from '../utils/monthlyPlan'
 import CardCycleSummary from '../components/CardCycleSummary'
 
 interface Row {
@@ -199,6 +199,7 @@ export default function PlannedVsReal() {
   const [categories, setCategories] = useState<string[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [coverages, setCoverages] = useState<BudgetCoverage[]>([])
+  const [treatments, setTreatments] = useState<BudgetItemTreatment[]>([])
   const [recurringMatches, setRecurringMatches] = useState<RecurringMatch[]>([])
   const [monthlyPayments, setMonthlyPayments] = useState<MonthlyPayment[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
@@ -258,11 +259,12 @@ export default function PlannedVsReal() {
     const requestRunner = monthlyRequestRef.current
     void requestRunner.run(
       async () => {
-        const [budgetRes, monthlyTransactions, monthlySpending, coverageRes, matchRes, previousMatchRes, paymentRes] = await Promise.all([
+        const [budgetRes, monthlyTransactions, monthlySpending, coverageRes, treatmentRes, matchRes, previousMatchRes, paymentRes] = await Promise.all([
           api.get('/category-budgets', { params: { month: requestedMonth } }),
           getTransactions({ dateFrom: `${addMonths(requestedMonth, -1)}-01`, dateTo: lastDayOfMonth(requestedMonth) }),
           getSpendingAnalysis(requestedMonth, requestedMonth),
           api.get('/budget-coverages', { params: { month: requestedMonth } }),
+          api.get('/budget-item-treatments', { params: { month: requestedMonth } }),
           api.get('/recurring-matches', { params: { month: requestedMonth } }),
           api.get('/recurring-matches', { params: { month: addMonths(requestedMonth, -1) } }),
           api.get('/monthly-payments', { params: { month: requestedMonth } }),
@@ -272,6 +274,7 @@ export default function PlannedVsReal() {
           transactions: monthlyTransactions,
           spending: monthlySpending,
           coverages: coverageRes.data as BudgetCoverage[],
+          treatments: treatmentRes.data as BudgetItemTreatment[],
           matches: [...previousMatchRes.data, ...matchRes.data] as RecurringMatch[],
           payments: paymentRes.data as MonthlyPayment[],
         }
@@ -287,6 +290,7 @@ export default function PlannedVsReal() {
           setBudgets(result.budgets)
           setTransactions(result.transactions)
           setCoverages(result.coverages)
+          setTreatments(result.treatments)
           setRecurringMatches(result.matches)
           setMonthlyPayments(result.payments)
           setLoadedMonth(requestedMonth)
@@ -318,12 +322,15 @@ export default function PlannedVsReal() {
         ? transaction.statement_month || transaction.date.slice(0, 7)
         : transaction.date.slice(0, 7)
       return reportingMonth === selectedMonth
-    }), recurringMatches), [selectedMonth, recurring, budgets, coverages, transactions, recurringMatches, accountById])
+    }), recurringMatches, treatments), [selectedMonth, recurring, budgets, coverages, transactions, recurringMatches, treatments, accountById])
+  const currentTreatments = useMemo(() => treatmentsForMonth(treatments, selectedMonth), [treatments, selectedMonth])
 
   const rows = useMemo<Row[]>(() => {
     if (!selectedMonth) return []
 
     const coveredByItem = new Map<number, number>()
+    const treatmentByItem = treatmentsForMonth(treatments, selectedMonth)
+    const excludedCategories = excludedOnlyBudgetCategories(selectedMonth, 'CAD', budgets, treatments)
     coverages.forEach(link => coveredByItem.set(link.budget_item_id,
       (coveredByItem.get(link.budget_item_id) || 0) + link.amount))
     const plannedByCategory = budgets
@@ -334,7 +341,9 @@ export default function PlannedVsReal() {
       .reduce<Record<string, number>>((totals, budget) => {
         const budgetItems = budget.items?.length ? budget.items : [{ amount: budget.amount, name: budget.category }]
         totals[budget.category] = (totals[budget.category] || 0) + budgetItems.reduce((sum, item) =>
-          sum + Math.max(0, item.amount - (item.id ? coveredByItem.get(item.id) || 0 : 0)), 0)
+          sum + (item.id && treatmentByItem.get(item.id) === 'EXCLUDED' ? 0
+            : item.id && treatmentByItem.get(item.id) === 'VARIABLE' ? item.amount
+              : Math.max(0, item.amount - (item.id ? coveredByItem.get(item.id) || 0 : 0))), 0)
         return totals
       }, {})
 
@@ -366,7 +375,7 @@ export default function PlannedVsReal() {
           variance: real - planned,
         }
       })
-      .filter(row => row.planned > 0 || row.real > 0)
+      .filter(row => !excludedCategories.has(row.category) && (row.planned > 0 || row.real > 0))
       .sort((a, b) => {
         const aHasPlan = a.planned > 0
         const bHasPlan = b.planned > 0
@@ -379,7 +388,7 @@ export default function PlannedVsReal() {
 
         return b.variance - a.variance
       })
-  }, [budgets, coverages, selectedMonth, spending, recurring, recurringMatches, transactions, accountById])
+  }, [budgets, coverages, treatments, selectedMonth, spending, recurring, recurringMatches, transactions, accountById])
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -744,12 +753,12 @@ export default function PlannedVsReal() {
           <section aria-label="Monthly spending plan" className="mb-6 overflow-hidden rounded-xl border border-[#D4E4D5] bg-white">
             <div className="flex flex-col gap-2 border-b border-[#EDF4EE] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div><p className="text-xs font-bold uppercase tracking-widest text-[#55705E]">Your month at a glance</p><h2 className="mt-1 text-xl font-bold text-[#123D32]">Committed and adjustable spending</h2></div>
-              <Link to={`/recurring?month=${selectedMonth}&currency=CAD`} className="text-sm font-semibold text-[#1B4D3E] underline">Review bills and budget links</Link>
+              <Link to={`/recurring?month=${selectedMonth}&currency=CAD`} className="text-sm font-semibold text-[#1B4D3E] underline">Review bills and budget items</Link>
             </div>
             <div className="grid grid-cols-1 divide-y divide-[#EDF4EE] sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4">
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Fixed commitments</p><p className="money mt-1 text-xl font-bold text-[#B54B4B]">CAD$ {fmt(monthlyPlan.fixedPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">Matched actual CAD$ {fmt(monthlyPlan.fixedActual)}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.totalPlanned === null ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.variableAllowance)}`}</p><p className="mt-1 text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.totalPlanned === null ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.totalPlanned)}`}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.totalPlanned === null ? 'Link fixed bills inside budgets to calculate total' : monthlyIncomeCad <= 0 ? 'Fixed + flexible · Add income to calculate room' : `Fixed + flexible · Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.unresolvedCategories.length ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.variableAllowance)}`}</p><p className="mt-1 text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.totalPlanned === null ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.totalPlanned)}`}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.missingFixedCategories.length ? `Add fixed bills for ${monthlyPlan.missingFixedCategories.join(', ')}` : monthlyPlan.totalPlanned === null ? 'Classify mixed budget items' : monthlyIncomeCad <= 0 ? 'Fixed + flexible · Add income to calculate room' : `Fixed + flexible · Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Needs classification</p><p className="money mt-1 text-xl font-bold text-[#B28E18]">CAD$ {fmt(monthlyPlan.unclassifiedActual)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.unresolvedCategories.length ? `Overlaps: ${monthlyPlan.unresolvedCategories.join(', ')}` : 'Spending awaiting a fixed bill match'}</p></div>
             </div>
             <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
@@ -1090,7 +1099,7 @@ export default function PlannedVsReal() {
                               {(budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]).map((item, index) => (
                                 <div key={`${budget.id}-${item.name}-${index}`} className="flex items-center justify-between gap-3 px-3 py-2 border-b border-[#EDF4EE] last:border-0">
                                   <p className="text-xs font-semibold text-[#2C3E2D] truncate">{item.name}</p>
-                                  <div className="text-right"><p className="text-xs font-bold tabular-nums text-[#1B4D3E]">CAD$ {fmt(Math.max(0, item.amount - (item.id ? coverages.filter(link => link.budget_item_id === item.id).reduce((sum, link) => sum + link.amount, 0) : 0)))}</p><p className="text-[11px] text-[#55705E]">Original CAD$ {fmt(item.amount)}</p></div>
+                                  <div className="text-right"><p className="text-xs font-bold tabular-nums text-[#1B4D3E]">CAD$ {fmt(item.id && currentTreatments.get(item.id) === 'EXCLUDED' ? 0 : Math.max(0, item.amount - (item.id && currentTreatments.get(item.id) !== 'VARIABLE' ? coverages.filter(link => link.budget_item_id === item.id).reduce((sum, link) => sum + link.amount, 0) : 0)))}</p><p className="text-[11px] text-[#55705E]">{item.id && currentTreatments.get(item.id) === 'EXCLUDED' ? 'Outside flexible · ' : 'Original '}CAD$ {fmt(item.amount)}</p></div>
                                 </div>
                               ))}
                             </div>

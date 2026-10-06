@@ -22,6 +22,7 @@ TASK_2_REVISION = "9a7c2d4e6f80"
 TASK_3_REVISION = "d4e5f6a7b8c9"
 IMPORT_CLAIM_REVISION = "f6a7b8c9d0e1"
 PAYMENT_ROUTING_REVISION = "d9915a8fd65b"
+BUDGET_TREATMENT_REVISION = "e1a2b3c4d5e6"
 TASK_2_BASELINE_REVISION = "6c4e8a21f9d0"
 
 def prepare_empty_sqlite_baseline(connection) -> None:
@@ -38,7 +39,7 @@ def prepare_empty_sqlite_baseline(connection) -> None:
     Base.metadata.create_all(connection)
     migration_context = MigrationContext.configure(connection)
     script_directory = ScriptDirectory.from_config(config)
-    for revision in (PAYMENT_ROUTING_REVISION, IMPORT_CLAIM_REVISION, TASK_3_REVISION, TASK_2_REVISION):
+    for revision in (BUDGET_TREATMENT_REVISION, PAYMENT_ROUTING_REVISION, IMPORT_CLAIM_REVISION, TASK_3_REVISION, TASK_2_REVISION):
         migration = script_directory.get_revision(revision).module
         migration_op_proxy = migration.op
         try:

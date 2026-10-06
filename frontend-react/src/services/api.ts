@@ -131,6 +131,13 @@ export interface CategoryBudgetItem {
   created_at?: string | null
 }
 
+export interface BudgetItemTreatment {
+  id: number
+  budget_item_id: number
+  effective_month: string
+  treatment: 'VARIABLE' | 'EXCLUDED'
+}
+
 export interface BudgetCoverage {
   id: number
   budget_item_id: number
