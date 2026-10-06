@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { CheckCircle2, ChevronLeft, ChevronRight, Plus, Save, Split, Target, Trash2, Wand2, X } from 'lucide-react'
 import api, {
   getAccounts,
@@ -8,9 +9,10 @@ import api, {
   getTransactions,
   updateTransactionCategories,
 } from '../services/api'
-import type { Account, CategoryBudget, RecurringExpense, SpendingAnalysisResponse, Transaction } from '../services/api'
+import type { Account, BudgetCoverage, CategoryBudget, MonthlyPayment, RecurringExpense, RecurringMatch, SpendingAnalysisResponse, Transaction } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData, loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
+import { calculateMonthlyPlan } from '../utils/monthlyPlan'
 
 interface Row {
   category: string
@@ -195,6 +197,9 @@ export default function PlannedVsReal() {
   const [accounts, setAccounts] = useState<Account[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
+  const [coverages, setCoverages] = useState<BudgetCoverage[]>([])
+  const [recurringMatches, setRecurringMatches] = useState<RecurringMatch[]>([])
+  const [monthlyPayments, setMonthlyPayments] = useState<MonthlyPayment[]>([])
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categoryTransactions, setCategoryTransactions] = useState<Transaction[]>([])
   const [categoryTransactionsLoading, setCategoryTransactionsLoading] = useState(false)
@@ -252,15 +257,22 @@ export default function PlannedVsReal() {
     const requestRunner = monthlyRequestRef.current
     void requestRunner.run(
       async () => {
-        const [budgetRes, monthlyTransactions, monthlySpending] = await Promise.all([
+        const [budgetRes, monthlyTransactions, monthlySpending, coverageRes, matchRes, previousMatchRes, paymentRes] = await Promise.all([
           api.get('/category-budgets', { params: { month: requestedMonth } }),
-          getTransactions({ month: requestedMonth }),
+          getTransactions({ dateFrom: `${addMonths(requestedMonth, -1)}-01`, dateTo: lastDayOfMonth(requestedMonth) }),
           getSpendingAnalysis(requestedMonth, requestedMonth),
+          api.get('/budget-coverages', { params: { month: requestedMonth } }),
+          api.get('/recurring-matches', { params: { month: requestedMonth } }),
+          api.get('/recurring-matches', { params: { month: addMonths(requestedMonth, -1) } }),
+          api.get('/monthly-payments', { params: { month: requestedMonth } }),
         ])
         return {
           budgets: budgetRes.data as CategoryBudget[],
           transactions: monthlyTransactions,
           spending: monthlySpending,
+          coverages: coverageRes.data as BudgetCoverage[],
+          matches: [...previousMatchRes.data, ...matchRes.data] as RecurringMatch[],
+          payments: paymentRes.data as MonthlyPayment[],
         }
       },
       {
@@ -273,6 +285,9 @@ export default function PlannedVsReal() {
           setSpending(current => replaceSelectedMonth(current, requestedMonth, result.spending))
           setBudgets(result.budgets)
           setTransactions(result.transactions)
+          setCoverages(result.coverages)
+          setRecurringMatches(result.matches)
+          setMonthlyPayments(result.payments)
           setLoadedMonth(requestedMonth)
         },
         onError: () => {
@@ -295,16 +310,30 @@ export default function PlannedVsReal() {
     }, {})
   }, [accounts])
 
+  const monthlyPlan = useMemo(() => calculateMonthlyPlan(selectedMonth, 'CAD', recurring, budgets,
+    coverages, transactions.filter(transaction => {
+      const account = accountById[transaction.account_id]
+      const reportingMonth = account?.account_type === 'CREDIT_CARD'
+        ? transaction.statement_month || transaction.date.slice(0, 7)
+        : transaction.date.slice(0, 7)
+      return reportingMonth === selectedMonth
+    }), recurringMatches), [selectedMonth, recurring, budgets, coverages, transactions, recurringMatches, accountById])
+
   const rows = useMemo<Row[]>(() => {
     if (!selectedMonth) return []
 
+    const coveredByItem = new Map<number, number>()
+    coverages.forEach(link => coveredByItem.set(link.budget_item_id,
+      (coveredByItem.get(link.budget_item_id) || 0) + link.amount))
     const plannedByCategory = budgets
       .filter(budget => budget.currency === 'CAD')
       .filter(budget => budget.is_active)
       .filter(budget => budget.start_month <= selectedMonth)
       .filter(budget => !budget.valid_until || new Date(budget.valid_until) >= new Date(`${selectedMonth}-01T00:00:00`))
       .reduce<Record<string, number>>((totals, budget) => {
-        totals[budget.category] = (totals[budget.category] || 0) + budget.amount
+        const budgetItems = budget.items?.length ? budget.items : [{ amount: budget.amount, name: budget.category }]
+        totals[budget.category] = (totals[budget.category] || 0) + budgetItems.reduce((sum, item) =>
+          sum + Math.max(0, item.amount - (item.id ? coveredByItem.get(item.id) || 0 : 0)), 0)
         return totals
       }, {})
 
@@ -314,6 +343,16 @@ export default function PlannedVsReal() {
       if (!cad) return
       realByCategory[category] = Math.round((cad.cards + cad.debit) * 100) / 100
     })
+    const fixedIds = new Set(recurring.filter(item => item.type === 'EXPENSE' && item.planning_kind !== 'VARIABLE').map(item => item.id))
+    const fixedTransactionIds = new Set(recurringMatches.filter(match => match.source !== 'ignored' && fixedIds.has(match.recurring_id)).map(match => match.transaction_id))
+    for (const transaction of transactions) {
+      if (!fixedTransactionIds.has(transaction.id) || transaction.amount >= 0 || transaction.currency !== 'CAD') continue
+      const account = accountById[transaction.account_id]
+      const reportingMonth = account?.account_type === 'CREDIT_CARD' ? transaction.statement_month || transaction.date.slice(0, 7) : transaction.date.slice(0, 7)
+      if (reportingMonth !== selectedMonth) continue
+      const category = transaction.category || 'Other'
+      realByCategory[category] = Math.max(0, Math.round(((realByCategory[category] || 0) + transaction.amount) * 100) / 100)
+    }
 
     return Array.from(new Set([...Object.keys(plannedByCategory), ...Object.keys(realByCategory)]))
       .map(category => {
@@ -339,7 +378,7 @@ export default function PlannedVsReal() {
 
         return b.variance - a.variance
       })
-  }, [budgets, selectedMonth, spending])
+  }, [budgets, coverages, selectedMonth, spending, recurring, recurringMatches, transactions, accountById])
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -361,7 +400,7 @@ export default function PlannedVsReal() {
       .filter(budget => !budget.valid_until || new Date(budget.valid_until) >= new Date(`${selectedMonth}-01T00:00:00`))
       .sort((a, b) => a.start_month.localeCompare(b.start_month))
   }, [budgets, selectedCategory, selectedMonth])
-  const plannedTotal = plannedBudgetItems.reduce((sum, budget) => sum + budget.amount, 0)
+  const plannedTotal = selectedRow?.planned || 0
   const modalTotal = categoryTransactions.reduce((sum, tx) => sum + Math.abs(tx.amount), 0)
   const pendingChanges = Object.keys(editedCats).length
   const splitTotal = splitRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0)
@@ -700,7 +739,33 @@ export default function PlannedVsReal() {
         <div className="text-center text-red-600 py-20">{currentMonthLoadError}</div>
       ) : (
         <>
-          <section className="bg-white border border-[#D4E4D5] rounded-xl p-5 mb-6">
+          <section aria-label="Monthly spending plan" className="mb-6 overflow-hidden rounded-xl border border-[#D4E4D5] bg-white">
+            <div className="flex flex-col gap-2 border-b border-[#EDF4EE] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div><p className="text-xs font-bold uppercase tracking-widest text-[#55705E]">Your month at a glance</p><h2 className="mt-1 text-xl font-bold text-[#123D32]">Committed and adjustable spending</h2></div>
+              <Link to={`/recurring?month=${selectedMonth}&currency=CAD`} className="text-sm font-semibold text-[#1B4D3E] underline">Review bills and budget links</Link>
+            </div>
+            <div className="grid grid-cols-1 divide-y divide-[#EDF4EE] sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4">
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Fixed commitments</p><p className="money mt-1 text-xl font-bold text-[#B54B4B]">CAD$ {fmt(monthlyPlan.fixedPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">Matched actual CAD$ {fmt(monthlyPlan.fixedActual)}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">CAD$ {fmt(monthlyPlan.variableAllowance)}</p><p className="mt-1 text-xs text-[#55705E]">Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.totalPlanned === null ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.totalPlanned)}`}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.totalPlanned === null ? 'Resolve overlapping budget items' : monthlyIncomeCad <= 0 ? 'Add income to calculate room' : `Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Needs classification</p><p className="money mt-1 text-xl font-bold text-[#B28E18]">CAD$ {fmt(monthlyPlan.unclassifiedActual)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.unresolvedCategories.length ? `Overlaps: ${monthlyPlan.unresolvedCategories.join(', ')}` : 'Spending awaiting a fixed bill match'}</p></div>
+            </div>
+            <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
+              <p className="mb-2 text-sm font-bold text-[#123D32]">Fixed bills · planned and payment status</p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {recurring.filter(item => item.type === 'EXPENSE' && item.currency === 'CAD' && item.planning_kind !== 'VARIABLE' && recurringIsActiveForMonth(item, selectedMonth)).map(item => {
+                  const match = recurringMatches.find(row => row.month === selectedMonth && row.recurring_id === item.id && row.source !== 'ignored' && row.transaction)
+                  const manual = monthlyPayments.some(row => row.item_type === 'recurring' && row.item_id === item.id)
+                  return <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm">
+                    <div className="min-w-0"><p className="truncate font-semibold text-[#1B4D3E]">{item.name}</p><p className="text-xs text-[#55705E]">{match ? `Matched · CAD$ ${fmt(Math.abs(match.transaction!.amount))}` : manual ? 'Marked paid · amount unverified' : `Due day ${item.due_day}`} · {item.payment_method === 'CREDIT_CARD' ? accountById[item.payment_account_id || 0]?.name || 'Card needed' : item.payment_method === 'DEBIT' ? accountById[item.payment_account_id || 0]?.name || 'Bank needed' : 'Payment route needed'}</p></div>
+                    <span className="money shrink-0 font-bold text-[#B54B4B]">CAD$ {fmt(item.amount)}</span>
+                  </div>
+                })}
+              </div>
+            </div>
+          </section>
+          <details className="bg-white border border-[#D4E4D5] rounded-xl p-5 mb-6">
+            <summary className="cursor-pointer text-sm font-bold text-[#1B4D3E]">Budget methodology · allocation rules</summary>
             <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-5 mb-5">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Budget methodology</p>
@@ -862,15 +927,15 @@ export default function PlannedVsReal() {
                 </div>
               </div>
             </div>
-          </section>
+          </details>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
             <div className="bg-white border border-[#D4E4D5] rounded-xl p-4">
-              <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Planned</p>
+              <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Variable budget</p>
               <p className="text-2xl font-bold text-[#1B4D3E] mt-1">CAD$ {fmt(totals.planned)}</p>
             </div>
             <div className="bg-white border border-[#D4E4D5] rounded-xl p-4">
-              <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Real</p>
+              <p className="text-xs font-semibold text-[#8BAE90] uppercase tracking-widest">Variable spent</p>
               <p className="text-2xl font-bold text-[#B85050] mt-1">CAD$ {fmt(totals.real)}</p>
             </div>
             <div className="bg-white border border-[#D4E4D5] rounded-xl p-4">
@@ -991,9 +1056,14 @@ export default function PlannedVsReal() {
                   <div className="min-w-[1040px] grid grid-cols-[280px_1fr] gap-4 p-5">
                     <div className="rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] overflow-hidden">
                       <div className="border-b border-[#D4E4D5] px-4 py-3">
-                        <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Planned list</p>
+                        <p className="text-xs font-semibold uppercase tracking-widest text-[#8BAE90]">Variable allowance</p>
                         <p className="mt-1 text-lg font-bold text-[#1B4D3E]">CAD$ {fmt(plannedTotal)}</p>
                       </div>
+
+                      {recurring.filter(item => item.type === 'EXPENSE' && item.currency === 'CAD' && item.planning_kind !== 'VARIABLE' && item.category === selectedCategory && recurringIsActiveForMonth(item, selectedMonth)).map(item => <div key={item.id} className="flex items-center justify-between gap-3 border-b border-[#EDF4EE] bg-[#F4FAF5] px-4 py-3">
+                        <div><p className="text-xs font-bold text-[#1B4D3E]">Fixed · {item.name}</p><p className="text-xs text-[#55705E]">Due day {item.due_day} · {item.payment_method === 'CREDIT_CARD' ? 'Credit card' : item.payment_method === 'DEBIT' ? 'Bank account' : 'Payment route needed'}</p></div>
+                        <span className="text-sm font-bold text-[#B54B4B]">CAD$ {fmt(item.amount)}</span>
+                      </div>)}
 
                       {plannedBudgetItems.length === 0 ? (
                         <div className="px-4 py-8 text-sm text-[#8BAE90]">
@@ -1018,7 +1088,7 @@ export default function PlannedVsReal() {
                               {(budget.items && budget.items.length > 0 ? budget.items : [{ name: budget.category, amount: budget.amount }]).map((item, index) => (
                                 <div key={`${budget.id}-${item.name}-${index}`} className="flex items-center justify-between gap-3 px-3 py-2 border-b border-[#EDF4EE] last:border-0">
                                   <p className="text-xs font-semibold text-[#2C3E2D] truncate">{item.name}</p>
-                                  <p className="text-xs font-bold tabular-nums text-[#1B4D3E]">CAD$ {fmt(item.amount)}</p>
+                                  <div className="text-right"><p className="text-xs font-bold tabular-nums text-[#1B4D3E]">CAD$ {fmt(Math.max(0, item.amount - (item.id ? coverages.filter(link => link.budget_item_id === item.id).reduce((sum, link) => sum + link.amount, 0) : 0)))}</p><p className="text-[11px] text-[#55705E]">Original CAD$ {fmt(item.amount)}</p></div>
                                 </div>
                               ))}
                             </div>

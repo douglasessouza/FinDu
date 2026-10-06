@@ -480,14 +480,27 @@ def monthly_dashboard(db: Session, month: str) -> dict:
     previous_month_overrides = [
         override for override in override_rows if override.month == previous_month
     ]
-    checking_transactions = (
+    dashboard_transactions = (
         db.query(Transaction)
         .join(Account, Account.id == Transaction.account_id)
-        .filter(Account.account_type != AccountTypeEnum.CREDIT_CARD)
-        .filter(Transaction.date >= matching_start, Transaction.date < end)
+        .filter(or_(
+            and_(Account.account_type != AccountTypeEnum.CREDIT_CARD,
+                 Transaction.date >= matching_start, Transaction.date < end),
+            and_(Account.account_type == AccountTypeEnum.CREDIT_CARD,
+                 or_(and_(Transaction.payment_due_date >= start, Transaction.payment_due_date < end),
+                     and_(Transaction.date >= start, Transaction.date < end))),
+        ))
         .order_by(Transaction.date.desc(), Transaction.id.desc())
         .all()
     )
+    account_type = {account.id: account.account_type for account in accounts}
+    checking_transactions = [tx for tx in dashboard_transactions if account_type.get(tx.account_id) != AccountTypeEnum.CREDIT_CARD]
+    card_transactions_due = [tx for tx in dashboard_transactions
+                             if account_type.get(tx.account_id) == AccountTypeEnum.CREDIT_CARD
+                             and tx.payment_due_date and start <= tx.payment_due_date < end]
+    card_transactions_current = [tx for tx in dashboard_transactions
+                                 if account_type.get(tx.account_id) == AccountTypeEnum.CREDIT_CARD
+                                 and start <= tx.date < end]
     cards, cards_due = card_dashboard_summaries(db, month)
     return {
         "month": month,
@@ -501,6 +514,8 @@ def monthly_dashboard(db: Session, month: str) -> dict:
         "overrides": overrides,
         "previous_month_overrides": previous_month_overrides,
         "checking_transactions": checking_transactions,
+        "card_transactions_due": card_transactions_due,
+        "card_transactions_current": card_transactions_current,
         "card_summaries": cards,
         "card_summaries_due": cards_due,
     }

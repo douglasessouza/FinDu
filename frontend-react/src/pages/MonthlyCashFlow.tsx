@@ -5,6 +5,7 @@ import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/re
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
 import { calculateProjectedBalance, calculateOccurrenceIncome } from '../utils/cashFlowProjection'
+import { forecastCardRecurringDue, splitExpenseRoutes } from '../utils/cardRecurringForecast'
 import { buildPayPeriodSummary, hasExpectedIncomeDate, isIncomeInCashFlowMonth, resolveCardDueDay } from '../utils/payPeriodSummary'
 import type {
   Account,
@@ -27,6 +28,7 @@ interface CardChargeEntry {
   amount: number
   dueDate?: string
   dueDay: number
+  estimatedAmount?: number
 }
 
 interface RecurringMatchCandidate {
@@ -105,14 +107,22 @@ function findRecurringMatches(
   items: RecurringExpense[],
   transactions: Transaction[],
   monthStr: string,
+  accounts: Account[],
 ): Record<number, RecurringMatchCandidate> {
   const matches: Record<number, RecurringMatchCandidate> = {}
   const usedTransactions = new Set<number>()
   const sortedItems = [...items].sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name))
+  const cardAccountIds = new Set(accounts.filter(account => account.account_type === 'CREDIT_CARD').map(account => account.id))
 
   for (const item of sortedItems) {
     const candidates = transactions
       .filter(tx => hasExpectedRecurringDate(item, tx, monthStr))
+      .filter(tx => !item.payment_account_id || tx.account_id === item.payment_account_id)
+      .filter(tx => item.type === 'INCOME' || (
+        item.payment_method === 'CREDIT_CARD'
+          ? cardAccountIds.has(tx.account_id)
+          : !cardAccountIds.has(tx.account_id)
+      ))
       .filter(tx => !usedTransactions.has(tx.id))
       .filter(tx => item.type === 'INCOME' ? tx.amount > 0 : tx.amount < 0)
       .filter(tx => tx.currency === item.currency)
@@ -190,6 +200,7 @@ export default function MonthlyCashFlow() {
   const [savingOverride, setSavingOverride] = useState(false)
   const [overrideError, setOverrideError] = useState('')
   const [statementTransactions, setStatementTransactions] = useState<Transaction[]>([])
+  const [cardCurrentTransactions, setCardCurrentTransactions] = useState<Transaction[]>([])
   const [cardCharges, setCardCharges] = useState<CardChargeEntry[]>([])
   const [payments, setPayments] = useState<MonthlyPayment[]>([])
   const [savedMatches, setSavedMatches] = useState<SavedRecurringMatch[]>([])
@@ -274,20 +285,24 @@ export default function MonthlyCashFlow() {
           setEditingRecurringId(null)
           setOverrideError('')
           setStatementTransactions(dashboard.checking_transactions)
+          setCardCurrentTransactions(dashboard.card_transactions_current)
+          const cardForecast = forecastCardRecurringDue(requestedMonth, dashboard.recurring,
+            dashboard.accounts, dashboard.card_transactions_due)
           setCardCharges(
-            dashboard.card_summaries_due.cards
-              .filter(card => card.amount_due > 0)
-              .map(card => ({
-                accountId: card.account_id,
-                name: card.account_name,
-                currency: card.currency,
-                amount: card.amount_due,
-                dueDate: card.payment_due_date?.slice(0, 10),
-                dueDay: resolveCardDueDay(
-                  card.payment_due_date,
-                  dashboard.accounts.find(account => account.id === card.account_id)?.due_day,
-                ),
-              })),
+            dashboard.accounts.filter(account => account.account_type === 'CREDIT_CARD')
+              .map(account => {
+                const actual = dashboard.card_summaries_due.cards.find(card => card.account_id === account.id)
+                const estimatedAmount = cardForecast.get(account.id) || 0
+                return {
+                  accountId: account.id,
+                  name: account.name,
+                  currency: account.currency,
+                  amount: (actual?.amount_due || 0) + estimatedAmount,
+                  estimatedAmount,
+                  dueDate: actual?.payment_due_date?.slice(0, 10),
+                  dueDay: resolveCardDueDay(actual?.payment_due_date, account.due_day),
+                }
+              }).filter(card => card.amount > 0),
           )
           setLoadedMonth(requestedMonth)
         },
@@ -340,11 +355,12 @@ export default function MonthlyCashFlow() {
     () => loadedMonth === monthStr
       ? findRecurringMatches(
           matchingRecurring,
-          statementTransactions,
+          [...statementTransactions, ...cardCurrentTransactions],
           monthStr,
+          accounts,
         )
       : {},
-    [matchingRecurring, loadedMonth, statementTransactions, monthStr],
+    [matchingRecurring, loadedMonth, statementTransactions, cardCurrentTransactions, accounts, monthStr],
   )
 
   const recurringMatches = useMemo(() => {
@@ -606,9 +622,11 @@ export default function MonthlyCashFlow() {
             const previousMonthStr = `${previousMonthYear}-${String(previousMonthNumber).padStart(2, '0')}`
             const incomeList = monthRecurring.filter(r => r.type === 'INCOME')
             const expenseList = monthRecurring.filter(r => r.type !== 'INCOME')
-            const totalRecurringExpensesPlanned = expenseList.reduce((s, r) => s + r.amount, 0)
-            const matchedExpenseActual = expenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
-            const remainingRecurringExpenses = expenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
+            const routedExpenses = splitExpenseRoutes(expenseList)
+            const bankExpenseList = routedExpenses.debit
+            const totalRecurringExpensesPlanned = bankExpenseList.reduce((s, r) => s + r.amount, 0)
+            const matchedExpenseActual = bankExpenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
+            const remainingRecurringExpenses = bankExpenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
             const currencyIncomeTransactions = statementTransactions.filter(tx => (
               tx.currency === currency && tx.amount > 0 && isIncomeInCashFlowMonth(tx.date, monthStr)
             ))
@@ -708,7 +726,7 @@ export default function MonthlyCashFlow() {
             const payPeriodSummary = buildPayPeriodSummary({
               incomes: payPeriodIncomes,
               expenses: [
-                ...expenseList.map(item => ({
+                ...bankExpenseList.map(item => ({
                   id: `recurring-${item.id}`,
                   name: item.name,
                   kind: 'Recurring' as const,
@@ -733,7 +751,7 @@ export default function MonthlyCashFlow() {
               ],
             })
 
-            if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0 && investmentSavings.plannedDue === 0) return null
+            if (inBank === 0 && incomeList.length === 0 && plannedFixedExpenses === 0 && routedExpenses.unset.length === 0 && investmentSavings.plannedDue === 0) return null
 
             return (
               <div key={currency} className="mb-10">
@@ -761,6 +779,10 @@ export default function MonthlyCashFlow() {
                   <div className="grid grid-cols-1 gap-2 border-t border-[#E6EEE7] bg-[#F8FBF8] px-5 py-3 text-xs text-[#55705E] sm:grid-cols-3">
                     <span>Received income {symbol} {fmt(receivedIncomeTotal)}</span><span>Still to receive {symbol} {fmt(remainingIncomeTotal)}</span><span>Still to pay {symbol} {fmt(openFixedExpenses)}</span>
                   </div>
+                  {routedExpenses.unset.length > 0 && <div role="status" className="border-t border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900">
+                    Projection incomplete: {routedExpenses.unset.length} recurring expense{routedExpenses.unset.length === 1 ? '' : 's'} need a bank account or credit card assigned.
+                    <span className="mt-1 block text-xs">{routedExpenses.unset.map(item => item.name).join(', ')}</span>
+                  </div>}
                 </section>
 
                 <section aria-labelledby={`${currency}-pay-period-title`} className="mb-5 overflow-hidden rounded-xl border-2 border-[#1B4D3E] bg-[#FCFEFC]">
@@ -1095,6 +1117,7 @@ export default function MonthlyCashFlow() {
                                 <div className="min-w-0">
                                   <p className={`text-sm font-semibold transition truncate ${paid ? 'text-[#8BAE90] line-through' : 'text-[#2C3E2D]'}`}>{cardCharge.name}</p>
                                   {cardCharge.dueDate && <p className="text-xs text-[#8BAE90] mt-1">due {formatDueDate(cardCharge.dueDate)}</p>}
+                                  {Boolean(cardCharge.estimatedAmount) && <p className="text-xs text-amber-700 mt-1">Includes {symbol} {fmt(cardCharge.estimatedAmount || 0)} in planned card charges</p>}
                                 </div>
                               </div>
                               <span className={`font-bold text-sm transition whitespace-nowrap ${paid ? 'text-[#8BAE90] line-through' : 'text-[#B85050]'}`}>
@@ -1115,10 +1138,10 @@ export default function MonthlyCashFlow() {
                       <p className="text-xs text-[#8BAE90]">Open {symbol} {fmt(remainingRecurringExpenses)}</p>
                     </div>
                     <div className="bg-white rounded-lg border border-[#D4E4D5] overflow-hidden">
-                        {expenseList.length === 0 ? (
+                        {bankExpenseList.length === 0 ? (
                           <p className="px-4 py-4 text-sm text-[#8BAE90]">No recurring fixed expenses.</p>
                         ) : (
-                          expenseList.map(r => {
+                          bankExpenseList.map(r => {
                             const paid = isPaid('recurring', r.id)
                             const match = recurringMatches[r.id]
                             const done = Boolean(paid || match)
@@ -1147,9 +1170,10 @@ export default function MonthlyCashFlow() {
                                     {match && (
                                       <p className="text-xs text-[#1B6B3A] mt-1 flex items-center gap-1">
                                         <Sparkles size={12} />
-                                        Matched: {match.transaction.description} · {formatDueDate(match.transaction.date.slice(0, 10))}
+                                        Matched {symbol} {fmt(match.actualAmount)}: {match.transaction.description} · {formatDueDate(match.transaction.date.slice(0, 10))}
                                       </p>
                                     )}
+                                    {paid && !match && <p className="mt-1 text-xs text-amber-700">Marked paid · amount not verified</p>}
                                   </div>
                                 </div>
                                 <div className="text-right">

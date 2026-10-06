@@ -13,7 +13,7 @@ import json as auth_json
 import time
 import requests as http_requests
 from dotenv import load_dotenv
-from app.models import Account, Transaction, StatementImportBatch, StatementImportClaim, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem
+from app.models import Account, Transaction, StatementImportBatch, StatementImportClaim, AccountTypeEnum, CurrencyEnum, RecurringExpense, RecurringMonthlyOverride, RecurringTypeEnum, Category, CategoryTypeEnum, MonthlyPayment, RecurringMatch, CategoryBudget, CategoryBudgetItem, BudgetCoverage
 from app.imports import (
     create_occurrence_token,
     filter_unseen_occurrences,
@@ -31,6 +31,7 @@ from app.reporting import (
 from app.exchange_rates import ExchangeRateCache
 from datetime import date, datetime
 from datetime import timedelta
+from calendar import monthrange
 from collections import Counter
 import uuid
 from fastapi.staticfiles import StaticFiles
@@ -295,6 +296,11 @@ class CategoryBudgetAdjustment(BaseModel):
     valid_until: Optional[datetime] = None
     items: list[CategoryBudgetItemPayload] = Field(default_factory=list)
 
+class BudgetCoverageCreate(BaseModel):
+    budget_item_id: int
+    recurring_id: int
+    amount: float = Field(gt=0)
+
 class FinancialChatMessage(BaseModel):
     role: str
     content: str
@@ -339,9 +345,10 @@ def apply_card_statement_fields(data: dict, account: Account, tx_date: datetime)
     data["statement_month"] = stmt_month.strftime("%Y-%m")
 
     if stmt_month.month == 12:
-        due_date = stmt_month.replace(year=stmt_month.year + 1, month=1, day=due)
+        due_year, due_month = stmt_month.year + 1, 1
     else:
-        due_date = stmt_month.replace(month=stmt_month.month + 1, day=due)
+        due_year, due_month = stmt_month.year, stmt_month.month + 1
+    due_date = datetime(due_year, due_month, min(due, monthrange(due_year, due_month)[1]))
 
     data["payment_due_date"] = due_date
 
@@ -513,6 +520,10 @@ def update_category_budget(budget_id: int, updates: dict, db: Session = Depends(
     budget = db.query(CategoryBudget).filter(CategoryBudget.id == budget_id).first()
     if not budget:
         raise HTTPException(status_code=404, detail="Category budget not found")
+    if "items" in updates or "amount" in updates:
+        linked = db.query(BudgetCoverage).join(CategoryBudgetItem).filter(CategoryBudgetItem.budget_id == budget_id).first()
+        if linked:
+            raise HTTPException(status_code=409, detail="Remove fixed-bill links before replacing budget items")
     allowed = {"category", "amount", "currency", "start_month", "valid_until", "is_active", "items"}
     for key, value in updates.items():
         if key not in allowed:
@@ -575,6 +586,26 @@ def adjust_category_budget(budget_id: int, adjustment: CategoryBudgetAdjustment,
         for item in clean_items
     ]
     db.add(next_budget)
+    # Carry explicit coverage only when an item is unambiguously unchanged.
+    # The old version retains its links for historical months.
+    old_by_key = {}
+    for item in budget.items:
+        old_by_key.setdefault((item.name, round(item.amount, 2)), []).append(item)
+    new_by_key = {}
+    for item in next_budget.items:
+        new_by_key.setdefault((item.name, round(item.amount, 2)), []).append(item)
+    db.flush()
+    for key, new_items in new_by_key.items():
+        old_items = old_by_key.get(key, [])
+        if len(old_items) != 1 or len(new_items) != 1:
+            continue
+        for link in db.query(BudgetCoverage).filter(BudgetCoverage.budget_item_id == old_items[0].id).all():
+            linked_expense = db.get(RecurringExpense, link.recurring_id)
+            if (not linked_expense or linked_expense.planning_kind != "FIXED"
+                    or (linked_expense.valid_until and linked_expense.valid_until < new_start)):
+                continue
+            db.add(BudgetCoverage(budget_item_id=new_items[0].id,
+                                  recurring_id=link.recurring_id, amount=link.amount))
     db.commit()
     db.refresh(budget)
     db.refresh(next_budget)
@@ -591,6 +622,70 @@ def delete_category_budget(budget_id: int, db: Session = Depends(get_db)):
     db.delete(budget)
     db.commit()
     return {"message": "Category budget deleted"}
+
+@app.get("/budget-coverages")
+def list_budget_coverages(month: Optional[str] = None, db: Session = Depends(get_db)):
+    if month:
+        month_start(month)
+    links = db.query(BudgetCoverage).join(CategoryBudgetItem).join(CategoryBudget).all()
+    result = []
+    for link in links:
+        item = db.get(CategoryBudgetItem, link.budget_item_id)
+        budget = db.get(CategoryBudget, item.budget_id)
+        if not month or category_budget_is_active_for_month(budget, month):
+            result.append({"id": link.id, "budget_item_id": link.budget_item_id,
+                           "recurring_id": link.recurring_id, "amount": link.amount})
+    return result
+
+@app.post("/budget-coverages")
+def create_budget_coverage(payload: BudgetCoverageCreate, db: Session = Depends(get_db)):
+    item = db.get(CategoryBudgetItem, payload.budget_item_id)
+    recurring = db.get(RecurringExpense, payload.recurring_id)
+    if not item or not recurring:
+        raise HTTPException(status_code=404, detail="Budget item or recurring expense not found")
+    budget = db.get(CategoryBudget, item.budget_id)
+    if recurring.type != RecurringTypeEnum.EXPENSE or recurring.planning_kind != "FIXED":
+        raise HTTPException(status_code=400, detail="Coverage requires a fixed expense")
+    if budget.currency != recurring.currency:
+        raise HTTPException(status_code=400, detail="Budget and expense currency must match")
+    budget_end = budget.valid_until.strftime("%Y-%m") if budget.valid_until else "9999-12"
+    recurring_end = recurring.valid_until.strftime("%Y-%m") if recurring.valid_until else "9999-12"
+    if max(budget.start_month, recurring.start_month or "0000-01") > min(budget_end, recurring_end):
+        raise HTTPException(status_code=400, detail="Budget and expense periods do not overlap")
+    existing = db.query(BudgetCoverage).filter(BudgetCoverage.budget_item_id == item.id).all()
+    if any(link.recurring_id == recurring.id for link in existing):
+        raise HTTPException(status_code=400, detail="Coverage already exists")
+    if round(sum(link.amount for link in existing) + payload.amount, 2) > round(item.amount, 2):
+        raise HTTPException(status_code=400, detail="Coverage exceeds budget item")
+    if payload.amount > recurring.amount:
+        raise HTTPException(status_code=400, detail="Coverage exceeds recurring expense")
+    prior_links = db.query(BudgetCoverage).filter(BudgetCoverage.recurring_id == recurring.id).all()
+    prior_intervals = []
+    for prior in prior_links:
+        prior_item = db.get(CategoryBudgetItem, prior.budget_item_id)
+        prior_budget = db.get(CategoryBudget, prior_item.budget_id)
+        prior_start = prior_budget.start_month
+        prior_end = prior_budget.valid_until.strftime("%Y-%m") if prior_budget.valid_until else "9999-12"
+        if max(prior_start, budget.start_month) <= min(prior_end, budget_end):
+            prior_intervals.append((prior_start, prior_end, prior.amount))
+    boundaries = {budget.start_month} | {max(start, budget.start_month) for start, _, _ in prior_intervals}
+    if any(payload.amount + sum(amount for start, end, amount in prior_intervals if start <= boundary <= end) > recurring.amount
+           for boundary in boundaries if boundary <= budget_end):
+        raise HTTPException(status_code=400, detail="Coverage exceeds recurring expense across overlapping budgets")
+    link = BudgetCoverage(**payload.model_dump())
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return {"id": link.id, **payload.model_dump()}
+
+@app.delete("/budget-coverages/{coverage_id}")
+def delete_budget_coverage(coverage_id: int, db: Session = Depends(get_db)):
+    link = db.get(BudgetCoverage, coverage_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Coverage not found")
+    db.delete(link)
+    db.commit()
+    return {"message": "Coverage removed"}
 
 class AccountCreate(BaseModel):
     name: str
@@ -643,6 +738,9 @@ class RecurringExpenseCreate(BaseModel):
     type: RecurringTypeEnum = RecurringTypeEnum.EXPENSE
     start_month: Optional[str] = None
     valid_until: Optional[datetime] = None   # ← NEW FIELD
+    planning_kind: str = "FIXED"
+    payment_method: str = "UNSET"
+    payment_account_id: Optional[int] = None
 
 class RecurringExpenseUpdate(BaseModel):
     name: Optional[str] = None
@@ -654,6 +752,9 @@ class RecurringExpenseUpdate(BaseModel):
     start_month: Optional[str] = None
     valid_until: Optional[datetime] = None
     is_active: Optional[bool] = None
+    planning_kind: Optional[str] = None
+    payment_method: Optional[str] = None
+    payment_account_id: Optional[int] = None
 
 class RecurringMonthlyOverrideUpsert(BaseModel):
     amount: float = Field(gt=0)
@@ -1362,11 +1463,28 @@ def delete_import_batch(batch_id: str, db: Session = Depends(get_db)):
 
 @app.post("/recurring-expenses")
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
+    validate_recurring_route(expense.type, expense.currency, expense.planning_kind,
+                             expense.payment_method, expense.payment_account_id, db)
     db_expense = RecurringExpense(**expense.model_dump())
     db.add(db_expense)
     db.commit()
     db.refresh(db_expense)
     return db_expense
+
+def validate_recurring_route(item_type, currency, planning_kind, payment_method, account_id, db):
+    if planning_kind not in ("FIXED", "VARIABLE") or payment_method not in ("UNSET", "DEBIT", "CREDIT_CARD"):
+        raise HTTPException(status_code=400, detail="Invalid planning kind or payment method")
+    if item_type == RecurringTypeEnum.INCOME and payment_method != "UNSET":
+        raise HTTPException(status_code=400, detail="Income does not use expense payment route")
+    if payment_method == "UNSET":
+        if account_id is not None:
+            raise HTTPException(status_code=400, detail="Choose a payment method before an account")
+        return
+    account = db.get(Account, account_id) if account_id else None
+    if not account or account.currency != currency:
+        raise HTTPException(status_code=400, detail="Payment account must exist in the same currency")
+    if (payment_method == "CREDIT_CARD") != (account.account_type == AccountTypeEnum.CREDIT_CARD):
+        raise HTTPException(status_code=400, detail="Payment account type does not match payment method")
 
 @app.get("/recurring-expenses")
 def list_recurring_expenses(db: Session = Depends(get_db)):
@@ -1387,6 +1505,10 @@ def update_recurring_expense(expense_id: int, updates: RecurringExpenseUpdate, d
         raise HTTPException(status_code=404, detail="Expense not found")
 
     changes = updates.model_dump(exclude_unset=True)
+    validate_recurring_route(changes.get("type", expense.type), changes.get("currency", expense.currency),
+                             changes.get("planning_kind", expense.planning_kind),
+                             changes.get("payment_method", expense.payment_method),
+                             changes.get("payment_account_id", expense.payment_account_id), db)
     for key, value in changes.items():
         setattr(expense, key, value)
 
@@ -2204,22 +2326,54 @@ def upsert_recurring_match(match: RecurringMatchCreate, db: Session = Depends(ge
     recurring = db.query(RecurringExpense).filter(RecurringExpense.id == match.recurring_id).first()
     if not recurring:
         raise HTTPException(status_code=404, detail="Recurring item not found")
-    transaction = db.query(Transaction).filter(Transaction.id == match.transaction_id).first()
+    transaction = db.query(Transaction).filter(Transaction.id == match.transaction_id).with_for_update().first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
+
+    validate_month_key(match.month)
+    if match.source != "ignored":
+        account = db.get(Account, transaction.account_id)
+        if transaction.currency != recurring.currency:
+            raise HTTPException(status_code=400, detail="Transaction currency does not match recurring item")
+        if recurring.type == RecurringTypeEnum.EXPENSE:
+            if transaction.amount >= 0 or transaction.date.strftime("%Y-%m") != match.month:
+                raise HTTPException(status_code=400, detail="Expense match requires an expense in the occurrence month")
+            expected_day = min(recurring.due_day, monthrange(transaction.date.year, transaction.date.month)[1])
+            if abs(transaction.date.day - expected_day) > 7:
+                raise HTTPException(status_code=400, detail="Transaction is too far from due date")
+            if recurring.payment_method == "CREDIT_CARD" and transaction.account_id != recurring.payment_account_id:
+                raise HTTPException(status_code=400, detail="Charge is not on the selected card")
+            if recurring.payment_method == "DEBIT" and transaction.account_id != recurring.payment_account_id:
+                raise HTTPException(status_code=400, detail="Debit is not on the selected account")
+            if recurring.payment_method == "UNSET" and account.account_type == AccountTypeEnum.CREDIT_CARD:
+                raise HTTPException(status_code=400, detail="Choose the card as the payment route first")
+        elif transaction.amount <= 0:
+            raise HTTPException(status_code=400, detail="Income match requires a deposit")
+        used = db.query(RecurringMatch).filter(
+            RecurringMatch.transaction_id == transaction.id,
+            RecurringMatch.source != "ignored",
+            RecurringMatch.recurring_id != recurring.id,
+        ).first()
+        if used:
+            raise HTTPException(status_code=400, detail="Transaction already settles another recurring item")
+
+    values = match.model_dump()
+    values["planned_amount"] = recurring.amount
+    values["actual_amount"] = abs(transaction.amount)
+    values["variance"] = round(values["actual_amount"] - recurring.amount, 2)
 
     existing = db.query(RecurringMatch).filter(
         RecurringMatch.month == match.month,
         RecurringMatch.recurring_id == match.recurring_id,
     ).first()
     if existing:
-        for key, value in match.model_dump().items():
+        for key, value in values.items():
             setattr(existing, key, value)
         db.commit()
         db.refresh(existing)
         return serialize_recurring_match(existing, transaction)
 
-    db_match = RecurringMatch(**match.model_dump())
+    db_match = RecurringMatch(**values)
     db.add(db_match)
     db.commit()
     db.refresh(db_match)
