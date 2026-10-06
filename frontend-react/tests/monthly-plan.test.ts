@@ -53,3 +53,16 @@ test('a card purchase matched to insurance is fixed actual; card repayment is ex
   assert.equal(result.variableActual, 30)
   assert.equal(result.totalPlanned, 618)
 })
+
+test('unclassified amount exposes the exact transactions needing review', () => {
+  const insuranceBudget = { ...budget, id: 9, category: 'Insurance', start_month: '2026-10', amount: 446,
+    items: [{ id: 10, name: 'Car insurance', amount: 446 }] }
+  const result = calculateMonthlyPlan('2026-10', 'CAD', [rent], [insuranceBudget], [], [
+    { id: 21, account_id: 7, description: 'Insurance charge', amount: -238.90, currency: 'CAD', category: 'Insurance', date: '2026-10-12', statement_month: '2026-10' },
+    { id: 22, account_id: 2, description: 'Rent payment', amount: -2600, currency: 'CAD', category: 'Rent', date: '2026-10-01' },
+    { id: 23, account_id: 7, description: 'Amazon', amount: -20, currency: 'CAD', category: 'Amazon', date: '2026-10-13' },
+  ], [{ recurring_id: 1, transaction_id: 22, source: 'manual' }],
+  [{ budget_item_id: 10, effective_month: '2026-10', treatment: 'EXCLUDED' }])
+  assert.equal(result.unclassifiedActual, 238.90)
+  assert.deepEqual(result.needsReviewTransactions.map(row => row.id), [21])
+})

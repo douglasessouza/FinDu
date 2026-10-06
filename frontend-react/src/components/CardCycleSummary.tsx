@@ -23,7 +23,7 @@ function shortDate(date: Date): string {
 }
 
 export default function CardCycleSummary({ accounts, month }: { accounts: Account[]; month: string }) {
-  const [showAllCycles, setShowAllCycles] = useState(true)
+  const [showAllCycles, setShowAllCycles] = useState(false)
 
   const cards = useMemo(() => {
     return accounts

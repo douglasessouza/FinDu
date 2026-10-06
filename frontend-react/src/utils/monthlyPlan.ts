@@ -37,6 +37,7 @@ export interface PlanTreatment {
 export interface PlanTransaction {
   id: number
   account_id: number
+  description?: string
   amount: number
   currency: string
   category?: string
@@ -130,10 +131,13 @@ export function calculateMonthlyPlan(
   }
   let variableActual = 0
   let unclassifiedActual = 0
+  const needsReviewTransactions: PlanTransaction[] = []
   for (const tx of eligible) {
     if (matchedIds.has(tx.id)) continue
-    if (fixedCategories.has(tx.category) || excludedOnlyCategories.has(tx.category || '')) unclassifiedActual += -tx.amount
-    else variableActual += -tx.amount
+    if (fixedCategories.has(tx.category) || excludedOnlyCategories.has(tx.category || '')) {
+      unclassifiedActual += -tx.amount
+      needsReviewTransactions.push(tx)
+    } else variableActual += -tx.amount
   }
   const fixedPlanned = money(fixed.reduce((sum, item) => sum + item.amount, 0))
   variableAllowance = money(variableAllowance)
@@ -145,6 +149,7 @@ export function calculateMonthlyPlan(
     fixedActual: money(fixedActual),
     variableActual: money(variableActual),
     unclassifiedActual: money(unclassifiedActual),
+    needsReviewTransactions: needsReviewTransactions.sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id),
     unresolvedCategories: [...unresolved].sort(),
     missingFixedCategories,
   }
