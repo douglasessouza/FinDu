@@ -78,6 +78,9 @@ export interface RecurringExpense {
   category?: string
   start_month?: string | null
   valid_until?: string
+  planning_kind?: 'FIXED' | 'VARIABLE'
+  payment_method?: 'UNSET' | 'DEBIT' | 'CREDIT_CARD'
+  payment_account_id?: number | null
 }
 
 export interface RecurringMonthlyOverride {
@@ -126,6 +129,13 @@ export interface CategoryBudgetItem {
   name: string
   amount: number
   created_at?: string | null
+}
+
+export interface BudgetCoverage {
+  id: number
+  budget_item_id: number
+  recurring_id: number
+  amount: number
 }
 
 export interface MonthlyPayment {
@@ -177,6 +187,8 @@ export interface MonthlyDashboardResponse {
   overrides: RecurringMonthlyOverride[]
   previous_month_overrides: RecurringMonthlyOverride[]
   checking_transactions: Transaction[]
+  card_transactions_due: Transaction[]
+  card_transactions_current: Transaction[]
   card_summaries: CardStatementSummaryResponse
   card_summaries_due: CardStatementSummaryResponse
 }

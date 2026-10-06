@@ -570,6 +570,19 @@ def test_monthly_dashboard_keeps_card_bills_in_their_payment_due_month(
     }
 
 
+def test_monthly_dashboard_exposes_card_purchases_for_recurring_matching(client, db_session):
+    card = add_account(db_session, "Visa", AccountTypeEnum.CREDIT_CARD)
+    purchase = add_transaction(db_session, card, "2026-01-12T09:00:00", -120,
+        "Insurance", "Car insurance", payment_due_date="2026-02-10T00:00:00")
+    db_session.commit()
+
+    january = client.get("/dashboard/monthly", params={"month": "2026-01"}).json()
+    february = client.get("/dashboard/monthly", params={"month": "2026-02"}).json()
+    assert purchase.id in {row["id"] for row in january["card_transactions_current"]}
+    assert purchase.id not in {row["id"] for row in january["card_transactions_due"]}
+    assert purchase.id in {row["id"] for row in february["card_transactions_due"]}
+
+
 def test_monthly_dashboard_includes_late_prior_month_checking_rows_for_payroll_matching(
     client, db_session
 ):

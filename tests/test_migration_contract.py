@@ -48,6 +48,7 @@ DEFAULT_CATEGORY_NAMES = {
 
 IMPORT_BATCH_REVISION = "d4e5f6a7b8c9"
 IMPORT_CLAIM_REVISION = "f6a7b8c9d0e1"
+PAYMENT_ROUTING_REVISION = "d9915a8fd65b"
 CATEGORY_BUDGET_REVISION = "2b7e9a1c4d33"
 
 
@@ -436,8 +437,8 @@ def test_statement_import_claim_postgresql_ddl_is_the_alembic_head(monkeypatch):
     sql = output.getvalue()
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     head = script.get_revision(script.get_current_head())
-    assert head.revision == IMPORT_CLAIM_REVISION
-    assert head.down_revision == IMPORT_BATCH_REVISION
+    assert head.revision == PAYMENT_ROUTING_REVISION
+    assert head.down_revision == IMPORT_CLAIM_REVISION
     assert "CREATE TABLE statement_import_claims" in sql
     assert "UNIQUE (account_id, fingerprint, occurrence)" in sql
     assert "CREATE INDEX ix_statement_import_claims_import_batch_id" in sql
@@ -933,7 +934,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
     } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            IMPORT_CLAIM_REVISION
+            PAYMENT_ROUTING_REVISION
         )
         assert connection.scalar(sa.text("SELECT COUNT(*) FROM categories")) == len(
             DEFAULT_CATEGORY_NAMES
@@ -1056,7 +1057,7 @@ def test_alembic_drifted_upgrade_and_downgrade_preserve_adopted_schema_and_data(
     inspector = sa.inspect(engine)
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            IMPORT_CLAIM_REVISION
+            PAYMENT_ROUTING_REVISION
         )
         assert connection.execute(
             sa.text(

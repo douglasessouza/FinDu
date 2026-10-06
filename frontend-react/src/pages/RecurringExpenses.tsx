@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Edit3, GitBranch, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import api from '../services/api'
-import type { Category, CategoryBudget, RecurringExpense } from '../services/api'
+import type { Account, BudgetCoverage, Category, CategoryBudget, RecurringExpense } from '../services/api'
+import { calculateMonthlyPlan } from '../utils/monthlyPlan'
 
 type Currency = 'BRL' | 'CAD' | 'USD' | 'EUR'
 type RecurringType = 'EXPENSE' | 'INCOME'
@@ -73,12 +74,18 @@ interface RecurringForm {
   category: string
   start_month: string
   valid_until: string
+  planning_kind: 'FIXED' | 'VARIABLE'
+  payment_method: 'UNSET' | 'DEBIT' | 'CREDIT_CARD'
+  payment_account_id: string
 }
 
 interface RecurringDateForm {
   amount: string
   start_month: string
   valid_until: string
+  planning_kind: 'FIXED' | 'VARIABLE'
+  payment_method: 'UNSET' | 'DEBIT' | 'CREDIT_CARD'
+  payment_account_id: string
 }
 
 interface BudgetForm {
@@ -97,6 +104,9 @@ const EXPENSE_FORM: RecurringForm = {
   category: '',
   start_month: new Date().toISOString().slice(0, 7),
   valid_until: '',
+  planning_kind: 'FIXED',
+  payment_method: 'UNSET',
+  payment_account_id: '',
 }
 
 const INCOME_FORM: RecurringForm = {
@@ -107,6 +117,9 @@ const INCOME_FORM: RecurringForm = {
   category: 'Salary',
   start_month: new Date().toISOString().slice(0, 7),
   valid_until: '',
+  planning_kind: 'FIXED',
+  payment_method: 'UNSET',
+  payment_account_id: '',
 }
 
 const EMPTY_BUDGET_FORM: BudgetForm = {
@@ -129,6 +142,9 @@ export default function RecurringExpenses() {
   const requestedCurrency = searchParams.get('currency') as Currency | null
   const initialCurrency = requestedCurrency && CURRENCIES.includes(requestedCurrency) ? requestedCurrency : 'CAD'
   const [items, setItems] = useState<RecurringExpense[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [coverages, setCoverages] = useState<BudgetCoverage[]>([])
+  const [coverageDraft, setCoverageDraft] = useState<Record<number, { recurringId: string; amount: string }>>({})
   const [budgets, setBudgets] = useState<CategoryBudget[]>([])
   const [categories, setCategories] = useState<string[]>([])
   const [expenseOnlyCategories, setExpenseOnlyCategories] = useState<string[]>([])
@@ -140,7 +156,7 @@ export default function RecurringExpenses() {
   const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null)
   const [editingBudgetItems, setEditingBudgetItems] = useState<{ name: string; amount: string }[]>([])
   const [editingItemId, setEditingItemId] = useState<number | null>(null)
-  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ amount: '', start_month: '', valid_until: '' })
+  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ amount: '', start_month: '', valid_until: '', planning_kind: 'FIXED', payment_method: 'UNSET', payment_account_id: '' })
   const [adjustingBudgetId, setAdjustingBudgetId] = useState<number | null>(null)
   const [adjustmentStartMonth, setAdjustmentStartMonth] = useState(new Date().toISOString().slice(0, 7))
   const [loading, setLoading] = useState(true)
@@ -164,9 +180,12 @@ export default function RecurringExpenses() {
   const pastItems = items.filter(item => item.currency === selectedCurrency && item.valid_until && item.valid_until.slice(0, 7) < selectedMonth)
   const pastBudgets = budgets.filter(budget => budget.currency === selectedCurrency && budget.valid_until && budget.valid_until.slice(0, 7) < selectedMonth)
   const fixedIncomeTotal = incomeItems.reduce((sum, item) => sum + item.amount, 0)
-  const fixedExpenseTotal = expenseItems.reduce((sum, item) => sum + item.amount, 0)
-  const categoryBudgetTotal = monthBudgets.reduce((sum, budget) => sum + budget.amount, 0)
-  const totalMonthlyPlan = fixedExpenseTotal + categoryBudgetTotal
+  const fixedExpenses = expenseItems.filter(item => item.planning_kind !== 'VARIABLE')
+  const variableRecurring = expenseItems.filter(item => item.planning_kind === 'VARIABLE')
+  const monthlyPlan = calculateMonthlyPlan(selectedMonth, selectedCurrency, items, monthBudgets, coverages, [], [])
+  const fixedExpenseTotal = monthlyPlan.fixedPlanned
+  const categoryBudgetTotal = monthlyPlan.variableAllowance
+  const totalMonthlyPlan = monthlyPlan.totalPlanned
 
   useEffect(() => {
     setSearchParams({ month: selectedMonth, currency: selectedCurrency }, { replace: true })
@@ -181,9 +200,11 @@ export default function RecurringExpenses() {
     setLoading(true)
     setError('')
     try {
-      const [recRes, catRes] = await Promise.all([
+      const [recRes, catRes, accountsRes, coverageRes] = await Promise.all([
         api.get('/recurring-expenses'),
         api.get('/categories'),
+        api.get('/accounts'),
+        api.get('/budget-coverages'),
       ])
       const nextCategories = (catRes.data as Category[])
         .filter(category => category.type === 'EXPENSE' || category.type === 'TRANSFER')
@@ -195,6 +216,8 @@ export default function RecurringExpenses() {
         .sort()
       const budgetRes = await api.get('/category-budgets').catch(() => ({ data: [] }))
       setItems(recRes.data as RecurringExpense[])
+      setAccounts(accountsRes.data as Account[])
+      setCoverages(coverageRes.data as BudgetCoverage[])
       setBudgets(budgetRes.data as CategoryBudget[])
       setCategories(nextCategories)
       setExpenseOnlyCategories(nextExpenseOnlyCategories)
@@ -218,10 +241,12 @@ export default function RecurringExpenses() {
     async function loadInitialRecurring() {
       setError('')
       try {
-        const [recRes, catRes, budgetRes] = await Promise.all([
+        const [recRes, catRes, budgetRes, accountsRes, coverageRes] = await Promise.all([
           api.get('/recurring-expenses'),
           api.get('/categories'),
           api.get('/category-budgets').catch(() => ({ data: [] })),
+          api.get('/accounts'),
+          api.get('/budget-coverages'),
         ])
         if (!active) return
         const nextCategories = (catRes.data as Category[])
@@ -233,6 +258,8 @@ export default function RecurringExpenses() {
           .map(category => category.name)
           .sort()
         setItems(recRes.data as RecurringExpense[])
+        setAccounts(accountsRes.data as Account[])
+        setCoverages(coverageRes.data as BudgetCoverage[])
         setBudgets(budgetRes.data as CategoryBudget[])
         setCategories(nextCategories)
         setExpenseOnlyCategories(nextExpenseOnlyCategories)
@@ -283,6 +310,7 @@ export default function RecurringExpenses() {
     if (!form.category) return 'Category is required.'
     if (!form.start_month) return 'Start month is required.'
     if (form.valid_until && form.valid_until.slice(0, 7) < form.start_month) return 'Valid until must be on or after the start month.'
+    if (activeForm === 'EXPENSE' && form.payment_method !== 'UNSET' && !form.payment_account_id) return 'Choose the account or card that pays this expense.'
     return null
   }
 
@@ -308,6 +336,9 @@ export default function RecurringExpenses() {
         type: activeForm,
         start_month: form.start_month,
         valid_until: form.valid_until ? `${form.valid_until}T00:00:00` : null,
+        planning_kind: form.planning_kind,
+        payment_method: activeForm === 'INCOME' ? 'UNSET' : form.payment_method,
+        payment_account_id: activeForm === 'INCOME' || !form.payment_account_id ? null : Number(form.payment_account_id),
       })
       setItems(prev => [...prev, res.data as RecurringExpense].sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name)))
       if (activeForm === 'INCOME') setIncomeForm(INCOME_FORM)
@@ -382,9 +413,50 @@ export default function RecurringExpenses() {
     }
   }
 
+  async function addCoverage(itemId: number) {
+    const draft = coverageDraft[itemId]
+    if (!draft?.recurringId || Number(draft.amount) <= 0) {
+      setError('Choose a fixed bill and an amount covered by this budget item.')
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      const res = await api.post('/budget-coverages', {
+        budget_item_id: itemId, recurring_id: Number(draft.recurringId), amount: Number(draft.amount),
+      })
+      setCoverages(previous => [...previous, res.data as BudgetCoverage])
+      setCoverageDraft(previous => ({ ...previous, [itemId]: { recurringId: '', amount: '' } }))
+      setMessage('Fixed bill linked to budget item. The budget value was not changed.')
+    } catch {
+      setError('Could not link this bill. Check the amount, currency, and dates.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function removeCoverage(link: BudgetCoverage) {
+    setSaving(true)
+    setError('')
+    try {
+      await api.delete(`/budget-coverages/${link.id}`)
+      setCoverages(previous => previous.filter(item => item.id !== link.id))
+      setMessage('Budget link removed. The budget value was not changed.')
+    } catch {
+      setError('Could not remove the budget link.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   function updateCurrentForm(update: Partial<RecurringForm>) {
     if (activeForm === 'INCOME') setIncomeForm(prev => ({ ...prev, ...update }))
     else setExpenseForm(prev => ({ ...prev, ...update }))
+  }
+
+  function paymentAccounts(currency: Currency, method: 'UNSET' | 'DEBIT' | 'CREDIT_CARD') {
+    return accounts.filter(account => account.currency === currency &&
+      (method === 'CREDIT_CARD' ? account.account_type === 'CREDIT_CARD' : account.account_type !== 'CREDIT_CARD'))
   }
 
   function startEditingItemDates(item: RecurringExpense) {
@@ -393,6 +465,9 @@ export default function RecurringExpenses() {
       amount: String(item.amount),
       start_month: item.start_month || '',
       valid_until: item.valid_until ? item.valid_until.slice(0, 10) : '',
+      planning_kind: item.planning_kind || 'FIXED',
+      payment_method: item.payment_method || 'UNSET',
+      payment_account_id: item.payment_account_id ? String(item.payment_account_id) : '',
     })
     setError('')
     setMessage('')
@@ -400,7 +475,7 @@ export default function RecurringExpenses() {
 
   function cancelEditingItemDates() {
     setEditingItemId(null)
-    setEditingItemDates({ amount: '', start_month: '', valid_until: '' })
+    setEditingItemDates({ amount: '', start_month: '', valid_until: '', planning_kind: 'FIXED', payment_method: 'UNSET', payment_account_id: '' })
   }
 
   async function saveItemDates(item: RecurringExpense) {
@@ -417,6 +492,10 @@ export default function RecurringExpenses() {
       setError('Valid until must be on or after the start month.')
       return
     }
+    if (item.type === 'EXPENSE' && editingItemDates.payment_method !== 'UNSET' && !editingItemDates.payment_account_id) {
+      setError('Choose the account or card that pays this expense.')
+      return
+    }
 
     setSaving(true)
     setError('')
@@ -426,6 +505,9 @@ export default function RecurringExpenses() {
         amount,
         start_month: editingItemDates.start_month,
         valid_until: editingItemDates.valid_until ? `${editingItemDates.valid_until}T00:00:00` : null,
+        planning_kind: editingItemDates.planning_kind,
+        payment_method: editingItemDates.payment_method,
+        payment_account_id: editingItemDates.payment_account_id ? Number(editingItemDates.payment_account_id) : null,
       })
       setItems(prev => prev.map(existing => existing.id === item.id ? res.data as RecurringExpense : existing))
       cancelEditingItemDates()
@@ -489,6 +571,10 @@ export default function RecurringExpenses() {
   }
 
   async function saveBudgetItems(budget: CategoryBudget) {
+    if (budget.items?.some(item => coverages.some(link => link.budget_item_id === item.id))) {
+      setError('Remove this budget’s fixed-bill links before replacing its items. The saved amounts are unchanged.')
+      return
+    }
     const items = editingBudgetItems
       .map(item => ({ name: item.name.trim(), amount: Number(item.amount || 0) }))
       .filter(item => item.name && Number.isFinite(item.amount) && item.amount > 0)
@@ -682,14 +768,34 @@ export default function RecurringExpenses() {
               </div>
             ) : (
               <>
-                {items.map((item, index) => (
-                  <div key={`${budget.id}-${item.name}-${index}`} className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-[#EDF4EE] last:border-0">
-                    <p className="text-sm font-semibold text-[#1B4D3E] truncate">{item.name}</p>
-                    <p className="text-sm font-bold tabular-nums text-[#B85050]">
-                      - {symbol(budget.currency)} {fmt(item.amount, budget.currency)}
-                    </p>
+                {items.map((item, index) => {
+                  const itemLinks = coverages.filter(link => link.budget_item_id === item.id)
+                  const covered = itemLinks.reduce((sum, link) => sum + link.amount, 0)
+                  const draft = item.id ? coverageDraft[item.id] : undefined
+                  return <div key={`${budget.id}-${item.name}-${index}`} className="border-b border-[#EDF4EE] px-4 py-3 last:border-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-[#1B4D3E] truncate">{item.name}</p>
+                      <p className="text-sm font-bold tabular-nums text-[#B85050]">- {symbol(budget.currency)} {fmt(item.amount, budget.currency)}</p>
+                    </div>
+                    <p className="mt-1 text-xs text-[#55705E]">Fixed covered {symbol(budget.currency)} {fmt(covered, budget.currency)} · flexible {symbol(budget.currency)} {fmt(Math.max(0, item.amount - covered), budget.currency)}</p>
+                    {itemLinks.map(link => <div key={link.id} className="mt-2 flex items-center justify-between gap-2 rounded-md bg-[#EDF4EE] px-2 py-1 text-xs text-[#1B4D3E]">
+                      <span>Covers {fixedExpenses.find(expense => expense.id === link.recurring_id)?.name || 'fixed bill'} · {symbol(budget.currency)} {fmt(link.amount, budget.currency)}</span>
+                      <button type="button" onClick={() => removeCoverage(link)} disabled={saving} aria-label={`Remove fixed bill link for ${item.name}`} className="font-semibold underline disabled:opacity-50">Remove</button>
+                    </div>)}
+                    {item.id && item.amount > covered && fixedExpenses.some(expense => expense.currency === budget.currency) && <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[1fr_96px_auto]">
+                      <select aria-label={`Fixed bill covered by ${item.name}`} value={draft?.recurringId || ''} onChange={e => {
+                        const selected = fixedExpenses.find(expense => expense.id === Number(e.target.value))
+                        setCoverageDraft(previous => ({ ...previous, [item.id!]: { recurringId: e.target.value,
+                          amount: selected ? String(Math.min(item.amount - covered, selected.amount)) : '' } }))
+                      }} className="min-w-0 rounded-md border border-[#D4E4D5] bg-white px-2 py-1 text-xs text-[#1B4D3E]">
+                        <option value="">Link a fixed bill</option>
+                        {fixedExpenses.filter(expense => expense.currency === budget.currency && !itemLinks.some(link => link.recurring_id === expense.id)).map(expense => <option key={expense.id} value={expense.id}>{expense.name}</option>)}
+                      </select>
+                      <input aria-label={`Amount of ${item.name} covering fixed bill`} type="number" min="0.01" max={item.amount - covered} step="0.01" value={draft?.amount || ''} onChange={e => setCoverageDraft(previous => ({ ...previous, [item.id!]: { recurringId: draft?.recurringId || '', amount: e.target.value } }))} className="w-full rounded-md border border-[#D4E4D5] bg-white px-2 py-1 text-xs text-[#1B4D3E]" />
+                      <button type="button" onClick={() => addCoverage(item.id!)} disabled={saving || !draft?.recurringId} className="rounded-md bg-[#1B4D3E] px-2 py-1 text-xs font-semibold text-white disabled:opacity-50">Link</button>
+                    </div>}
                   </div>
-                ))}
+                })}
                 <div className="px-4 py-3 bg-white">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <button
@@ -736,6 +842,9 @@ export default function RecurringExpenses() {
             <p className="text-sm text-[#7BAE8A] mt-1">
               {itemVerb(item.type)} day {item.due_day} · {item.category || 'No category'} · {startMonthLabel(item.start_month)} · {validUntilLabel(item.valid_until)}
             </p>
+            {!isIncome && <p className={`mt-1 text-xs font-semibold ${item.payment_method && item.payment_method !== 'UNSET' ? 'text-[#55705E]' : 'text-amber-700'}`}>
+              {item.planning_kind === 'VARIABLE' ? 'Flexible' : 'Fixed'} · {item.payment_method === 'CREDIT_CARD' ? `Card: ${accounts.find(account => account.id === item.payment_account_id)?.name || 'Choose card'}` : item.payment_method === 'DEBIT' ? `Bank: ${accounts.find(account => account.id === item.payment_account_id)?.name || 'Choose account'}` : 'Payment method needed'}
+            </p>}
           </div>
           <div className="flex items-center justify-between md:justify-end gap-3">
             <p className={`text-lg font-bold tabular-nums ${isIncome ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
@@ -814,6 +923,23 @@ export default function RecurringExpenses() {
                 Save Changes
               </button>
             </div>
+            {!isIncome && <div className="mt-3 grid grid-cols-1 gap-3 border-t border-[#D4E4D5] pt-3 sm:grid-cols-3">
+              <label className="text-xs font-semibold text-[#55705E]">Spending type
+                <select value={editingItemDates.planning_kind} onChange={e => setEditingItemDates(previous => ({ ...previous, planning_kind: e.target.value as RecurringDateForm['planning_kind'] }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                  <option value="FIXED">Fixed commitment</option><option value="VARIABLE">Flexible recurring expense</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-[#55705E]">Paid by
+                <select value={editingItemDates.payment_method} onChange={e => setEditingItemDates(previous => ({ ...previous, payment_method: e.target.value as RecurringDateForm['payment_method'], payment_account_id: '' }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                  <option value="UNSET">Choose later</option><option value="DEBIT">Bank account</option><option value="CREDIT_CARD">Credit card</option>
+                </select>
+              </label>
+              {editingItemDates.payment_method !== 'UNSET' && <label className="text-xs font-semibold text-[#55705E]">{editingItemDates.payment_method === 'CREDIT_CARD' ? 'Card' : 'Bank account'}
+                <select value={editingItemDates.payment_account_id} onChange={e => setEditingItemDates(previous => ({ ...previous, payment_account_id: e.target.value }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                  <option value="">Select account</option>{paymentAccounts(item.currency, editingItemDates.payment_method).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+                </select>
+              </label>}
+            </div>}
           </div>
         )}
       </div>
@@ -873,9 +999,9 @@ export default function RecurringExpenses() {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         <div className="surface-card p-4"><p className="eyebrow">Fixed income</p><p className="money mt-2 text-xl font-bold text-[#236B4B]">+ {symbol(selectedCurrency)} {fmt(fixedIncomeTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{incomeItems.length} guaranteed source{incomeItems.length === 1 ? '' : 's'}</p></div>
-        <div className="surface-card p-4"><p className="eyebrow">Fixed expenses</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(fixedExpenseTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{expenseItems.length} recurring bill{expenseItems.length === 1 ? '' : 's'}</p></div>
-        <div className="surface-card p-4"><p className="eyebrow">Category budgets</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(categoryBudgetTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{monthBudgets.length} spending area{monthBudgets.length === 1 ? '' : 's'}</p></div>
-        <div className="rounded-2xl border border-[#123D32] bg-[#123D32] p-4 text-white"><p className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/70">Total planned outflow</p><p className="money mt-2 text-xl font-bold text-[#D8B541]">- {symbol(selectedCurrency)} {fmt(totalMonthlyPlan, selectedCurrency)}</p><p className="mt-1 text-xs text-white/70">Fixed costs + flexible budgets</p></div>
+        <div className="surface-card p-4"><p className="eyebrow">Fixed commitments</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(fixedExpenseTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">{fixedExpenses.length} fixed bill{fixedExpenses.length === 1 ? '' : 's'}</p></div>
+        <div className="surface-card p-4"><p className="eyebrow">Flexible allowance</p><p className="money mt-2 text-xl font-bold text-[#B54B4B]">- {symbol(selectedCurrency)} {fmt(categoryBudgetTotal, selectedCurrency)}</p><p className="mt-1 text-xs text-[#55705E]">From {monthBudgets.length} existing budgets</p></div>
+        <div className="rounded-2xl border border-[#123D32] bg-[#123D32] p-4 text-white"><p className="text-[11px] font-bold uppercase tracking-[0.12em] text-white/70">Total planned outflow</p><p className="money mt-2 text-xl font-bold text-[#D8B541]">{totalMonthlyPlan === null ? 'Needs review' : `- ${symbol(selectedCurrency)} ${fmt(totalMonthlyPlan, selectedCurrency)}`}</p><p className="mt-1 text-xs text-white/70">{monthlyPlan.unresolvedCategories.length ? `Check overlapping budgets: ${monthlyPlan.unresolvedCategories.join(', ')}` : 'Fixed commitments + flexible allowance'}</p></div>
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 items-start">
@@ -901,12 +1027,17 @@ export default function RecurringExpenses() {
             </div>
             {loading ? (
               <div className="px-5 py-10 text-center text-[#8BAE90]">Loading expenses...</div>
-            ) : expenseItems.length === 0 ? (
+            ) : fixedExpenses.length === 0 ? (
               <div className="px-5 py-10 text-center text-[#8BAE90]">No recurring expenses yet.</div>
             ) : (
-              <div>{expenseItems.map(renderItem)}</div>
+              <div>{fixedExpenses.map(renderItem)}</div>
             )}
           </section>
+
+          {variableRecurring.length > 0 && <section className="surface-card overflow-hidden">
+            <div className="border-b border-[#EDF4EE] px-5 py-4"><h2 className="section-title">Flexible recurring charges</h2><p className="mt-1 text-sm text-[#55705E]">Scheduled payments you can change or cancel, such as subscriptions.</p></div>
+            <div>{variableRecurring.map(renderItem)}</div>
+          </section>}
 
           <section className="surface-card overflow-hidden">
             <div className="px-5 py-4 border-b border-[#EDF4EE]">
@@ -992,6 +1123,27 @@ export default function RecurringExpenses() {
               </select>
             </div>
           </div>
+
+          {activeForm === 'EXPENSE' && <div className="mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] p-3">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-[#55705E]">How this expense fits your plan</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="text-xs font-semibold text-[#55705E]">Spending type
+                <select value={form.planning_kind} onChange={e => updateCurrentForm({ planning_kind: e.target.value as RecurringForm['planning_kind'] })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                  <option value="FIXED">Fixed commitment</option><option value="VARIABLE">Flexible recurring expense</option>
+                </select>
+              </label>
+              <label className="text-xs font-semibold text-[#55705E]">Paid by
+                <select value={form.payment_method} onChange={e => updateCurrentForm({ payment_method: e.target.value as RecurringForm['payment_method'], payment_account_id: '' })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                  <option value="UNSET">Choose later</option><option value="DEBIT">Bank account</option><option value="CREDIT_CARD">Credit card</option>
+                </select>
+              </label>
+              {form.payment_method !== 'UNSET' && <label className="text-xs font-semibold text-[#55705E] sm:col-span-2">{form.payment_method === 'CREDIT_CARD' ? 'Card' : 'Bank account'}
+                <select value={form.payment_account_id} onChange={e => updateCurrentForm({ payment_account_id: e.target.value })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                  <option value="">Select account</option>{paymentAccounts(form.currency, form.payment_method).map(account => <option key={account.id} value={account.id}>{account.name}</option>)}
+                </select>
+              </label>}
+            </div>
+          </div>}
 
           <div className="grid grid-cols-2 gap-3">
             <div>

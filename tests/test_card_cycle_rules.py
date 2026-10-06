@@ -50,3 +50,12 @@ def test_bmo_costco_purchase_has_august_budget_and_september_cash_flow():
     # while the payment due date owns the Monthly Cash Flow month.
     assert data["statement_month"] == "2026-08"
     assert data["payment_due_date"] == datetime(2026, 9, 4)
+
+
+def test_card_due_day_31_clamps_to_short_month():
+    card = Account(name="February card", bank="Test", account_type=AccountTypeEnum.CREDIT_CARD,
+                   currency=CurrencyEnum.CAD, closing_day=31, due_day=31)
+    data = {}
+    apply_card_statement_fields(data, card, datetime(2027, 1, 31))
+    assert data["statement_month"] == "2027-01"
+    assert data["payment_due_date"] == datetime(2027, 2, 28)
