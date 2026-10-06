@@ -57,17 +57,35 @@ const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 10
 const active = (start: string | null | undefined, end: string | null | undefined, month: string) =>
   (!start || start.slice(0, 7) <= month) && (!end || end.slice(0, 7) >= month)
 
-function possibleFixedBill(tx: PlanTransaction, fixed: PlanRecurring[]): PlanRecurring | undefined {
-  return fixed.find(bill => {
-    if (bill.payment_account_id && bill.payment_account_id !== tx.account_id) return false
-    if (Math.abs(bill.amount + tx.amount) > Math.max(5, bill.amount * 0.15)) return false
-    if (bill.due_day && Math.abs(Number(tx.date.slice(8, 10)) - bill.due_day) > 7) return false
-    const billWords = bill.name.toLowerCase().match(/[a-z0-9]{4,}/g) || []
-    const description = (tx.description || '').toLowerCase()
-    const nameMatches = billWords.some(word => description.includes(word))
-    const categoryAndAccountMatch = bill.payment_account_id === tx.account_id && bill.category === tx.category
-    return nameMatches || categoryAndAccountMatch
-  })
+const words = (value: string): string[] => value.toLowerCase().match(/[a-z0-9]{3,}/g) || []
+
+function fixedChargeScore(tx: PlanTransaction, bill: PlanRecurring): number | null {
+  if (bill.payment_account_id && bill.payment_account_id !== tx.account_id) return null
+  const tolerance = Math.max(5, bill.amount * 0.15)
+  const amountDifference = Math.abs(bill.amount + tx.amount)
+  if (amountDifference > tolerance) return null
+  const dueDay = bill.due_day || Number(tx.date.slice(8, 10))
+  const actualDay = Number(tx.date.slice(8, 10))
+  const dayDifference = Math.abs(actualDay - Math.min(dueDay,
+    new Date(Number(tx.date.slice(0, 4)), Number(tx.date.slice(5, 7)), 0).getDate()))
+  if (dayDifference > 7) return null
+  const billWords = words(bill.name)
+  const chargeWords = words(tx.description || '')
+  const sharedWords = billWords.filter(word => chargeWords.includes(word)).length
+  if (!bill.payment_account_id && !(billWords.length && sharedWords === billWords.length
+    && amountDifference <= 1 && dayDifference <= 2)) return null
+  if (!sharedWords && !(bill.category === tx.category && amountDifference <= 1 && dayDifference <= 2)) return null
+  return sharedWords * 40 + (1 - amountDifference / tolerance) * 30 + (7 - dayDifference) * 2
+}
+
+function budgetBillScore(itemName: string, category: string, amount: number, bill: PlanRecurring): number | null {
+  if (bill.category !== category) return null
+  const itemWords = words(itemName)
+  const billWords = words(bill.name)
+  const sharedWords = itemWords.filter(word => billWords.includes(word)).length
+  if (!sharedWords) return null
+  const amountSimilarity = 1 - Math.min(1, Math.abs(amount - bill.amount) / Math.max(amount, bill.amount))
+  return sharedWords * 100 + amountSimilarity * 30
 }
 
 export function treatmentsForMonth(rows: PlanTreatment[], month: string): Map<number, PlanTreatment['treatment']> {
@@ -118,17 +136,32 @@ export function calculateMonthlyPlan(
   const fixedCategories = new Set(fixed.map(item => item.category).filter(Boolean))
   const excludedOnlyCategories = excludedOnlyBudgetCategories(month, currency, currentBudgets, treatments)
   const missingFixedCategories = [...excludedOnlyCategories].filter(category => !fixedCategories.has(category)).sort()
-  const unresolved = new Set<string>()
+  const budgetItems = currentBudgets.flatMap(budget =>
+    (budget.items?.length ? budget.items : [{ name: budget.category, amount: budget.amount }])
+      .map((item, index) => ({ item, category: budget.category, key: `${budget.id}:${index}` })))
+  const budgetEdges = budgetItems.flatMap(row => {
+    if (row.item.id && (treatmentByItem.has(row.item.id) || coveredByItem.has(row.item.id))) return []
+    return fixed.flatMap(bill => {
+      const score = budgetBillScore(row.item.name, row.category, row.item.amount, bill)
+      return score === null ? [] : [{ key: row.key, billId: bill.id, score }]
+    })
+  }).sort((a, b) => b.score - a.score)
+  const autoCoveredKeys = new Set<string>()
+  const budgetMatchedBills = new Set<number>()
+  for (const edge of budgetEdges) {
+    if (autoCoveredKeys.has(edge.key) || budgetMatchedBills.has(edge.billId)) continue
+    autoCoveredKeys.add(edge.key)
+    budgetMatchedBills.add(edge.billId)
+  }
   let variableAllowance = 0
-  for (const budget of currentBudgets) {
-    const items = budget.items?.length ? budget.items : [{ name: budget.category, amount: budget.amount }]
-    for (const item of items) {
-      const treatment = item.id ? treatmentByItem.get(item.id) : undefined
-      const covered = item.id ? coveredByItem.get(item.id) || 0 : 0
-      if (treatment !== 'EXCLUDED') variableAllowance += treatment === 'VARIABLE'
-        ? item.amount : Math.max(0, item.amount - covered)
-      if (fixedCategories.has(budget.category) && !treatment && covered === 0) unresolved.add(budget.category)
-    }
+  const variableBudgetByCategory: Record<string, number> = {}
+  for (const row of budgetItems) {
+    const treatment = row.item.id ? treatmentByItem.get(row.item.id) : undefined
+    const covered = row.item.id ? coveredByItem.get(row.item.id) || 0 : 0
+    const amount = treatment === 'EXCLUDED' || autoCoveredKeys.has(row.key) ? 0
+      : treatment === 'VARIABLE' ? row.item.amount : Math.max(0, row.item.amount - covered)
+    variableAllowance += amount
+    variableBudgetByCategory[row.category] = money((variableBudgetByCategory[row.category] || 0) + amount)
   }
 
   const eligible = transactions.filter(tx => tx.currency === currency && tx.amount < 0
@@ -138,37 +171,43 @@ export function calculateMonthlyPlan(
   const ignoredPairs = new Set(matches.filter(match => match.source === 'ignored')
     .map(match => `${match.recurring_id}:${match.transaction_id}`))
   const matchedIds = new Set<number>()
+  const matchedBillIds = new Set<number>()
+  const fixedActualByRecurringId: Record<number, number> = {}
   let fixedActual = 0
   for (const match of matches) {
     if (match.source === 'ignored' || !fixedById.has(match.recurring_id)) continue
     const tx = eligibleById.get(match.transaction_id)
-    if (!tx || matchedIds.has(tx.id)) continue
+    if (!tx || matchedIds.has(tx.id) || matchedBillIds.has(match.recurring_id)) continue
     matchedIds.add(tx.id)
+    matchedBillIds.add(match.recurring_id)
+    fixedActualByRecurringId[match.recurring_id] = -tx.amount
     fixedActual += -tx.amount
   }
-  let variableActual = 0
-  let unclassifiedActual = 0
-  const needsReviewTransactions: (PlanTransaction & { possibleFixedBill: string })[] = []
-  for (const tx of eligible) {
-    if (matchedIds.has(tx.id)) continue
-    const candidate = possibleFixedBill(tx, fixed.filter(bill => !ignoredPairs.has(`${bill.id}:${tx.id}`)))
-    if (candidate) {
-      unclassifiedActual += -tx.amount
-      needsReviewTransactions.push({ ...tx, possibleFixedBill: candidate.name })
-    } else variableActual += -tx.amount
+  const chargeEdges = eligible.filter(tx => !matchedIds.has(tx.id)).flatMap(tx =>
+    fixed.filter(bill => !matchedBillIds.has(bill.id) && !ignoredPairs.has(`${bill.id}:${tx.id}`)).flatMap(bill => {
+      const score = fixedChargeScore(tx, bill)
+      return score === null ? [] : [{ tx, bill, score }]
+    })).sort((a, b) => b.score - a.score)
+  for (const edge of chargeEdges) {
+    if (matchedIds.has(edge.tx.id) || matchedBillIds.has(edge.bill.id)) continue
+    matchedIds.add(edge.tx.id)
+    matchedBillIds.add(edge.bill.id)
+    fixedActualByRecurringId[edge.bill.id] = -edge.tx.amount
+    fixedActual += -edge.tx.amount
   }
+  const variableActual = eligible.filter(tx => !matchedIds.has(tx.id)).reduce((sum, tx) => sum - tx.amount, 0)
   const fixedPlanned = money(fixed.reduce((sum, item) => sum + item.amount, 0))
   variableAllowance = money(variableAllowance)
   return {
     fixedPlanned,
     grossBudget,
     variableAllowance,
-    totalPlanned: unresolved.size || missingFixedCategories.length ? null : money(fixedPlanned + variableAllowance),
+    variableBudgetByCategory,
+    totalPlanned: money(fixedPlanned + variableAllowance),
     fixedActual: money(fixedActual),
     variableActual: money(variableActual),
-    unclassifiedActual: money(unclassifiedActual),
-    needsReviewTransactions: needsReviewTransactions.sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id),
-    unresolvedCategories: [...unresolved].sort(),
+    fixedTransactionIds: [...matchedIds],
+    fixedActualByRecurringId,
     missingFixedCategories,
   }
 }

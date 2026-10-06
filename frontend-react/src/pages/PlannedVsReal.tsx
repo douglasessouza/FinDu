@@ -328,23 +328,7 @@ export default function PlannedVsReal() {
   const rows = useMemo<Row[]>(() => {
     if (!selectedMonth) return []
 
-    const coveredByItem = new Map<number, number>()
-    const treatmentByItem = treatmentsForMonth(treatments, selectedMonth)
-    coverages.forEach(link => coveredByItem.set(link.budget_item_id,
-      (coveredByItem.get(link.budget_item_id) || 0) + link.amount))
-    const plannedByCategory = budgets
-      .filter(budget => budget.currency === 'CAD')
-      .filter(budget => budget.is_active)
-      .filter(budget => budget.start_month <= selectedMonth)
-      .filter(budget => !budget.valid_until || new Date(budget.valid_until) >= new Date(`${selectedMonth}-01T00:00:00`))
-      .reduce<Record<string, number>>((totals, budget) => {
-        const budgetItems = budget.items?.length ? budget.items : [{ amount: budget.amount, name: budget.category }]
-        totals[budget.category] = (totals[budget.category] || 0) + budgetItems.reduce((sum, item) =>
-          sum + (item.id && treatmentByItem.get(item.id) === 'EXCLUDED' ? 0
-            : item.id && treatmentByItem.get(item.id) === 'VARIABLE' ? item.amount
-              : Math.max(0, item.amount - (item.id ? coveredByItem.get(item.id) || 0 : 0))), 0)
-        return totals
-      }, {})
+    const plannedByCategory = monthlyPlan.variableBudgetByCategory
 
     const realByCategory: Record<string, number> = {}
     Object.entries(spending[selectedMonth] || {}).forEach(([category, value]) => {
@@ -352,9 +336,7 @@ export default function PlannedVsReal() {
       if (!cad) return
       realByCategory[category] = Math.round((cad.cards + cad.debit) * 100) / 100
     })
-    const fixedIds = new Set(recurring.filter(item => item.type === 'EXPENSE' && item.planning_kind !== 'VARIABLE').map(item => item.id))
-    const fixedTransactionIds = new Set(recurringMatches.filter(match => match.source !== 'ignored' && fixedIds.has(match.recurring_id)).map(match => match.transaction_id))
-    monthlyPlan.needsReviewTransactions.forEach(transaction => fixedTransactionIds.add(transaction.id))
+    const fixedTransactionIds = new Set(monthlyPlan.fixedTransactionIds)
     for (const transaction of transactions) {
       if (!fixedTransactionIds.has(transaction.id) || transaction.amount >= 0 || transaction.currency !== 'CAD') continue
       const account = accountById[transaction.account_id]
@@ -388,7 +370,7 @@ export default function PlannedVsReal() {
 
         return b.variance - a.variance
       })
-  }, [budgets, coverages, treatments, selectedMonth, spending, recurring, recurringMatches, transactions, accountById, monthlyPlan.needsReviewTransactions])
+  }, [selectedMonth, spending, transactions, accountById, monthlyPlan])
 
   const totals = rows.reduce(
     (acc, row) => ({
@@ -753,34 +735,21 @@ export default function PlannedVsReal() {
           <section aria-label="Monthly spending plan" className="mb-6 overflow-hidden rounded-xl border border-[#D4E4D5] bg-white">
             <div className="flex flex-col gap-2 border-b border-[#EDF4EE] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div><p className="text-xs font-bold uppercase tracking-widest text-[#55705E]">Your month at a glance</p><h2 className="mt-1 text-xl font-bold text-[#123D32]">Committed and adjustable spending</h2></div>
-              <Link to={`/recurring?month=${selectedMonth}&currency=CAD`} className="text-sm font-semibold text-[#1B4D3E] underline">Review bills and budget items</Link>
+              <Link to={`/recurring?month=${selectedMonth}&currency=CAD`} className="text-sm font-semibold text-[#1B4D3E] underline">Edit fixed bills and budgets</Link>
             </div>
-            <div className="grid grid-cols-1 divide-y divide-[#EDF4EE] sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4">
+            <div className="grid grid-cols-1 divide-y divide-[#EDF4EE] sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-3">
               <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Fixed commitments</p><p className="money mt-1 text-xl font-bold text-[#B54B4B]">CAD$ {fmt(monthlyPlan.fixedPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">Matched actual CAD$ {fmt(monthlyPlan.fixedActual)}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.unresolvedCategories.length ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.variableAllowance)}`}</p><p className="mt-1 text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">{monthlyPlan.totalPlanned === null ? 'Needs review' : `CAD$ ${fmt(monthlyPlan.totalPlanned)}`}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.missingFixedCategories.length ? `Add fixed bills for ${monthlyPlan.missingFixedCategories.join(', ')}` : monthlyPlan.totalPlanned === null ? 'Classify mixed budget items' : monthlyIncomeCad <= 0 ? 'Fixed + flexible · Add income to calculate room' : `Fixed + flexible · Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
-              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Possible fixed payments</p><p className="money mt-1 text-xl font-bold text-[#B28E18]">CAD$ {fmt(monthlyPlan.unclassifiedActual)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.needsReviewTransactions.length ? 'Charges that may match a fixed bill' : 'No unmatched fixed payments found'}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Flexible allowance</p><p className="money mt-1 text-xl font-bold text-[#123D32]">CAD$ {fmt(monthlyPlan.variableAllowance)}</p><p className="mt-1 text-xs text-[#55705E]">From budget CAD$ {fmt(monthlyPlan.grossBudget)} · Spent CAD$ {fmt(monthlyPlan.variableActual)}</p></div>
+              <div className="px-5 py-4"><p className="text-xs font-semibold text-[#55705E]">Total planned</p><p className="money mt-1 text-xl font-bold text-[#123D32]">CAD$ {fmt(monthlyPlan.totalPlanned)}</p><p className="mt-1 text-xs text-[#55705E]">{monthlyPlan.missingFixedCategories.length ? `${monthlyPlan.missingFixedCategories.join(', ')} will be included when added as fixed` : monthlyIncomeCad <= 0 ? 'Fixed + flexible · Add income to calculate room' : `Fixed + flexible · Income left CAD$ ${fmt(monthlyIncomeCad - monthlyPlan.totalPlanned)}`}</p></div>
             </div>
-            {monthlyPlan.needsReviewTransactions.length > 0 && <div className="border-t border-amber-200 bg-amber-50 px-5 py-4" id="transactions-needing-review">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div><p className="text-sm font-bold text-amber-950">Possible fixed payments · {monthlyPlan.needsReviewTransactions.length}</p><p className="mt-1 text-xs text-amber-900">These charges total CAD$ {fmt(monthlyPlan.unclassifiedActual)} and resemble a configured fixed bill. Check their match in Cash Flow.</p></div>
-                <Link to="/transactions" className="text-xs font-semibold text-amber-950 underline">Open transactions</Link>
-              </div>
-              <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
-                {monthlyPlan.needsReviewTransactions.map(transaction => <div key={transaction.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm">
-                  <div className="min-w-0"><p className="font-semibold text-[#123D32]">{transaction.description || 'Transaction'} <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-900">Possible fixed bill</span></p><p className="mt-1 text-xs text-[#55705E]">{transaction.date.slice(0, 10)} · {transaction.category || 'Other'} · {accountById[transaction.account_id]?.name || 'Account'} · May match {transaction.possibleFixedBill}</p></div>
-                  <strong className="money text-[#B54B4B]">CAD$ {fmt(-transaction.amount)}</strong>
-                </div>)}
-              </div>
-            </div>}
             <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
               <p className="mb-2 text-sm font-bold text-[#123D32]">Fixed bills · planned and payment status</p>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
                 {recurring.filter(item => item.type === 'EXPENSE' && item.currency === 'CAD' && item.planning_kind !== 'VARIABLE' && recurringIsActiveForMonth(item, selectedMonth)).map(item => {
-                  const match = recurringMatches.find(row => row.month === selectedMonth && row.recurring_id === item.id && row.source !== 'ignored' && row.transaction)
+                  const paidAmount = monthlyPlan.fixedActualByRecurringId[item.id]
                   const manual = monthlyPayments.some(row => row.item_type === 'recurring' && row.item_id === item.id)
                   return <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm">
-                    <div className="min-w-0"><p className="truncate font-semibold text-[#1B4D3E]">{item.name}</p><p className="text-xs text-[#55705E]">{match ? `Matched · CAD$ ${fmt(Math.abs(match.transaction!.amount))}` : manual ? 'Marked paid · amount unverified' : `Due day ${item.due_day}`} · {item.payment_method === 'CREDIT_CARD' ? accountById[item.payment_account_id || 0]?.name || 'Card needed' : item.payment_method === 'DEBIT' ? accountById[item.payment_account_id || 0]?.name || 'Bank needed' : 'Payment route needed'}</p></div>
+                    <div className="min-w-0"><p className="truncate font-semibold text-[#1B4D3E]">{item.name}</p><p className="text-xs text-[#55705E]">{paidAmount ? `Charged · CAD$ ${fmt(paidAmount)}` : manual ? 'Marked paid · amount unverified' : `Due day ${item.due_day}`} · {item.payment_method === 'CREDIT_CARD' ? accountById[item.payment_account_id || 0]?.name || 'Card needed' : item.payment_method === 'DEBIT' ? accountById[item.payment_account_id || 0]?.name || 'Bank needed' : 'Payment route needed'}</p></div>
                     <span className="money shrink-0 font-bold text-[#B54B4B]">CAD$ {fmt(item.amount)}</span>
                   </div>
                 })}
