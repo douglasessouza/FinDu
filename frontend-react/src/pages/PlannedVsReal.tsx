@@ -13,6 +13,7 @@ import type { Account, BudgetCoverage, CategoryBudget, MonthlyPayment, Recurring
 import { createLatestRequestRunner, hasCurrentMonthlyData, loadRowsPreservingPrevious, replaceSelectedMonth } from '../services/reportingData'
 import { investmentSummaryForMonth } from '../utils/investmentPlans'
 import { calculateMonthlyPlan } from '../utils/monthlyPlan'
+import CardCycleSummary from '../components/CardCycleSummary'
 
 interface Row {
   category: string
@@ -739,6 +740,7 @@ export default function PlannedVsReal() {
         <div className="text-center text-red-600 py-20">{currentMonthLoadError}</div>
       ) : (
         <>
+          <div className="mb-6"><CardCycleSummary accounts={accounts} month={selectedMonth} /></div>
           <section aria-label="Monthly spending plan" className="mb-6 overflow-hidden rounded-xl border border-[#D4E4D5] bg-white">
             <div className="flex flex-col gap-2 border-b border-[#EDF4EE] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div><p className="text-xs font-bold uppercase tracking-widest text-[#55705E]">Your month at a glance</p><h2 className="mt-1 text-xl font-bold text-[#123D32]">Committed and adjustable spending</h2></div>
