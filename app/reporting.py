@@ -263,12 +263,13 @@ def _card_summary_query(
 ):
     start, end = month_bounds(month)
     normalized_category = func.lower(func.trim(func.coalesce(Transaction.category, "")))
+    expense_charge = and_(Transaction.amount < 0, normalized_category != "transfer")
     columns = [
         Account.id.label("account_id"),
         Account.name.label("account_name"),
         Transaction.currency.label("currency"),
         func.coalesce(
-            func.sum(case((Transaction.amount < 0, -Transaction.amount), else_=0.0)),
+            func.sum(case((expense_charge, -Transaction.amount), else_=0.0)),
             0.0,
         ).label("charges"),
         func.coalesce(
@@ -301,7 +302,7 @@ def _card_summary_query(
             ),
             0.0,
         ).label("payments"),
-        func.sum(case((Transaction.amount < 0, 1), else_=0)).label("count"),
+        func.sum(case((expense_charge, 1), else_=0)).label("count"),
         func.max(Transaction.payment_due_date).label("payment_due_date"),
     ]
     if summary_kind is not None:

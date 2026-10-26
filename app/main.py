@@ -1008,8 +1008,9 @@ def get_statement_summary(account_id: int, db: Session = Depends(get_db)):
                 "payment_due_date": None,
             }
         if t.amount < 0:
-            summary[month]["charges"] += abs(t.amount)
-            summary[month]["count"] += 1
+            if (t.category or "").strip().lower() != "transfer":
+                summary[month]["charges"] += abs(t.amount)
+                summary[month]["count"] += 1
         elif (t.category or "").strip().lower() == "transfer":
             summary[month]["payments"] += t.amount
         else:

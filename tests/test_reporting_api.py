@@ -342,6 +342,37 @@ def test_transaction_filters_and_cursor_are_bounded_stable_and_complete(
     assert [row["id"] for row in bounded["items"]] == expected[:3]
 
 
+def test_card_transfer_reclassification_updates_summaries_without_hiding_history(client, db_session):
+    card = add_account(db_session, "Amex", AccountTypeEnum.CREDIT_CARD)
+    purchase = add_transaction(db_session, card, "2026-10-20T12:00:00", -3823.30,
+        "Health", "Clinic", statement_month="2026-11", payment_due_date="2026-12-05T00:00:00")
+    add_transaction(db_session, card, "2026-10-21T12:00:00", -1620.59,
+        None, "Other purchases", statement_month="2026-11", payment_due_date="2026-12-05T00:00:00")
+    db_session.commit()
+
+    def summaries():
+        statement = client.get("/card-statements/summary", params={"month": "2026-11"}).json()
+        due = client.get("/dashboard/monthly", params={"month": "2026-12"}).json()["card_summaries_due"]
+        return statement, due
+
+    for summary in summaries():
+        assert summary["total_amount_due"] == 5443.89
+    purchase.category = "  tRaNsFeR  "
+    db_session.commit()
+    for summary in summaries():
+        assert summary["total_amount_due"] == 1620.59
+        assert summary["cards"][0]["count"] == 1
+    legacy = client.get(f"/accounts/{card.id}/statement-summary").json()["2026-11"]
+    assert round(legacy["amount_due"], 2) == 1620.59
+    assert legacy["count"] == 1
+    history = client.get("/transactions", params={"account_id": card.id, "limit": 100}).json()["items"]
+    assert purchase.id in [row["id"] for row in history]
+    purchase.category = "Health"
+    db_session.commit()
+    for summary in summaries():
+        assert summary["total_amount_due"] == 5443.89
+
+
 def test_card_cycle_and_bounded_spending_aggregates_preserve_financial_rules(
     client, db_session
 ):
