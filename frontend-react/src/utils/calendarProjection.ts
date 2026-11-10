@@ -1,5 +1,6 @@
 import type { CurrencyCode, MonthlyDashboardResponse, MonthlyPayment } from '../services/api.ts'
 import { calculateOccurrenceIncome, calculateProjectedBalance } from './cashFlowProjection.ts'
+import { expandRecurringForMonth, recurringMatchItem } from './recurrence.ts'
 import { forecastCardRecurringDue, splitExpenseRoutes } from './cardRecurringForecast.ts'
 import { findRecurringMatches, isPayrollIncome } from './recurringMatching.ts'
 
@@ -51,18 +52,23 @@ export function projectCalendarMonths(
   for (const dashboard of sorted) {
     const month = dashboard.month
     const overrides = new Map(dashboard.overrides.map(row => [row.recurring_id, row.amount]))
-    const items = dashboard.recurring.filter(item => item.currency === currency
+    const items = expandRecurringForMonth(dashboard.recurring.filter(item => item.currency === currency
       && (!item.start_month || item.start_month <= month)
       && (!item.valid_until || item.valid_until.slice(0, 7) >= month))
-      .map(item => ({ ...item, amount: overrides.get(item.id) ?? item.amount }))
+      .map(item => ({ ...item, amount: overrides.get(item.id) ?? item.amount })), month)
     const transactions = dashboard.checking_transactions.filter(tx => tx.currency === currency && tx.date.slice(0, 7) === month)
     const matches = findRecurringMatches(items, transactions, month, dashboard.accounts, true)
     for (const saved of dashboard.matches) {
       // A late prior-month salary can be saved against this planning cycle;
       // it must never settle the current calendar month's salary occurrence.
       if (saved.transaction?.date.slice(0, 7) !== month || saved.transaction.currency !== currency) continue
-      if (saved.source === 'ignored') delete matches[saved.recurring_id]
-      else matches[saved.recurring_id] = { transaction: saved.transaction, actualAmount: saved.actual_amount, variance: saved.variance, confidence: saved.confidence, score: saved.score }
+      const item = recurringMatchItem(items, saved.recurring_id, saved.transaction.date)
+      if (!item) continue
+      if (saved.source === 'ignored') delete matches[item.id]
+      else matches[item.id] = { transaction: saved.transaction, actualAmount: saved.actual_amount, variance: saved.variance, confidence: saved.confidence, score: saved.score }
+    }
+    for (const row of dashboard.payments) {
+      if (row.month === month && row.item_type === 'recurring_ignored') delete matches[row.item_id]
     }
     const payment = (kind: string, id: number) => dashboard.payments.some(row => row.month === month && row.item_type === kind && row.item_id === id)
     const occurrences = items.filter(item => item.type === 'INCOME').map(item => {

@@ -50,6 +50,7 @@ IMPORT_BATCH_REVISION = "d4e5f6a7b8c9"
 IMPORT_CLAIM_REVISION = "f6a7b8c9d0e1"
 PAYMENT_ROUTING_REVISION = "d9915a8fd65b"
 BUDGET_TREATMENT_REVISION = "e1a2b3c4d5e6"
+BIWEEKLY_REVISION = "8b416f4cdedd"
 
 
 def test_budget_treatment_migration_preserves_amounts_and_excludes_rent_insurance(tmp_path, monkeypatch):
@@ -456,8 +457,8 @@ def test_statement_import_claim_postgresql_ddl_is_the_alembic_head(monkeypatch):
     sql = output.getvalue()
     script = ScriptDirectory.from_config(Config("alembic.ini"))
     head = script.get_revision(script.get_current_head())
-    assert head.revision == BUDGET_TREATMENT_REVISION
-    assert head.down_revision == PAYMENT_ROUTING_REVISION
+    assert head.revision == BIWEEKLY_REVISION
+    assert head.down_revision == BUDGET_TREATMENT_REVISION
     assert "CREATE TABLE statement_import_claims" in sql
     assert "UNIQUE (account_id, fingerprint, occurrence)" in sql
     assert "CREATE INDEX ix_statement_import_claims_import_batch_id" in sql
@@ -953,7 +954,7 @@ def test_alembic_upgrade_head_bootstraps_an_empty_sqlite_database(tmp_path, monk
     } >= {"import_fingerprint", "import_occurrence", "import_idempotency_key"}
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            BUDGET_TREATMENT_REVISION
+            BIWEEKLY_REVISION
         )
         assert connection.scalar(sa.text("SELECT COUNT(*) FROM categories")) == len(
             DEFAULT_CATEGORY_NAMES
@@ -1076,7 +1077,7 @@ def test_alembic_drifted_upgrade_and_downgrade_preserve_adopted_schema_and_data(
     inspector = sa.inspect(engine)
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            BUDGET_TREATMENT_REVISION
+            BIWEEKLY_REVISION
         )
         assert connection.execute(
             sa.text(
@@ -1183,3 +1184,18 @@ def test_alembic_drifted_upgrade_and_downgrade_preserve_adopted_schema_and_data(
         index["name"]
         for index in downgraded_inspector.get_indexes("statement_import_claims")
     }
+
+
+def test_biweekly_migration_keeps_existing_monthly_schedules_and_amounts(tmp_path, monkeypatch):
+    database_path = tmp_path / 'biweekly.db'
+    monkeypatch.setenv('DATABASE_URL', f'sqlite:///{database_path}')
+    config = Config('alembic.ini')
+    command.upgrade(config, BUDGET_TREATMENT_REVISION)
+    engine = sa.create_engine(f'sqlite:///{database_path}')
+    with engine.begin() as connection:
+        connection.execute(sa.text("INSERT INTO recurring_expenses (id,name,amount,currency,due_day,type,is_active) VALUES (22,'Car',362.78,'CAD',8,'EXPENSE',1)"))
+    command.upgrade(config, 'head')
+    command.upgrade(config, 'head')
+    with engine.connect() as connection:
+        row = connection.execute(sa.text('SELECT amount,due_day,frequency,anchor_date FROM recurring_expenses WHERE id=22')).one()
+        assert tuple(row) == (362.78, 8, 'MONTHLY', None)

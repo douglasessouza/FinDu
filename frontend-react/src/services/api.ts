@@ -69,6 +69,10 @@ export interface Transaction {
 }
 
 export interface RecurringExpense {
+  frequency?: 'MONTHLY' | 'BIWEEKLY'
+  anchor_date?: string | null
+  recurring_source_id?: number
+  occurrence_date?: string
   id: number
   name: string
   amount: number

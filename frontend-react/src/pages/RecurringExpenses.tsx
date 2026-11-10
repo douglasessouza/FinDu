@@ -1,3 +1,4 @@
+import { recurrenceDates } from '../utils/recurrence'
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Archive, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Edit3, GitBranch, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
@@ -77,6 +78,8 @@ interface RecurringForm {
   planning_kind: 'FIXED' | 'VARIABLE'
   payment_method: 'UNSET' | 'DEBIT' | 'CREDIT_CARD'
   payment_account_id: string
+  frequency: 'MONTHLY' | 'BIWEEKLY'
+  anchor_date: string
 }
 
 interface RecurringDateForm {
@@ -86,6 +89,8 @@ interface RecurringDateForm {
   planning_kind: 'FIXED' | 'VARIABLE'
   payment_method: 'UNSET' | 'DEBIT' | 'CREDIT_CARD'
   payment_account_id: string
+  frequency: 'MONTHLY' | 'BIWEEKLY'
+  anchor_date: string
 }
 
 interface BudgetForm {
@@ -107,6 +112,8 @@ const EXPENSE_FORM: RecurringForm = {
   planning_kind: 'FIXED',
   payment_method: 'UNSET',
   payment_account_id: '',
+  frequency: 'MONTHLY',
+  anchor_date: '',
 }
 
 const INCOME_FORM: RecurringForm = {
@@ -120,6 +127,8 @@ const INCOME_FORM: RecurringForm = {
   planning_kind: 'FIXED',
   payment_method: 'UNSET',
   payment_account_id: '',
+  frequency: 'MONTHLY',
+  anchor_date: '',
 }
 
 const EMPTY_BUDGET_FORM: BudgetForm = {
@@ -156,7 +165,7 @@ export default function RecurringExpenses() {
   const [editingBudgetId, setEditingBudgetId] = useState<number | null>(null)
   const [editingBudgetItems, setEditingBudgetItems] = useState<{ name: string; amount: string }[]>([])
   const [editingItemId, setEditingItemId] = useState<number | null>(null)
-  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ amount: '', start_month: '', valid_until: '', planning_kind: 'FIXED', payment_method: 'UNSET', payment_account_id: '' })
+  const [editingItemDates, setEditingItemDates] = useState<RecurringDateForm>({ amount: '', start_month: '', valid_until: '', planning_kind: 'FIXED', payment_method: 'UNSET', payment_account_id: '', frequency: 'MONTHLY', anchor_date: '' })
   const [adjustingBudgetId, setAdjustingBudgetId] = useState<number | null>(null)
   const [adjustmentStartMonth, setAdjustmentStartMonth] = useState(new Date().toISOString().slice(0, 7))
   const [loading, setLoading] = useState(true)
@@ -322,6 +331,10 @@ export default function RecurringExpenses() {
   async function createItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = activeForm === 'INCOME' ? incomeForm : expenseForm
+    if (activeForm === 'EXPENSE' && form.frequency === 'BIWEEKLY' && (!form.anchor_date || form.payment_method !== 'DEBIT')) {
+      setError('Choose a first payment date and a bank account for a 14-day schedule.')
+      return
+    }
     const validation = validateForm(form)
     if (validation) {
       setError(validation)
@@ -336,7 +349,9 @@ export default function RecurringExpenses() {
         name: form.name.trim(),
         amount: Number(form.amount),
         currency: form.currency,
-        due_day: Number(form.due_day),
+        due_day: form.frequency === 'BIWEEKLY' && form.anchor_date ? Number(form.anchor_date.slice(8, 10)) : Number(form.due_day),
+        frequency: activeForm === 'INCOME' ? 'MONTHLY' : form.frequency,
+        anchor_date: activeForm === 'EXPENSE' && form.frequency === 'BIWEEKLY' ? form.anchor_date : null,
         category: form.category,
         type: activeForm,
         start_month: form.start_month,
@@ -453,6 +468,8 @@ export default function RecurringExpenses() {
       planning_kind: item.planning_kind || 'FIXED',
       payment_method: item.payment_method || 'UNSET',
       payment_account_id: item.payment_account_id ? String(item.payment_account_id) : '',
+      frequency: item.frequency || 'MONTHLY',
+      anchor_date: item.anchor_date || '',
     })
     setError('')
     setMessage('')
@@ -460,10 +477,14 @@ export default function RecurringExpenses() {
 
   function cancelEditingItemDates() {
     setEditingItemId(null)
-    setEditingItemDates({ amount: '', start_month: '', valid_until: '', planning_kind: 'FIXED', payment_method: 'UNSET', payment_account_id: '' })
+    setEditingItemDates({ amount: '', start_month: '', valid_until: '', planning_kind: 'FIXED', payment_method: 'UNSET', payment_account_id: '', frequency: 'MONTHLY', anchor_date: '' })
   }
 
   async function saveItemDates(item: RecurringExpense) {
+    if (editingItemDates.frequency === 'BIWEEKLY' && (!editingItemDates.anchor_date || editingItemDates.payment_method !== 'DEBIT')) {
+      setError('Choose a first payment date and a bank account for a 14-day schedule.')
+      return
+    }
     const amount = Number(editingItemDates.amount)
     if (!Number.isFinite(amount) || amount <= 0) {
       setError('Amount must be greater than zero.')
@@ -488,6 +509,9 @@ export default function RecurringExpenses() {
     try {
       const res = await api.patch(`/recurring-expenses/${item.id}`, {
         amount,
+        frequency: editingItemDates.frequency,
+        anchor_date: editingItemDates.frequency === 'BIWEEKLY' ? editingItemDates.anchor_date : null,
+        due_day: editingItemDates.frequency === 'BIWEEKLY' ? Number(editingItemDates.anchor_date.slice(8, 10)) : item.due_day,
         start_month: editingItemDates.start_month,
         valid_until: editingItemDates.valid_until ? `${editingItemDates.valid_until}T00:00:00` : null,
         planning_kind: editingItemDates.planning_kind,
@@ -820,15 +844,18 @@ export default function RecurringExpenses() {
               </span>
             </div>
             <p className="text-sm text-[#7BAE8A] mt-1">
-              {itemVerb(item.type)} day {item.due_day} · {item.category || 'No category'} · {startMonthLabel(item.start_month)} · {validUntilLabel(item.valid_until)}
+              {item.frequency === 'BIWEEKLY' ? `Every 14 days · first payment ${item.anchor_date}` : `${itemVerb(item.type)} day ${item.due_day}`} · {item.category || 'No category'} · {startMonthLabel(item.start_month)} · {validUntilLabel(item.valid_until)}
             </p>
+            {item.frequency === 'BIWEEKLY' && <p className="mt-2 text-sm font-semibold text-[#55705E]">
+              {monthName(selectedMonth)}: {recurrenceDates(item, selectedMonth).map(date => date.slice(8, 10)).join(', ')} · {recurrenceDates(item, selectedMonth).length} payments · {symbol(item.currency)} {fmt(recurrenceDates(item, selectedMonth).length * item.amount, item.currency)}
+            </p>}
             {!isIncome && <p className={`mt-1 text-xs font-semibold ${item.payment_method && item.payment_method !== 'UNSET' ? 'text-[#55705E]' : 'text-amber-700'}`}>
               {item.planning_kind === 'VARIABLE' ? 'Flexible' : 'Fixed'} · {item.payment_method === 'CREDIT_CARD' ? `Card: ${accounts.find(account => account.id === item.payment_account_id)?.name || 'Choose card'}` : item.payment_method === 'DEBIT' ? `Bank: ${accounts.find(account => account.id === item.payment_account_id)?.name || 'Choose account'}` : 'Payment method needed'}
             </p>}
           </div>
           <div className="flex items-center justify-between md:justify-end gap-3">
             <p className={`text-lg font-bold tabular-nums ${isIncome ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>
-              {isIncome ? '+' : '-'} {symbol(item.currency)} {fmt(item.amount, item.currency)}
+              {isIncome ? '+' : '-'} {symbol(item.currency)} {fmt(item.amount, item.currency)}{item.frequency === 'BIWEEKLY' && <span className="ml-1 text-xs font-normal">/ payment</span>}
             </p>
             <button
               type="button"
@@ -854,6 +881,17 @@ export default function RecurringExpenses() {
         {editingDates && (
           <div className="mx-5 mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] p-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[0.8fr_1fr_1fr_auto] gap-3 sm:items-end">
+              {!isIncome && <div className="sm:col-span-2">
+                <label className="block text-xs font-semibold text-[#55705E]">Repeats
+                  <select aria-label={`Frequency for ${item.name}`} value={editingItemDates.frequency} onChange={e => setEditingItemDates(prev => ({ ...prev, frequency: e.target.value as RecurringDateForm['frequency'] }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                    <option value="MONTHLY">Monthly · fixed day</option><option value="BIWEEKLY">Every 14 days · bank payments</option>
+                  </select>
+                </label>
+                {editingItemDates.frequency === 'BIWEEKLY' && <label className="mt-3 block text-xs font-semibold text-[#55705E]">First payment date
+                  <input aria-label={`First payment date for ${item.name}`} type="date" required value={editingItemDates.anchor_date} onChange={e => setEditingItemDates(prev => ({ ...prev, anchor_date: e.target.value }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]" />
+                  <span className="mt-1 block font-normal">Dates repeat every 14 days. Some months have three payments.</span>
+                </label>}
+              </div>}
               <div>
                 <label htmlFor={`recurring-amount-${item.id}`} className="text-xs font-semibold text-[#55705E] uppercase tracking-widest block mb-2">Amount</label>
                 <div className="relative">
@@ -910,7 +948,7 @@ export default function RecurringExpenses() {
                 </select>
               </label>
               <label className="text-xs font-semibold text-[#55705E]">Paid by
-                <select value={editingItemDates.payment_method} onChange={e => setEditingItemDates(previous => ({ ...previous, payment_method: e.target.value as RecurringDateForm['payment_method'], payment_account_id: '' }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                <select value={editingItemDates.payment_method} onChange={e => setEditingItemDates(previous => ({ ...previous, payment_method: e.target.value as RecurringDateForm['payment_method'], payment_account_id: '', frequency: 'MONTHLY', anchor_date: '' }))} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
                   <option value="UNSET">Choose later</option><option value="DEBIT">Bank account</option><option value="CREDIT_CARD">Credit card</option>
                 </select>
               </label>
@@ -1104,6 +1142,16 @@ export default function RecurringExpenses() {
             </div>
           </div>
 
+          {activeForm === 'EXPENSE' && <div className="mb-4 grid gap-3 sm:grid-cols-2">
+            <label className="text-xs font-semibold text-[#55705E]">Repeats
+              <select aria-label="Payment frequency" value={form.frequency} onChange={e => updateCurrentForm({ frequency: e.target.value as RecurringForm['frequency'] })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                <option value="MONTHLY">Monthly · fixed day</option><option value="BIWEEKLY">Every 14 days · bank payments</option>
+              </select>
+            </label>
+            {form.frequency === 'BIWEEKLY' && <label className="text-xs font-semibold text-[#55705E]">First payment date
+              <input aria-label="First payment date" type="date" required value={form.anchor_date} onChange={e => updateCurrentForm({ anchor_date: e.target.value, start_month: e.target.value.slice(0, 7) })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]" />
+            </label>}
+          </div>}
           {activeForm === 'EXPENSE' && <div className="mb-4 rounded-lg border border-[#D4E4D5] bg-[#F9FCF9] p-3">
             <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-[#55705E]">How this expense fits your plan</p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1113,7 +1161,7 @@ export default function RecurringExpenses() {
                 </select>
               </label>
               <label className="text-xs font-semibold text-[#55705E]">Paid by
-                <select value={form.payment_method} onChange={e => updateCurrentForm({ payment_method: e.target.value as RecurringForm['payment_method'], payment_account_id: '' })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
+                <select value={form.payment_method} onChange={e => updateCurrentForm({ payment_method: e.target.value as RecurringForm['payment_method'], payment_account_id: '', frequency: 'MONTHLY', anchor_date: '' })} className="mt-1 w-full rounded-lg border border-[#D4E4D5] bg-white px-3 py-2 text-sm text-[#1B4D3E]">
                   <option value="UNSET">Choose later</option><option value="DEBIT">Bank account</option><option value="CREDIT_CARD">Credit card</option>
                 </select>
               </label>
@@ -1134,6 +1182,7 @@ export default function RecurringExpenses() {
                 type="number"
                 min={1}
                 max={31}
+                disabled={form.frequency === 'BIWEEKLY'}
                 value={form.due_day}
                 onChange={e => updateCurrentForm({ due_day: e.target.value })}
                 className="w-full px-3 py-2 rounded-lg border border-[#D4E4D5] bg-white text-[#1B4D3E] text-sm font-semibold focus:outline-none mb-4"

@@ -1,0 +1,13 @@
+# Biweekly car payments
+
+Approved intent: infer the actual car repayment cadence from imported transactions and replace future fixed month days with a 14-day schedule; expose frequency and first payment date in the interface.
+
+Evidence (read-only production query): Toyota Finance CAD 362.78 on Oct 23 and Nov 6, 2026, exactly 14 days apart. Existing recurring items 22 and 23 use month days 8 and 23. Convert item 22 from November using Nov 6 as anchor; end item 23 on Oct 31. Preserve transactions, historical matches and October planning.
+
+Implementation: add backward-compatible MONTHLY/BIWEEKLY frequency and anchor_date to recurring expenses. Expand biweekly bank expenses into dated monthly occurrences in shared frontend logic, retaining source IDs for editing and a separate per-date identity for matching/payment status. Existing monthly schedules remain unchanged. Use the same occurrences in bank projection, pay-period lists, budget planning and recurring management. Support biweekly debit expenses initially; reject unsupported income/card combinations. Show per-payment amount, frequency, anchor and selected-month dates/totals. No new dependencies.
+
+Validation: date generation across short/leap months, three-payment months, expiry, matching multiple deposits, independent paid state, projection and fixed-budget totals; API schedule validation and migration preservation; complete suites, TypeScript/build/lint. One focused review. Apply additive production schema only after local checks; update exactly the two inspected records with guarded conditions, verify resulting dates and preserve imported transactions. Commit/push under existing user authorization; no deploy monitoring.
+
+Completed: shared UTC recurrence expansion, independent monthly occurrence identities, source-aware editing/saved matches, explicit budget coverage preservation, creation/editing controls and per-month dates/totals. Additive Alembic migration is compatible with the columns already applied through Supabase. Existing monthly schedules keep their defaults. Production recurring schedule conversion verified against generated dates; imported transaction count and aggregate unchanged.
+
+Validation: 54 frontend tests, 113 backend tests pass; one existing PostgreSQL-only test skipped because FINDU_TEST_POSTGRES_URL is not configured. App/node TypeScript, production build, ESLint and diff checks pass. Migration tests verify existing monthly amounts and due days remain unchanged. Focused review found source-ID budget coverage loss after expansion; fixed and covered with an explicit-link regression test. Live browser automation was unavailable in this session; no visual-pass claim.

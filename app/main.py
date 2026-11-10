@@ -792,6 +792,8 @@ class TransactionSplitRequest(BaseModel):
     lines: List[TransactionSplitLine] = Field(min_length=2)
 
 class RecurringExpenseCreate(BaseModel):
+    frequency: Literal['MONTHLY', 'BIWEEKLY'] = 'MONTHLY'
+    anchor_date: Optional[date] = None
     name: str
     amount: float
     currency: CurrencyEnum
@@ -805,6 +807,8 @@ class RecurringExpenseCreate(BaseModel):
     payment_account_id: Optional[int] = None
 
 class RecurringExpenseUpdate(BaseModel):
+    frequency: Optional[Literal['MONTHLY', 'BIWEEKLY']] = None
+    anchor_date: Optional[date] = None
     name: Optional[str] = None
     amount: Optional[float] = None
     currency: Optional[CurrencyEnum] = None
@@ -1528,11 +1532,26 @@ def delete_import_batch(batch_id: str, db: Session = Depends(get_db)):
 def create_recurring_expense(expense: RecurringExpenseCreate, db: Session = Depends(get_db)):
     validate_recurring_route(expense.type, expense.currency, expense.planning_kind,
                              expense.payment_method, expense.payment_account_id, db)
+    validate_recurring_schedule(expense.frequency, expense.anchor_date, expense.type,
+                                expense.payment_method, expense.start_month, expense.valid_until)
     db_expense = RecurringExpense(**expense.model_dump())
     db.add(db_expense)
     db.commit()
     db.refresh(db_expense)
     return db_expense
+
+def validate_recurring_schedule(frequency, anchor_date, item_type, payment_method, start_month, valid_until):
+    if frequency not in ('MONTHLY', 'BIWEEKLY'):
+        raise HTTPException(status_code=400, detail="Choose a recurrence frequency")
+    if frequency == 'BIWEEKLY':
+        if not anchor_date:
+            raise HTTPException(status_code=400, detail="First payment date is required for a 14-day schedule")
+        if item_type != RecurringTypeEnum.EXPENSE or payment_method != 'DEBIT':
+            raise HTTPException(status_code=400, detail="14-day schedules currently support bank-paid expenses")
+        if valid_until and anchor_date > valid_until.date():
+            raise HTTPException(status_code=400, detail="First payment must be on or before the end date")
+        if start_month and anchor_date.strftime('%Y-%m') < start_month:
+            raise HTTPException(status_code=400, detail="First payment must be in or after the start month")
 
 def validate_recurring_route(item_type, currency, planning_kind, payment_method, account_id, db):
     if planning_kind not in ("FIXED", "VARIABLE") or payment_method not in ("UNSET", "DEBIT", "CREDIT_CARD"):
@@ -1572,6 +1591,10 @@ def update_recurring_expense(expense_id: int, updates: RecurringExpenseUpdate, d
                              changes.get("planning_kind", expense.planning_kind),
                              changes.get("payment_method", expense.payment_method),
                              changes.get("payment_account_id", expense.payment_account_id), db)
+    validate_recurring_schedule(changes.get('frequency', expense.frequency),
+                                changes.get('anchor_date', expense.anchor_date),
+                                changes.get('type', expense.type), changes.get('payment_method', expense.payment_method),
+                                changes.get('start_month', expense.start_month), changes.get('valid_until', expense.valid_until))
     for key, value in changes.items():
         setattr(expense, key, value)
 

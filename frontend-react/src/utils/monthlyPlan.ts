@@ -1,4 +1,5 @@
-export interface PlanRecurring {
+import { expandRecurringForMonth, recurringMatchItem, recurringSourceId, type RecurrenceSchedule } from './recurrence.ts'
+export interface PlanRecurring extends RecurrenceSchedule {
   id: number
   name: string
   amount: number
@@ -120,16 +121,15 @@ export function calculateMonthlyPlan(
   matches: PlanMatch[],
   treatments: PlanTreatment[] = [],
 ) {
-  const fixed = recurring.filter(item => item.type === 'EXPENSE' && item.currency === currency
+  const fixed = expandRecurringForMonth(recurring, month).filter(item => item.type === 'EXPENSE' && item.currency === currency
     && item.planning_kind !== 'VARIABLE' && active(item.start_month, item.valid_until, month))
-  const fixedById = new Map(fixed.map(item => [item.id, item]))
   const currentBudgets = budgets.filter(budget => budget.currency === currency && budget.is_active !== false
     && active(budget.start_month, budget.valid_until, month))
   const grossBudget = money(currentBudgets.reduce((sum, budget) => sum + budget.amount, 0))
   const coveredByItem = new Map<number, number>()
   const treatmentByItem = treatmentsForMonth(treatments, month)
   for (const coverage of coverages) {
-    if (!fixedById.has(coverage.recurring_id)) continue
+    if (!fixed.some(item => recurringSourceId(item) === coverage.recurring_id)) continue
     coveredByItem.set(coverage.budget_item_id,
       (coveredByItem.get(coverage.budget_item_id) || 0) + coverage.amount)
   }
@@ -177,16 +177,17 @@ export function calculateMonthlyPlan(
   const fixedActualByRecurringId: Record<number, number> = {}
   let fixedActual = 0
   for (const match of matches) {
-    if (match.source === 'ignored' || !fixedById.has(match.recurring_id)) continue
+    if (match.source === 'ignored') continue
     const tx = eligibleById.get(match.transaction_id)
-    if (!tx || matchedIds.has(tx.id) || matchedBillIds.has(match.recurring_id)) continue
+    const bill = tx ? recurringMatchItem(fixed, match.recurring_id, tx.date) : undefined
+    if (!tx || !bill || matchedIds.has(tx.id) || matchedBillIds.has(bill.id)) continue
     matchedIds.add(tx.id)
-    matchedBillIds.add(match.recurring_id)
-    fixedActualByRecurringId[match.recurring_id] = -tx.amount
+    matchedBillIds.add(bill.id)
+    fixedActualByRecurringId[bill.id] = -tx.amount
     fixedActual += -tx.amount
   }
   const chargeEdges = eligible.filter(tx => !matchedIds.has(tx.id)).flatMap(tx =>
-    fixed.filter(bill => !matchedBillIds.has(bill.id) && !ignoredPairs.has(`${bill.id}:${tx.id}`)).flatMap(bill => {
+    fixed.filter(bill => !matchedBillIds.has(bill.id) && !ignoredPairs.has(`${bill.id}:${tx.id}`) && !ignoredPairs.has(`${recurringSourceId(bill)}:${tx.id}`)).flatMap(bill => {
       const score = fixedChargeScore(tx, bill)
       return score === null ? [] : [{ tx, bill, score }]
     })).sort((a, b) => b.score - a.score)

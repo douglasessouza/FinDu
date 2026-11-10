@@ -2,6 +2,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Date,
     Enum,
     Float,
     ForeignKey,
@@ -144,6 +145,8 @@ class RecurringExpense(Base):
     currency = Column(Enum(CurrencyEnum), nullable=False)
     due_day = Column(Integer, nullable=False)
     type = Column(Enum(RecurringTypeEnum), nullable=False, default=RecurringTypeEnum.EXPENSE)
+    frequency = Column(String, nullable=False, default="MONTHLY", server_default="MONTHLY")
+    anchor_date = Column(Date, nullable=True)
     category = Column(String, nullable=True)
     is_active = Column(Boolean, default=True)
     start_month = Column(String, nullable=True)

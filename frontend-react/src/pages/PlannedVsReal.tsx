@@ -1,3 +1,4 @@
+import { expandRecurringForMonth } from '../utils/recurrence'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CheckCircle2, ChevronLeft, ChevronRight, Plus, Save, Split, Target, Trash2, Wand2, X } from 'lucide-react'
@@ -325,7 +326,7 @@ export default function PlannedVsReal() {
         : transaction.date.slice(0, 7)
       return reportingMonth === selectedMonth
     }), recurringMatches, treatments), [selectedMonth, recurring, budgets, coverages, transactions, recurringMatches, treatments, accountById])
-  const fixedBills = recurring.filter(item => item.type === 'EXPENSE' && item.currency === 'CAD'
+  const fixedBills = expandRecurringForMonth(recurring, selectedMonth).filter(item => item.type === 'EXPENSE' && item.currency === 'CAD'
     && item.planning_kind !== 'VARIABLE' && recurringIsActiveForMonth(item, selectedMonth))
   const currentTreatments = useMemo(() => treatmentsForMonth(treatments, selectedMonth), [treatments, selectedMonth])
 
