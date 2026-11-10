@@ -4,10 +4,12 @@ import api, { getMonthlyDashboard } from '../services/api'
 import { createLatestRequestRunner, hasCurrentMonthlyData } from '../services/reportingData'
 import CardCycleSummary from '../components/CardCycleSummary'
 import { investmentPortfolioSummary, investmentSummaryForMonth } from '../utils/investmentPlans'
-import { calculateProjectedBalance, calculateOccurrenceIncome } from '../utils/cashFlowProjection'
 import { forecastCardRecurringDue, splitExpenseRoutes } from '../utils/cardRecurringForecast'
-import { buildPayPeriodSummary, hasExpectedIncomeDate, isIncomeInCashFlowMonth, resolveCardDueDay } from '../utils/payPeriodSummary'
+import { buildPayPeriodSummary, resolveCardDueDay } from '../utils/payPeriodSummary'
+import { findRecurringMatches, hasExpectedRecurringDate, isPayrollIncome, type RecurringMatchCandidate } from '../utils/recurringMatching'
+import { applyProjectionPayments, projectCalendarMonths, projectionMonthKeys } from '../utils/calendarProjection'
 import type {
+  MonthlyDashboardResponse,
   Account,
   CurrencyCode,
   MonthlyPayment,
@@ -29,133 +31,6 @@ interface CardChargeEntry {
   dueDate?: string
   dueDay: number
   estimatedAmount?: number
-}
-
-interface RecurringMatchCandidate {
-  transaction: Transaction
-  actualAmount: number
-  variance: number
-  confidence: 'High' | 'Medium'
-  score: number
-  savedId?: number
-  source?: string
-}
-
-const STOP_WORDS = new Set([
-  'the', 'and', 'of', 'to', 'from', 'payment', 'purchase', 'contactless', 'interac',
-  'online', 'banking', 'deposit', 'preauthorized', 'preauth', 'pos', 'debit', 'credit',
-  'card', 'visa', 'mastercard', 'american', 'express',
-])
-
-function normalizeText(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim()
-}
-
-function tokens(value: string): string[] {
-  return normalizeText(value)
-    .split(' ')
-    .filter(token => token.length > 2 && !STOP_WORDS.has(token))
-}
-
-function textScore(name: string, description: string): number {
-  const normalizedName = normalizeText(name)
-  const normalizedDescription = normalizeText(description)
-  if (!normalizedName || !normalizedDescription) return 0
-  if (normalizedDescription.includes(normalizedName) || normalizedName.includes(normalizedDescription)) return 1
-
-  const nameTokens = tokens(name)
-  const descTokens = tokens(description)
-  if (nameTokens.length === 0) return 0
-  const hits = nameTokens.filter(token => descTokens.some(descToken => (
-    descToken === token || descToken.startsWith(token) || token.startsWith(descToken)
-  ))).length
-  return hits / nameTokens.length
-}
-
-function dayDistance(dateValue: string, dueDay: number): number {
-  const date = new Date(dateValue)
-  if (Number.isNaN(date.getTime())) return 31
-  const lastDayOfTransactionMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
-  return Math.abs(date.getDate() - Math.min(dueDay, lastDayOfTransactionMonth))
-}
-
-function isPayrollIncome(item: RecurringExpense): boolean {
-  if (item.type !== 'INCOME') return false
-  const text = `${item.name} ${item.category || ''}`.toLowerCase()
-  return text.includes('payroll') || text.includes('salary')
-}
-
-function hasExpectedRecurringDate(item: RecurringExpense, tx: Transaction, cashFlowMonth: string): boolean {
-  if (item.type === 'INCOME') {
-    return hasExpectedIncomeDate({
-      transactionDate: tx.date,
-      dueDay: item.due_day,
-      cashFlowMonth,
-    })
-  }
-  const txMonth = tx.date.slice(0, 7)
-  if (txMonth !== cashFlowMonth) return false
-  return dayDistance(tx.date, item.due_day) <= 7
-}
-
-function amountMatches(planned: number, actual: number): boolean {
-  const tolerance = Math.max(5, planned * 0.15)
-  return Math.abs(planned - actual) <= tolerance
-}
-
-function findRecurringMatches(
-  items: RecurringExpense[],
-  transactions: Transaction[],
-  monthStr: string,
-  accounts: Account[],
-): Record<number, RecurringMatchCandidate> {
-  const matches: Record<number, RecurringMatchCandidate> = {}
-  const usedTransactions = new Set<number>()
-  const sortedItems = [...items].sort((a, b) => a.due_day - b.due_day || a.name.localeCompare(b.name))
-  const cardAccountIds = new Set(accounts.filter(account => account.account_type === 'CREDIT_CARD').map(account => account.id))
-
-  for (const item of sortedItems) {
-    const candidates = transactions
-      .filter(tx => hasExpectedRecurringDate(item, tx, monthStr))
-      .filter(tx => !item.payment_account_id || tx.account_id === item.payment_account_id)
-      .filter(tx => item.type === 'INCOME' || (
-        item.payment_method === 'CREDIT_CARD'
-          ? cardAccountIds.has(tx.account_id)
-          : !cardAccountIds.has(tx.account_id)
-      ))
-      .filter(tx => !usedTransactions.has(tx.id))
-      .filter(tx => item.type === 'INCOME' ? tx.amount > 0 : tx.amount < 0)
-      .filter(tx => tx.currency === item.currency)
-      .map(tx => {
-        const actualAmount = Math.abs(tx.amount)
-        const variance = actualAmount - item.amount
-        const nameScore = textScore(item.name, tx.description)
-        const categoryScore = item.category && tx.category === item.category ? 1 : 0
-        const amountScore = amountMatches(item.amount, actualAmount)
-          ? Math.max(0, 1 - (Math.abs(variance) / Math.max(5, item.amount * 0.15)))
-          : 0
-        const dateScore = Math.max(0, 1 - (dayDistance(tx.date, item.due_day) / 10))
-        const score = (nameScore * 45) + (amountScore * 35) + (dateScore * 15) + (categoryScore * 5)
-        return { tx, actualAmount, variance, score }
-      })
-      .filter(candidate => amountMatches(item.amount, candidate.actualAmount))
-      .filter(candidate => candidate.score >= 48)
-      .sort((a, b) => b.score - a.score)
-
-    const best = candidates[0]
-    if (best) {
-      usedTransactions.add(best.tx.id)
-      matches[item.id] = {
-        transaction: best.tx,
-        actualAmount: best.actualAmount,
-        variance: best.variance,
-        score: best.score,
-        confidence: best.score >= 72 ? 'High' : 'Medium',
-      }
-    }
-  }
-
-  return matches
 }
 
 function formatDueDate(dateStr: string): string {
@@ -191,6 +66,8 @@ export default function MonthlyCashFlow() {
   const today = new Date()
   const [year, setYear] = useState(today.getFullYear())
   const [month, setMonth] = useState(today.getMonth() + 1)
+  const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+  const [projectionDashboards, setProjectionDashboards] = useState<MonthlyDashboardResponse[]>([])
   const [accounts, setAccounts] = useState<Account[]>([])
   const [recurring, setRecurring] = useState<RecurringExpense[]>([])
   const [monthlyOverrides, setMonthlyOverrides] = useState<Record<number, RecurringMonthlyOverride>>({})
@@ -256,68 +133,77 @@ export default function MonthlyCashFlow() {
     else setMonth(m => m + 1)
   }
 
-  async function load(requestedMonth: string) {
-    await monthlyRequestRef.current.run(
-      () => getMonthlyDashboard(requestedMonth),
-      {
-        onStart: () => {
-          setLoading(true)
-          setLoadedMonth(null)
-          setLoadError(null)
-        },
-        onSuccess: dashboard => {
-          setAccounts(dashboard.accounts)
-          setRecurring(dashboard.recurring)
-          setPayments([...dashboard.payments, ...(dashboard.previous_month_payments ?? [])])
-          setSavedMatches(dashboard.matches)
-          setMonthlyOverrides(
-            dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
-              (result, override) => ({ ...result, [override.recurring_id]: override }),
-              {},
-            ),
-          )
-          setPreviousMonthlyOverrides(
-            dashboard.previous_month_overrides.reduce<Record<number, RecurringMonthlyOverride>>(
-              (result, override) => ({ ...result, [override.recurring_id]: override }),
-              {},
-            ),
-          )
-          setEditingRecurringId(null)
-          setOverrideError('')
-          setStatementTransactions(dashboard.checking_transactions)
-          setCardCurrentTransactions(dashboard.card_transactions_current)
-          const cardForecast = forecastCardRecurringDue(requestedMonth, dashboard.recurring,
-            dashboard.accounts, dashboard.card_transactions_due)
-          setCardCharges(
-            dashboard.accounts.filter(account => account.account_type === 'CREDIT_CARD')
-              .map(account => {
-                const actual = dashboard.card_summaries_due.cards.find(card => card.account_id === account.id)
-                const estimatedAmount = cardForecast.get(account.id) || 0
-                return {
-                  accountId: account.id,
-                  name: account.name,
-                  currency: account.currency,
-                  amount: (actual?.amount_due || 0) + estimatedAmount,
-                  estimatedAmount,
-                  dueDate: actual?.payment_due_date?.slice(0, 10),
-                  dueDay: resolveCardDueDay(actual?.payment_due_date, account.due_day),
-                }
-              }).filter(card => card.amount > 0),
-          )
-          setLoadedMonth(requestedMonth)
-        },
-        onError: () => {
-          setLoadError({
-            month: requestedMonth,
-            message: 'Could not load this month. Please try again.',
-          })
-        },
-        onFinish: () => { setLoading(false) },
-      },
-    )
-  }
-
   useEffect(() => {
+    async function load(requestedMonth: string) {
+      await monthlyRequestRef.current.run(
+        async () => {
+          const keys = projectionMonthKeys(currentMonth, requestedMonth)
+          const dashboards: MonthlyDashboardResponse[] = []
+          // Bound concurrent requests when looking several months ahead.
+          for (let index = 0; index < keys.length; index += 4) {
+            dashboards.push(...await Promise.all(keys.slice(index, index + 4).map(key => getMonthlyDashboard(key))))
+          }
+          return { dashboard: dashboards[dashboards.length - 1], dashboards }
+        },
+        {
+          onStart: () => {
+            setLoading(true)
+            setLoadedMonth(null)
+            setLoadError(null)
+          },
+          onSuccess: ({ dashboard, dashboards }) => {
+            setProjectionDashboards(dashboards)
+            setAccounts(dashboard.accounts)
+            setRecurring(dashboard.recurring)
+            setPayments([...dashboard.payments, ...(dashboard.previous_month_payments ?? [])])
+            setSavedMatches(dashboard.matches)
+            setMonthlyOverrides(
+              dashboard.overrides.reduce<Record<number, RecurringMonthlyOverride>>(
+                (result, override) => ({ ...result, [override.recurring_id]: override }),
+                {},
+              ),
+            )
+            setPreviousMonthlyOverrides(
+              dashboard.previous_month_overrides.reduce<Record<number, RecurringMonthlyOverride>>(
+                (result, override) => ({ ...result, [override.recurring_id]: override }),
+                {},
+              ),
+            )
+            setEditingRecurringId(null)
+            setOverrideError('')
+            setStatementTransactions(dashboard.checking_transactions)
+            setCardCurrentTransactions(dashboard.card_transactions_current)
+            const cardForecast = forecastCardRecurringDue(requestedMonth, dashboard.recurring,
+              dashboard.accounts, dashboard.card_transactions_due)
+            setCardCharges(
+              dashboard.accounts.filter(account => account.account_type === 'CREDIT_CARD')
+                .map(account => {
+                  const actual = dashboard.card_summaries_due.cards.find(card => card.account_id === account.id)
+                  const estimatedAmount = cardForecast.get(account.id) || 0
+                  return {
+                    accountId: account.id,
+                    name: account.name,
+                    currency: account.currency,
+                    amount: (actual?.amount_due || 0) + estimatedAmount,
+                    estimatedAmount,
+                    dueDate: actual?.payment_due_date?.slice(0, 10),
+                    dueDay: resolveCardDueDay(actual?.payment_due_date, account.due_day),
+                  }
+                }).filter(card => card.amount > 0),
+            )
+            setLoadedMonth(requestedMonth)
+          },
+          onError: () => {
+            setLoadError({
+              month: requestedMonth,
+              message: 'Could not load this month and its balance projection. Please try again.',
+            })
+          },
+          onFinish: () => { setLoading(false) },
+        },
+      )
+    }
+
     const requestRunner = monthlyRequestRef.current
     const overrideRequestRunner = monthlyOverrideRequestRef.current
     const incomeRequestRunner = incomeRequestRef.current
@@ -329,7 +215,7 @@ export default function MonthlyCashFlow() {
       incomeRequestRunner.invalidate()
       paymentRequestRunner.invalidate()
     }
-  }, [monthStr])
+  }, [monthStr, currentMonth])
 
   const effectiveRecurring = useMemo(
     () => recurring.map(item => ({
@@ -628,33 +514,22 @@ export default function MonthlyCashFlow() {
             const matchedExpenseActual = bankExpenseList.reduce((s, r) => s + (recurringMatches[r.id]?.actualAmount || 0), 0)
             const remainingRecurringExpenses = bankExpenseList.reduce((s, r) => s + (recurringMatches[r.id] || isPaid('recurring', r.id) ? 0 : r.amount), 0)
             const currencyIncomeTransactions = statementTransactions.filter(tx => (
-              tx.currency === currency && tx.amount > 0 && isIncomeInCashFlowMonth(tx.date, monthStr)
+              tx.currency === currency && tx.amount > 0 && tx.date.slice(0, 7) === monthStr
             ))
-            const currencyActualSalaryIncome = currencyIncomeTransactions.filter(
-              tx => (tx.category || '').trim().toLowerCase() === 'salary',
-            )
             const currencyActualOtherIncome = currencyIncomeTransactions.filter(
               tx => (tx.category || '').trim().toLowerCase() === 'other income',
             )
-            const actualSalaryIncomeTotal = currencyActualSalaryIncome.reduce((s, tx) => s + Number(tx.amount), 0)
             const actualOtherIncomeTotal = currencyActualOtherIncome.reduce((s, tx) => s + Number(tx.amount), 0)
             const cardEntries = cardCharges.filter(card => card.currency === currency)
             const totalCardsPlanned = cardEntries.reduce((sum, card) => sum + card.amount, 0)
-            const remainingCards = cardEntries.reduce((sum, card) => {
-              return sum + (isPaid('card', card.accountId) ? 0 : card.amount)
-            }, 0)
             const plannedFixedExpenses = totalRecurringExpensesPlanned + totalCardsPlanned
-            const openFixedExpenses = remainingRecurringExpenses + remainingCards
             const investmentSavings = currency === 'CAD'
               ? investmentSummaryForMonth(monthStr, 'CAD')
               : { plannedDue: 0, savedActual: 0, remainingDue: 0, openPlans: 0 }
             const investmentPortfolio = currency === 'CAD'
               ? investmentPortfolioSummary('CAD')
               : { openPlans: 0, savedTotal: 0, projectedFinal: 0, targetTotal: 0, riskPlans: 0 }
-            const payrollIncome = incomeList.filter(item => {
-              const text = `${item.name} ${item.category || ''}`.toLowerCase()
-              return text.includes('payroll') || text.includes('salary')
-            })
+            const payrollIncome = incomeList.filter(isPayrollIncome)
             const otherIncome = incomeList.filter(item => !payrollIncome.some(payroll => payroll.id === item.id))
             const previousMonthIncomeList = recurring.filter(item => (
               item.currency === currency
@@ -662,34 +537,19 @@ export default function MonthlyCashFlow() {
               && item.due_day >= 28
               && isValidThisMonth(item, previousMonthYear, previousMonthNumber)
             ))
-            const cycleOccurrences = [
-              ...previousMonthIncomeList.map(item => ({ item, occurrenceMonth: previousMonthStr, amount: previousMonthlyOverrides[item.id]?.amount ?? item.amount })),
-              ...incomeList.filter(item => item.due_day <= 27).map(item => ({ item, occurrenceMonth: monthStr, amount: item.amount })),
-            ]
-            const cycleItems = cycleOccurrences.map(({ item, occurrenceMonth, amount }) => {
-              const match = recurringMatches[item.id]
-              const state = incomeState(item.id, occurrenceMonth)
-              return {
-                amount,
-                payroll: isPayrollIncome(item),
-                cancelled: state?.item_type === 'income_cancelled',
-                received: state?.item_type === 'income',
-                matchedAmount: match?.actualAmount,
-                salaryMatch: match?.transaction.category?.trim().toLowerCase() === 'salary',
-              }
-            })
-            const incomeTotals = calculateOccurrenceIncome(cycleItems, actualSalaryIncomeTotal)
-            const payrollIncomeTotal = cycleItems.filter(item => item.payroll && !item.cancelled).reduce((sum, item) => sum + item.amount, 0)
-            const plannedIncomeTotal = incomeTotals.planned
-            const projectedIncomeTotal = plannedIncomeTotal + actualOtherIncomeTotal
-            const receivedIncomeTotal = incomeTotals.receivedSalary + actualOtherIncomeTotal + incomeTotals.manualOther
-            const remainingIncomeTotal = incomeTotals.remaining
-            const projectedBalance = calculateProjectedBalance({
-              currentBalance: inBank,
-              remainingIncome: remainingIncomeTotal,
-              remainingExpenses: openFixedExpenses,
-              remainingSavings: investmentSavings.remainingDue,
-            })
+            const payrollIncomeTotal = payrollIncome.filter(item => !isPaid('income_cancelled', item.id)).reduce((sum, item) => sum + item.amount, 0)
+            const calendarDashboards = applyProjectionPayments(projectionDashboards, payments, monthStr).map(dashboard => dashboard.month === monthStr ? {
+              ...dashboard, accounts, recurring, checking_transactions: statementTransactions,
+              payments: payments.filter(payment => payment.month === monthStr),
+              overrides: Object.values(monthlyOverrides), matches: savedMatches,
+            } : dashboard)
+            const calendar = projectCalendarMonths(calendarDashboards, currency, currentMonth,
+              key => currency === 'CAD' ? investmentSummaryForMonth(key, 'CAD').remainingDue : 0)[monthStr]
+            const projectedBalance = calendar.closingBalance
+            const calendarIncome = projectedBalance === null ? calendar.totalIncome : calendar.remainingIncome
+            const calendarExpenses = projectedBalance === null ? calendar.totalExpenses : calendar.remainingExpenses
+            const startingLabel = monthStr === currentMonth ? 'Current bank balance' : 'Starting balance'
+            const previousLabel = previousMonthDate.toLocaleDateString('en', { month: 'long' })
             const payPeriodIncomes = [
               ...previousMonthIncomeList.map(item => {
                 const match = recurringMatches[item.id]
@@ -699,8 +559,8 @@ export default function MonthlyCashFlow() {
                   id: `income-previous-${item.id}`,
                   name: item.name,
                   dueLabel: match
-                    ? `Received ${formatDueDate(match.transaction.date)}`
-                    : manuallyReceived ? 'Already included in account balance' : `Expected ${new Date(previousMonthYear, previousMonthNumber - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
+                    ? `Received ${formatDueDate(match.transaction.date)} · included in starting balance`
+                    : manuallyReceived ? 'Already included in starting balance' : `From ${previousLabel} · funds this cycle · expected ${new Date(previousMonthYear, previousMonthNumber - 1, item.due_day).toLocaleDateString('en', { month: 'short', day: 'numeric' })}`,
                   amount: previousMonthlyOverrides[item.id]?.amount ?? item.amount,
                   cancelled: state?.item_type === 'income_cancelled',
                   actualAmount: match?.actualAmount ?? (manuallyReceived ? previousMonthlyOverrides[item.id]?.amount ?? item.amount : undefined),
@@ -757,31 +617,35 @@ export default function MonthlyCashFlow() {
               <div key={currency} className="mb-10">
                 <h2 className="text-xl font-bold text-[#123D32] mb-4">{flag} {currency}</h2>
 
-                <section aria-label={`${currency} month story`} className="mb-5 overflow-hidden rounded-2xl border border-[#123D32] bg-white shadow-[0_18px_50px_rgba(18,61,50,0.06)]">
-                  <div className="flex flex-col gap-1 bg-[#123D32] px-5 py-4 text-white sm:flex-row sm:items-end sm:justify-between">
-                    <div><p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/65">Month story</p><h3 className="mt-1 text-xl font-bold">Where this month is expected to land</h3></div>
-                    <p className="money text-2xl font-bold text-[#D8B541]">{symbol} {fmt(projectedBalance)}</p>
+                <section aria-label={`${currency} month story`} className="mb-5 overflow-hidden rounded-2xl border border-[#D4E4D5] bg-white">
+                  <div className="flex flex-col gap-3 bg-[#123D32] px-5 py-5 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-xl font-bold">{projectedBalance === null ? 'Monthly cash flow' : 'Projected month-end balance'}</h3>
+                      <p className="mt-1 text-xs text-white/80">{monthStr > currentMonth
+                        ? `Includes the projected balance carried over from ${previousLabel}`
+                        : monthStr === currentMonth ? 'Current bank balance plus remaining movements this month'
+                          : 'Income minus bills · historical bank balance is not reconstructed'}</p>
+                    </div>
+                    <p className={`money text-2xl font-bold ${projectedBalance !== null && projectedBalance < 0 ? 'text-red-200' : 'text-[#E2C35B]'}`}>
+                      {symbol} {fmt(projectedBalance ?? calendar.netCashFlow)}
+                    </p>
                   </div>
-                  <div className="grid grid-cols-1 divide-y divide-[#E6EEE7] sm:grid-cols-5 sm:divide-x sm:divide-y-0">
-                    {[
-                      { label: 'Current balance', value: inBank, sign: '', tone: 'text-[#123D32]' },
-                      { label: 'Still to receive', value: remainingIncomeTotal, sign: '+', tone: 'text-[#236B4B]' },
-                      { label: 'Still to pay', value: openFixedExpenses, sign: '−', tone: 'text-[#B54B4B]' },
-                      { label: 'Still to save', value: investmentSavings.remainingDue, sign: '−', tone: 'text-[#123D32]' },
-                      { label: 'End of month', value: projectedBalance, sign: '=', tone: 'text-[#B28E18]' },
-                    ].map((step, index) => (
-                      <div key={step.label} className="relative px-4 py-4">
-                        <div className="mb-3 flex items-center gap-2"><span className={`grid size-6 place-items-center rounded-full text-xs font-bold ${index === 4 ? 'bg-[#D8B541] text-[#123D32]' : 'bg-[#EDF4EE] text-[#55705E]'}`}>{index + 1}</span><p className="text-xs font-semibold text-[#55705E]">{step.label}</p></div>
-                        <p className={`money text-base font-bold ${step.tone}`}>{step.sign} {symbol} {fmt(step.value)}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-1 gap-2 border-t border-[#E6EEE7] bg-[#F8FBF8] px-5 py-3 text-xs text-[#55705E] sm:grid-cols-3">
-                    <span>Received income {symbol} {fmt(receivedIncomeTotal)}</span><span>Still to receive {symbol} {fmt(remainingIncomeTotal)}</span><span>Still to pay {symbol} {fmt(openFixedExpenses)}</span>
+                  <div className={`grid grid-cols-1 gap-4 px-5 py-4 ${calendar.remainingSavings > 0 ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
+                    {projectedBalance !== null && <div><p className="text-xs text-[#55705E]">{startingLabel}</p>
+                      <p className="money mt-1 font-bold text-[#123D32]">{symbol} {fmt(calendar.startingBalance)}</p>
+                      {monthStr > currentMonth && <p className="mt-1 text-xs text-[#55705E]">Projected from {previousLabel}</p>}
+                    </div>}
+                    <div><p className="text-xs text-[#55705E]">+ {monthStr === currentMonth ? 'Still to receive this month' : 'Income this month'}</p><p className="money mt-1 font-bold text-[#236B4B]">{symbol} {fmt(calendarIncome)}</p></div>
+                    <div><p className="text-xs text-[#55705E]">− {monthStr === currentMonth ? 'Still to pay this month' : 'Bills this month'}</p><p className="money mt-1 font-bold text-[#B54B4B]">{symbol} {fmt(calendarExpenses)}</p></div>
+                    {calendar.remainingSavings > 0 && <div><p className="text-xs text-[#55705E]">− Still to save</p><p className="money mt-1 font-bold text-[#123D32]">{symbol} {fmt(calendar.remainingSavings)}</p></div>}
                   </div>
                   {routedExpenses.unset.length > 0 && <div role="status" className="border-t border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900">
                     Projection incomplete: {routedExpenses.unset.length} recurring expense{routedExpenses.unset.length === 1 ? '' : 's'} need a bank account or credit card assigned.
                     <span className="mt-1 block text-xs">{routedExpenses.unset.map(item => item.name).join(', ')}</span>
+                  </div>}
+                  {projectedBalance !== null && <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#E6EEE7] px-5 py-3">
+                    <div><p className="text-sm font-semibold text-[#123D32]">{monthLabel} cash flow</p><p className="text-xs text-[#55705E]">Income minus bills · excludes starting balance and savings</p></div>
+                    <p className={`money font-bold ${calendar.netCashFlow < 0 ? 'text-[#B54B4B]' : 'text-[#236B4B]'}`}>{calendar.netCashFlow >= 0 ? '+' : '−'} {symbol} {fmt(Math.abs(calendar.netCashFlow))}</p>
                   </div>}
                 </section>
 
@@ -792,7 +656,7 @@ export default function MonthlyCashFlow() {
                       <p className="mt-1 text-xs text-[#55705E]">A quick check of what is available and what is due on each side of the month.</p>
                     </div>
                     <p className="mt-2 max-w-xl text-xs text-[#7BAE8A] sm:mt-0 sm:text-right">
-                      Income and bills grouped around each pay cycle.
+                      Salary planning · income from the 28th funds the following month.
                     </p>
                   </div>
                   {paymentError && <p role="alert" className="px-5 py-2 text-sm text-[#B85050]">{paymentError}</p>}
@@ -883,7 +747,7 @@ export default function MonthlyCashFlow() {
                                 ))}
                               </div>
                             </details>
-                            <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#D4E4D5] pt-3"><span className="font-bold text-[#1B4D3E]">Period balance</span><span className={`money text-base font-bold ${positive ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>{positive ? '+' : '−'} {symbol} {fmt(Math.abs(period.totals.balance))}</span></div>
+                            <div className="mt-3 flex items-center justify-between gap-4 border-t border-[#D4E4D5] pt-3"><span className="font-bold text-[#1B4D3E]">Income minus bills</span><span className={`money text-base font-bold ${positive ? 'text-[#1B6B3A]' : 'text-[#B85050]'}`}>{positive ? '+' : '−'} {symbol} {fmt(Math.abs(period.totals.balance))}</span></div>
                           </div>
                         </div>
                       )
@@ -892,13 +756,14 @@ export default function MonthlyCashFlow() {
                 </section>
 
 
-                <section className="mb-5 rounded-xl border-2 border-[#1B4D3E] bg-[#F7FBF8] p-4">
-                  <div className="flex items-center justify-between mb-2">
-                    <p className="section-title">Income</p>
-                    <p className="text-xs text-[#8BAE90]">
-                      Planned for pay cycles {symbol} {fmt(plannedIncomeTotal)} · received {symbol} {fmt(receivedIncomeTotal)}
-                    </p>
-                  </div>
+                {(incomeError || paymentError || overrideError) && <p role="alert" className="mb-3 text-sm font-semibold text-[#B85050]">{incomeError || paymentError || overrideError}</p>}
+                <details key={`${monthStr}-${currency}-income`} className="group mb-3 overflow-hidden rounded-xl border border-[#D4E4D5] bg-white">
+                  <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2D6A4F]">
+                    <div><p className="font-bold text-[#123D32]">Income</p><p className="mt-1 text-xs text-[#55705E]">Deposits this month · expand to manage</p></div>
+                    <div className="flex items-center gap-3"><span className="money text-sm font-bold text-[#236B4B]">{symbol} {fmt(calendar.totalIncome)}</span><ChevronDown size={16} className="shrink-0 group-open:rotate-180" aria-hidden="true" /></div>
+                  </summary>
+                  <div className="border-t border-[#E6EEE7] p-4">
+                  <p className="mb-3 text-xs text-[#55705E]">Still to receive this month: {symbol} {fmt(calendar.remainingIncome)}. Paychecks from the 28th stay in this month’s bank balance and fund the next month’s first pay cycle.</p>
                   {incomeList.length === 0 && currencyIncomeTransactions.length === 0 ? (
                     <div className="bg-white rounded-lg border border-[#D4E4D5] px-4 py-3 text-sm text-[#8BAE90]">
                       No recurring income registered.
@@ -1051,7 +916,7 @@ export default function MonthlyCashFlow() {
 
                       <div className="mt-3 bg-white rounded-lg border border-[#D4E4D5] overflow-hidden">
                         <div className="flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE]">
-                          <span className="text-[#1B4D3E] font-bold">Guaranteed Payroll</span>
+                          <span className="text-[#1B4D3E] font-bold">Planned payroll this month</span>
                           <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(payrollIncomeTotal)}</span>
                         </div>
                         <div className="flex justify-between items-center px-4 py-3 border-b border-[#EDF4EE]">
@@ -1059,25 +924,22 @@ export default function MonthlyCashFlow() {
                           <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(actualOtherIncomeTotal)}</span>
                         </div>
                         <div className="flex justify-between items-center px-4 py-3 bg-[#F4FAF5]">
-                          <span className="text-[#1B4D3E] font-bold">Total Projected Income</span>
-                          <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(projectedIncomeTotal)}</span>
+                          <span className="text-[#1B4D3E] font-bold">Total calendar-month income</span>
+                          <span className="text-[#1B6B3A] font-bold">+ {symbol} {fmt(calendar.totalIncome)}</span>
                         </div>
                       </div>
                     </>
                   )}
-                </section>
-
-                <section className="mb-5 rounded-xl border-2 border-[#1B4D3E] bg-[#FFF8F8] p-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <p className="section-title">Expenses</p>
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-[#B85050]">Remaining to pay: {symbol} {fmt(openFixedExpenses)}</p>
-                      <p className="text-xs text-[#8BAE90] flex items-center justify-end gap-1">
-                        <CircleHelp size={12} />
-                        Already included in the projected end-of-month balance.
-                      </p>
-                    </div>
                   </div>
+                </details>
+
+                <details key={`${monthStr}-${currency}-expenses`} className="group mb-5 overflow-hidden rounded-xl border border-[#D4E4D5] bg-white">
+                  <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-3 px-5 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2D6A4F]">
+                    <div><p className="font-bold text-[#123D32]">Expenses</p><p className="mt-1 text-xs text-[#55705E]">{bankExpenseList.length + cardEntries.length} bills · remaining to pay</p></div>
+                    <div className="flex items-center gap-3"><span className="money text-sm font-bold text-[#B85050]">{symbol} {fmt(calendar.remainingExpenses)}</span><ChevronDown size={16} className="shrink-0 group-open:rotate-180" aria-hidden="true" /></div>
+                  </summary>
+                  <div className="border-t border-[#E6EEE7] p-4">
+                  <p className="mb-4 flex items-center gap-1 text-xs text-[#55705E]"><CircleHelp size={12} />Already included in the projected balance.</p>
 
                   <div className="mb-5">
                   <div className="flex items-center justify-between mb-2">
@@ -1266,7 +1128,8 @@ export default function MonthlyCashFlow() {
                       </div>
                   </section>
                 </div>
-                </section>
+                  </div>
+                </details>
 
                 <details className="surface-card overflow-hidden">
                   <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 text-sm font-bold text-[#123D32] hover:bg-[#F4FAF5]">
@@ -1275,7 +1138,7 @@ export default function MonthlyCashFlow() {
                   </summary>
                   <div className="border-t border-[#EDF4EE] bg-[#F8FBF8] px-5 py-4">
                     <p className="money text-sm text-[#55705E]">
-                      {symbol} {fmt(inBank)} + {fmt(remainingIncomeTotal)} still to receive − {fmt(openFixedExpenses)} still to pay − {fmt(investmentSavings.remainingDue)} still to save = <strong className="text-[#123D32]">{symbol} {fmt(projectedBalance)}</strong>
+                      {projectedBalance === null ? 'Historical bank balance is not reconstructed from the current account snapshot.' : <>{symbol} {fmt(calendar.startingBalance)} starting balance + {fmt(calendar.remainingIncome)} still to receive − {fmt(calendar.remainingExpenses)} still to pay − {fmt(calendar.remainingSavings)} still to save = <strong className="text-[#123D32]">{symbol} {fmt(projectedBalance)}</strong></>}
                     </p>
                     <p className="mt-2 text-xs text-[#55705E]">Savings total comes from {investmentPortfolio.openPlans} open investment plan{investmentPortfolio.openPlans === 1 ? '' : 's'}.</p>
                   </div>
